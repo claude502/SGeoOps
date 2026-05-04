@@ -1,0 +1,81 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ContentStatus {
+  Draft
+  Review
+  Ready
+  Scheduled
+}
+
+enum GeoFlowTaskStatus {
+  not_sent
+  queued
+  generating
+  reviewing
+  published
+  failed
+}
+
+model ContentAsset {
+  id             String            @id
+  title          String
+  body           String
+  summary        String
+  brandEntity    String
+  sourceUrl      String
+  targetKeywords String[]
+  canonicalUrl   String
+  status         ContentStatus     @default(Draft)
+  geoScore       Int               @default(0)
+  owner          String
+  sourceSystem   String            @default("geo_ops")
+  externalUrl    String?
+  publishedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  geoFlowLinks   GeoFlowTaskLink[]
+
+  @@index([status])
+  @@index([sourceSystem])
+  @@index([publishedAt])
+}
+
+model GeoFlowTaskLink {
+  id                String            @id @default(cuid())
+  contentAssetId    String
+  contentAsset      ContentAsset      @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
+  geoFlowTaskId     Int?
+  geoFlowJobId      Int?
+  geoFlowArticleId  Int?
+  geoFlowArticleUrl String?
+  status            GeoFlowTaskStatus @default(not_sent)
+  lastSyncedAt      DateTime?
+  lastError         String?
+  idempotencyKey    String            @unique
+  taskPayload       Json?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([contentAssetId])
+  @@index([geoFlowTaskId])
+  @@index([geoFlowArticleId])
+  @@index([status])
+  @@index([lastSyncedAt])
+}
+
+model GeoFlowSyncRun {
+  id           String    @id @default(cuid())
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  successCount Int       @default(0)
+  failureCount Int       @default(0)
+  errorSummary String?
+
+  @@index([startedAt])
+}

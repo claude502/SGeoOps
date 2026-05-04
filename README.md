@@ -1,93 +1,156 @@
-# Geo
+# GEO Content Ops
 
+GEO Content Ops 是一个 TypeScript/Next.js MVP，用来承载 GEO 内容账号系统的总控台：
 
+- 管理可被 AI 搜索引用的主内容资产。
+- 对 ChatGPT、Perplexity、Gemini、Claude 等 provider 运行 GEO 审计。
+- 生成面向 AI answer engine 的内容 brief。
+- 生成官网/知识站版本和社媒平台 variants。
+- 通过 GEOFlow API 创建内容生产任务。
+- 通过 Postiz handoff 承接多社媒账号排期和发布。
 
-## Getting started
+当前系统把 GEOFlow 作为一环，而不是主底座：
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+- GEO Ops：GEO 监测、brief、内容资产、状态总控、Postiz handoff。
+- GEOFlow：知识库、AI 内容生成、文章审核、前台信源站发布。
+- Postiz：社媒账号连接、预览、排期和发布。
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+生产架构说明见 [docs/architecture.md](./docs/architecture.md)。
+GEOFlow 桥接落地说明见 [docs/geoflow-rollout.md](./docs/geoflow-rollout.md)。
+当前目标服务器部署记录见 [docs/server-47.239.166.249-deployment.md](./docs/server-47.239.166.249-deployment.md)。
 
-## Add your files
+## 本地运行
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```bash
+npm install
+npm run prisma:generate
+npm run dev
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/winheng/geo.git
-git branch -M main
-git push -uf origin main
+
+打开 `http://localhost:3000`。
+
+如果没有配置 provider key，GEO audit 会使用可复现的模拟回答，并返回清晰 warning。
+如果没有配置 `DATABASE_URL`，GEOFlow 集成端点会返回配置错误，其他 demo dashboard 功能仍可运行。
+
+## 生产部署
+
+生产建议部署在 Linux 上：
+
+- MVP：Ubuntu 22.04/24.04 LTS + Docker Compose。
+- 生产推荐：容器化应用 + 托管 PostgreSQL + 托管 Redis + S3/R2 + CDN/WAF。
+- 企业级：Kubernetes/ECS/Nomad + 私有 VPC + SSO + 审计日志。
+
+最低域名：
+
+- `geo.example.com`：GEO Ops 总控台。
+- `geoflow.example.com`：GEOFlow 后台/API。
+- `postiz.example.com`：Postiz 后台和 OAuth callback。
+- `content.example.com`：公开内容站，也可以使用主站域名。
+
+安全底线：
+
+- 只暴露 80/443。
+- PostgreSQL/Redis 不映射公网端口。
+- 所有公网入口必须 HTTPS。
+- `.env`、API key、数据库密码不进 Git。
+- 生产数据库开启备份和恢复演练。
+
+仓库内提供了一个 MVP 部署样例：
+
+```bash
+docker compose -f deploy/docker-compose.prod.example.yml build
+docker compose -f deploy/docker-compose.prod.example.yml up -d postgres
+docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
+docker compose -f deploy/docker-compose.prod.example.yml up -d
 ```
 
-## Integrate with your tools
+使用前先把 `deploy/Caddyfile.example` 里的 `geo.example.com` 改成真实域名，并准备生产 `.env`。
 
-* [Set up project integrations](https://gitlab.com/winheng/geo/-/settings/integrations)
+首次生产迁移使用：
 
-## Collaborate with your team
+```bash
+npm run prisma:deploy
+```
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+本地开发迁移仍可使用：
 
-## Test and Deploy
+```bash
+npm run prisma:migrate
+```
 
-Use the built-in continuous integration in GitLab.
+## API
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```http
+POST /api/geo/audit
+POST /api/geo/brief
+POST /api/geo/variant
+GET  /api/geo/runs
+POST /api/integrations/geoflow/tasks
+POST /api/integrations/geoflow/sync
+GET  /api/integrations/geoflow/status
+```
 
-***
+## 环境变量
 
-# Editing this README
+复制 `.env.example` 为 `.env` 后配置：
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+```bash
+DATABASE_URL=
 
-## Suggestions for a good README
+NEXT_PUBLIC_APP_URL=
+PUBLIC_CONTENT_BASE_URL=
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+GEOFLOW_BASE_URL=
+GEOFLOW_API_TOKEN=
+GEOFLOW_PUBLIC_BASE_URL=
+GEOFLOW_TITLE_LIBRARY_ID=
+GEOFLOW_PROMPT_ID=
+GEOFLOW_AI_MODEL_ID=
+GEOFLOW_AUTHOR_ID=
+GEOFLOW_KNOWLEDGE_BASE_ID=
+GEOFLOW_FIXED_CATEGORY_ID=
 
-## Name
-Choose a self-explaining name for your project.
+OPENAI_API_KEY=
+PERPLEXITY_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+POSTIZ_BASE_URL=
+POSTIZ_WEBHOOK_URL=
+POSTIZ_API_KEY=
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## GEOFlow Integration
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+GEO Ops 不改 GEOFlow 源码。它通过 GEOFlow REST API 创建任务：
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+- `POST /api/v1/tasks`
+- `POST /api/v1/tasks/{id}/enqueue`
+- `GET /api/v1/tasks/{id}/jobs`
+- `GET /api/v1/articles`
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+首次数据库设置：
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```bash
+npm run prisma:deploy
+npm run prisma:seed
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+GEOFlow token 最小权限：
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+- `catalog:read`
+- `tasks:read`
+- `tasks:write`
+- `jobs:read`
+- `articles:read`
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+桥接状态会写入 PostgreSQL：
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+- `ContentAsset`
+- `GeoFlowTaskLink`
+- `GeoFlowSyncRun`
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## Postiz Integration
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Postiz 独立部署，负责社媒账号连接、OAuth、排期和发布。
 
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+GEO Ops 侧生成的 variants 可以通过 `POSTIZ_WEBHOOK_URL` 或未来的 Postiz API bridge 创建草稿/排期任务。未配置 Postiz 时，variants 会保留在本地 review queue。

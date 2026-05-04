@@ -1,0 +1,10 @@
+.next/
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+.env*.local
+dev-server.*.log
+qa-*.png
+.chrome-qa-profile/

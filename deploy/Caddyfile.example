@@ -1,0 +1,22 @@
+geo.example.com {
+  encode gzip zstd
+  reverse_proxy geo-ops:3000
+}
+
+# If GEOFlow and Postiz are deployed on the same private Docker network,
+# add their services here. Otherwise point these domains at their own hosts.
+#
+# geoflow.example.com {
+#   encode gzip zstd
+#   reverse_proxy geoflow:8000
+# }
+#
+# postiz.example.com {
+#   encode gzip zstd
+#   reverse_proxy postiz:5000
+# }
+#
+# content.example.com {
+#   encode gzip zstd
+#   reverse_proxy content-site:3000
+# }

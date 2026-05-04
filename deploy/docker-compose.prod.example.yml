@@ -1,0 +1,72 @@
+services:
+  reverse-proxy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - geo-ops
+    networks:
+      - edge
+      - app
+
+  geo-ops:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geo_content_ops}
+      POSTGRES_USER: ${POSTGRES_USER:-geo_ops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-use-a-secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  redis:
+    image: redis:7-alpine
+    profiles:
+      - optional-cache
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - app
+
+networks:
+  edge:
+  app:
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
