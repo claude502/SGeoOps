@@ -280,4 +280,5 @@ export const initialSnapshot: DashboardSnapshot = {
   runs: seedRuns,
   providerHealth: seedProviderHealth,
   geoFlowLinks: [],
+  auditEvents: [],
 };

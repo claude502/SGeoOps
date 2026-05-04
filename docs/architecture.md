@@ -186,6 +186,7 @@ HTTPS：
   - `/api/integrations/geoflow/status` 是登录后的 readiness/dependency 诊断，并行检查 PostgreSQL 和 GEOFlow catalog。
   - 外部依赖检查必须有短超时，GEOFlow catalog 默认 `GEOFLOW_STATUS_TIMEOUT_MS=2500`，不能让慢外部系统拖住总控台。
 - 结构化日志：请求 ID、用户 ID、asset ID、GeoFlow task ID、sync run ID。
+- 审计日志：关键写入动作进入 `AuditEvent`，记录 actor、action、entity、outcome、request ID 和安全的 metadata。
 - 错误告警：GEOFlow 401/422/500、sync 连续失败、队列积压、发布失败。
 - 指标：任务成功率、平均生成耗时、published URL 回填率、社媒 handoff 成功率。
 
@@ -265,6 +266,7 @@ HTTPS：
 - GEOFlow sync bridge。
 - API 状态检查。
 - Dashboard 中的 `Send to GEOFlow` 和 `Sync GEOFlow`。
+- `AuditEvent` 操作审计，覆盖内容资产、GEO brief/audit/variant、GEOFlow send/sync。
 
 本次架构优化新增：
 

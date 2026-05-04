@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordAuditEvent } from "@/lib/audit-log";
 import { getRuntimeProject } from "@/lib/dashboard-snapshot";
 import { runGeoAudit } from "@/lib/geo-engine";
 import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
@@ -23,6 +24,13 @@ export async function POST(request: Request) {
   const parsed = auditSchema.safeParse(body);
 
   if (!parsed.success) {
+    await recordAuditEvent({
+      request,
+      action: "geo.audit",
+      entityType: "GeoRun",
+      outcome: "failure",
+      metadata: { reason: "invalid_payload" },
+    });
     return NextResponse.json(
       { error: "Invalid audit payload", issues: parsed.error.flatten() },
       { status: 400 },
@@ -31,6 +39,13 @@ export async function POST(request: Request) {
 
   const project = await getRuntimeProject(parsed.data.projectId);
   if (!project) {
+    await recordAuditEvent({
+      request,
+      action: "geo.audit",
+      entityType: "GeoRun",
+      outcome: "failure",
+      metadata: { reason: "project_not_found", projectId: parsed.data.projectId ?? null },
+    });
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
@@ -41,6 +56,13 @@ export async function POST(request: Request) {
     : null;
 
   if (parsed.data.contentAssetId && !asset) {
+    await recordAuditEvent({
+      request,
+      action: "geo.audit",
+      entityType: "GeoRun",
+      outcome: "failure",
+      metadata: { reason: "content_asset_not_found", contentAssetId: parsed.data.contentAssetId },
+    });
     return NextResponse.json({ error: "Content asset not found" }, { status: 404 });
   }
 
@@ -54,6 +76,19 @@ export async function POST(request: Request) {
   });
 
   const savedRuns = await saveGeoRuns(runs, parsed.data.contentAssetId);
+  await recordAuditEvent({
+    request,
+    action: "geo.audit",
+    entityType: parsed.data.contentAssetId ? "ContentAsset" : "GeoRun",
+    entityId: parsed.data.contentAssetId ?? savedRuns[0]?.id,
+    outcome: "success",
+    metadata: {
+      projectId: project.id,
+      runCount: savedRuns.length,
+      provider: parsed.data.provider ?? "All",
+      mode: savedRuns.every((run) => run.mode === "simulated") ? "simulated" : "provider",
+    },
+  });
 
   return NextResponse.json({
     mode: savedRuns.every((run) => run.mode === "simulated") ? "simulated" : "provider",

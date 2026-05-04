@@ -931,7 +931,7 @@ h2 {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 12px;
   padding: 16px;
 }
@@ -972,6 +972,44 @@ h2 {
   color: var(--muted-2);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.audit-list {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+
+.audit-item {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) auto minmax(120px, 1fr) 128px;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 18px;
+}
+
+.audit-item:last-child {
+  border-bottom: 0;
+}
+
+.audit-item div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.audit-item strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.audit-item span,
+.audit-item small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .toast {
@@ -1060,8 +1098,12 @@ h2 {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .settings-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .audit-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .audit-item small {
+    grid-column: 1 / -1;
   }
 }
 

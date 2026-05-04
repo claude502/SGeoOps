@@ -16,6 +16,7 @@ interface StoreState {
   runs: GEORun[];
   providerHealth: ProviderHealth[];
   geoFlowLinks: GeoFlowTaskLinkView[];
+  auditEvents: DashboardSnapshot["auditEvents"];
 }
 
 const globalForStore = globalThis as typeof globalThis & {

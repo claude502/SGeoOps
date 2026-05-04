@@ -138,6 +138,7 @@ curl https://geo.example.com/api/integrations/geoflow/status
 - `ChannelVariant`：官网/知识站和社媒渠道版本。
 - `GeoFlowTaskLink`：GEO Ops content asset 和 GEOFlow task/job/article 的映射。
 - `GeoFlowSyncRun`：每次同步的审计记录。
+- `AuditEvent`：关键写入动作的操作审计，便于排查和后续 RBAC/SSO 扩展。
 
 Bridge 状态：
 

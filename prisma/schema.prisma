@@ -123,3 +123,21 @@ model GeoFlowSyncRun {
 
   @@index([startedAt])
 }
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  actor      String
+  action     String
+  entityType String
+  entityId   String?
+  outcome    String
+  requestId  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([outcome])
+  @@index([requestId])
+}

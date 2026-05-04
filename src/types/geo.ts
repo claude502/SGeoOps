@@ -122,6 +122,18 @@ export interface GeoFlowTaskLinkView {
   idempotencyKey: string;
 }
 
+export interface AuditEventView {
+  id: string;
+  actor: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  outcome: "success" | "failure";
+  requestId: string | null;
+  metadata: unknown;
+  createdAt: string;
+}
+
 export interface DashboardSnapshot {
   project: GeoProject;
   assets: ContentAsset[];
@@ -129,4 +141,5 @@ export interface DashboardSnapshot {
   runs: GEORun[];
   providerHealth: ProviderHealth[];
   geoFlowLinks: GeoFlowTaskLinkView[];
+  auditEvents: AuditEventView[];
 }

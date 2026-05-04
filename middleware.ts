@@ -18,11 +18,29 @@ const securityHeaders = {
   "X-Frame-Options": "DENY",
 };
 
-function withSecurityHeaders(response: NextResponse) {
+function requestId(request: NextRequest) {
+  return (
+    request.headers.get("x-request-id") ||
+    request.headers.get("cf-ray") ||
+    globalThis.crypto?.randomUUID?.() ||
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+}
+
+function withSecurityHeaders(response: NextResponse, id?: string) {
   for (const [key, value] of Object.entries(securityHeaders)) {
     response.headers.set(key, value);
   }
+  if (id) {
+    response.headers.set("X-Request-ID", id);
+  }
   return response;
+}
+
+function nextResponse(request: NextRequest, id: string) {
+  const headers = new Headers(request.headers);
+  headers.set("x-request-id", id);
+  return withSecurityHeaders(NextResponse.next({ request: { headers } }), id);
 }
 
 function clientKey(request: NextRequest) {
@@ -63,19 +81,21 @@ function clearFailedAttempts(key: string) {
   failedAttempts.delete(key);
 }
 
-function jsonResponse(body: unknown, status: number, headers?: HeadersInit) {
-  return withSecurityHeaders(NextResponse.json(body, { status, headers }));
+function jsonResponse(body: unknown, status: number, requestId: string, headers?: HeadersInit) {
+  return withSecurityHeaders(NextResponse.json(body, { status, headers }), requestId);
 }
 
 export function middleware(request: NextRequest) {
+  const id = requestId(request);
+
   if (shouldBypassAuthPath(request.nextUrl.pathname)) {
-    return withSecurityHeaders(NextResponse.next());
+    return nextResponse(request, id);
   }
 
   const authConfig = getBasicAuthConfig();
   const key = clientKey(request);
   if (!authConfig.enabled) {
-    return withSecurityHeaders(NextResponse.next());
+    return nextResponse(request, id);
   }
 
   if (!isBasicAuthConfigured(authConfig)) {
@@ -84,7 +104,7 @@ export function middleware(request: NextRequest) {
       headers: {
         "Cache-Control": "no-store",
       },
-    }));
+    }), id);
   }
 
   const blocked = isBlocked(key, authConfig.maxAttempts, authConfig.windowSeconds);
@@ -93,6 +113,7 @@ export function middleware(request: NextRequest) {
     return jsonResponse(
       { error: "Too many failed login attempts. Try again later." },
       429,
+      id,
       {
         "Cache-Control": "no-store",
         "Retry-After": String(retryAfter),
@@ -111,11 +132,12 @@ export function middleware(request: NextRequest) {
       return jsonResponse(
         { error: "Missing x-geo-ops-action header for write request." },
         403,
+        id,
         { "Cache-Control": "no-store" },
       );
     }
 
-    return withSecurityHeaders(NextResponse.next());
+    return nextResponse(request, id);
   }
 
   registerFailedAttempt(key, authConfig.windowSeconds);
@@ -125,7 +147,7 @@ export function middleware(request: NextRequest) {
       "Cache-Control": "no-store",
       "WWW-Authenticate": basicAuthChallenge(authConfig.realm),
     },
-  }));
+  }), id);
 }
 
 export const config = {

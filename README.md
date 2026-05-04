@@ -176,6 +176,7 @@ GEOFlow token 最小权限：
 - `ChannelVariant`
 - `GeoFlowTaskLink`
 - `GeoFlowSyncRun`
+- `AuditEvent`
 
 ## Postiz Integration
 

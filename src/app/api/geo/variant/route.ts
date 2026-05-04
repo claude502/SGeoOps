@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordAuditEvent } from "@/lib/audit-log";
 import { generateChannelVariants } from "@/lib/geo-engine";
 import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
 import { saveChannelVariants } from "@/lib/geo-persistence";
@@ -28,6 +29,13 @@ export async function POST(request: Request) {
   const parsed = variantSchema.safeParse(body);
 
   if (!parsed.success) {
+    await recordAuditEvent({
+      request,
+      action: "geo.variant",
+      entityType: "ChannelVariant",
+      outcome: "failure",
+      metadata: { reason: "invalid_payload" },
+    });
     return NextResponse.json(
       { error: "Invalid variant payload", issues: parsed.error.flatten() },
       { status: 400 },
@@ -43,6 +51,13 @@ export async function POST(request: Request) {
       : null;
 
   if (!asset) {
+    await recordAuditEvent({
+      request,
+      action: "geo.variant",
+      entityType: "ChannelVariant",
+      outcome: "failure",
+      metadata: { reason: "missing_content", contentAssetId: parsed.data.contentAssetId ?? null },
+    });
     return NextResponse.json(
       { error: "Provide contentAssetId for an existing asset or an inline content object." },
       { status: 400 },
@@ -67,6 +82,19 @@ export async function POST(request: Request) {
         message: "Variants were saved locally and are ready for review.",
         variants: savedVariants,
       };
+
+  await recordAuditEvent({
+    request,
+    action: "geo.variant",
+    entityType: parsed.data.contentAssetId ? "ContentAsset" : "ChannelVariant",
+    entityId: parsed.data.contentAssetId ?? savedVariants[0]?.id,
+    outcome: "success",
+    metadata: {
+      variantCount: savedVariants.length,
+      platforms: savedVariants.map((variant) => variant.platform),
+      handoffStatus: handoff.status,
+    },
+  });
 
   return NextResponse.json({ variants: savedVariants, handoff });
 }

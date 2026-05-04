@@ -34,6 +34,7 @@ import type {
   ContentAsset,
   DashboardSnapshot,
   GEORun,
+  AuditEventView,
   GeoFlowTaskLinkView,
   GeoBrief,
   Provider,
@@ -778,10 +779,12 @@ function AssetFormModal({
 
 function SettingsPanel({
   action,
+  auditEvents,
   onRefresh,
   status,
 }: {
   action: ActionState;
+  auditEvents: AuditEventView[];
   onRefresh: () => void;
   status: IntegrationStatus | null;
 }) {
@@ -790,6 +793,7 @@ function SettingsPanel({
   const actionHeaderRequired = status?.auth?.actionHeaderRequired ?? false;
   const databaseHealthy = Boolean(status?.databaseConfigured && status?.databaseReachable);
   const geoFlowHealthy = Boolean(status?.geoFlowConfigured && status?.catalogReachable);
+  const latestAudit = auditEvents[0];
 
   return (
     <section className="panel settings-panel workspace-section" id="section-settings">
@@ -876,7 +880,40 @@ function SettingsPanel({
             {status?.checkedAt ? formatDate(status.checkedAt) : "loading"}
           </small>
         </article>
+
+        <article className="settings-card">
+          <div>
+            <strong>Audit</strong>
+            <Chip tone={auditEvents.length ? "success" : "warning"}>
+              {auditEvents.length ? `${auditEvents.length} events` : "No events"}
+            </Chip>
+          </div>
+          <p>关键写入动作会记录 actor、request ID、对象和结果。 / Critical write actions record actor, request ID, entity, and outcome.</p>
+          <small>
+            {latestAudit
+              ? `${latestAudit.action} · ${latestAudit.outcome} · ${formatDate(latestAudit.createdAt)}`
+              : "Waiting for the first write action."}
+          </small>
+        </article>
       </div>
+
+      {auditEvents.length ? (
+        <div className="audit-list" aria-label="Recent audit events">
+          {auditEvents.slice(0, 6).map((event) => (
+            <article className="audit-item" key={event.id}>
+              <div>
+                <strong>{event.action}</strong>
+                <span>{event.actor}</span>
+              </div>
+              <Chip tone={event.outcome === "success" ? "success" : "danger"}>
+                {event.outcome}
+              </Chip>
+              <small>{event.entityId ?? event.entityType}</small>
+              <small>{formatDate(event.createdAt)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -998,6 +1035,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       runs: next.runs,
       providerHealth: next.providerHealth,
       geoFlowLinks: next.geoFlowLinks ?? [],
+      auditEvents: next.auditEvents ?? [],
     });
     if (!nextAssets.some((asset) => asset.id === selectedAssetId)) {
       setSelectedAssetId(nextAssets[0]?.id ?? "");
@@ -1255,6 +1293,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
         <SettingsPanel
           action={action}
+          auditEvents={snapshot.auditEvents}
           onRefresh={handleRefresh}
           status={integrationStatus}
         />
