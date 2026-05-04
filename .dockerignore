@@ -5,6 +5,9 @@ coverage
 .git
 .env
 .env*.local
+.secrets
+.credentials
+docs/*.local.md
 dev-server.*.log
 qa-*.png
 .chrome-qa-profile

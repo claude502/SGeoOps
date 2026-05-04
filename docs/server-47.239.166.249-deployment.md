@@ -26,7 +26,7 @@
 | --- | --- | --- |
 | root 初始密码 | 用户密码管理器或云厂商控制台 | 不写入 Git，不写入本文档明文 |
 | SSH deploy key | 本机 `~/.ssh/geo_ops_deploy_ed25519` | 只把 public key 写入服务器 |
-| GEO Ops 管理员登录 | 服务器 `/opt/geo-content-ops/.env` | 只保存用户名和密码环境变量，不写入 Git |
+| GEO Ops 管理员登录 | 本地 `.secrets/wingheng-geo-ops-credentials.md`；服务器 `/opt/geo-content-ops/.credentials/geo-ops-admin.md`；服务器 `/opt/geo-content-ops/.env` | 私有凭证文档已被 Git 忽略，不提交 Git |
 | 生产 `.env` | 服务器 `/opt/geo-content-ops/.env` | 权限 `600`，不提交 Git |
 | GEOFlow/Postiz/API keys | 生产 `.env` 或 secrets manager | 不提交 Git |
 
@@ -35,7 +35,7 @@
 - root 初始密码已由用户在会话中提供，不写入仓库、不写入部署文档、不写入脚本。
 - 完成 SSH key 登录后，必须更换 root 密码或禁用 root 密码登录。
 - 生产 `.env` 只保存在服务器 `/opt/geo-content-ops/.env`，权限建议 `600`。
-- GEO Ops 登录账号密码通过 `GEO_OPS_ADMIN_USERNAME`、`GEO_OPS_ADMIN_PASSWORD` 配置，密码不写入本文档明文。
+- GEO Ops 登录账号密码通过 `GEO_OPS_ADMIN_USERNAME`、`GEO_OPS_ADMIN_PASSWORD` 配置；明文仅写入私有凭证文档和服务器 `.env`，不提交 Git。
 - 所有 API key、数据库密码、GEOFlow token、Postiz token 都不能提交到 Git。
 
 ## 域名规划

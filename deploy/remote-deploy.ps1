@@ -29,6 +29,9 @@ try {
     --exclude=".next" `
     --exclude=".env" `
     --exclude=".env.local" `
+    --exclude=".secrets" `
+    --exclude=".credentials" `
+    --exclude="docs/*.local.md" `
     --exclude="*.tsbuildinfo" `
     --exclude="dev-server.*.log" `
     --exclude="qa-*.png" `

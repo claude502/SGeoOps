@@ -5,6 +5,8 @@ coverage/
 *.tsbuildinfo
 .env
 .env*.local
+.secrets/
+docs/*.local.md
 dev-server.*.log
 qa-*.png
 .chrome-qa-profile/
