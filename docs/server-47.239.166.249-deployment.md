@@ -20,6 +20,15 @@
 | `geoops` | 应用部署/运行用户 | bootstrap 脚本会创建，加入 `docker` 组 |
 | `geo_ops` | PostgreSQL 应用用户 | Docker Compose MVP 数据库用户，不是 Linux 用户 |
 
+凭证登记：
+
+| 凭证 | 保存位置 | 记录策略 |
+| --- | --- | --- |
+| root 初始密码 | 用户密码管理器或云厂商控制台 | 不写入 Git，不写入本文档明文 |
+| SSH deploy key | 本机 `~/.ssh/geo_ops_deploy_ed25519` | 只把 public key 写入服务器 |
+| 生产 `.env` | 服务器 `/opt/geo-content-ops/.env` | 权限 `600`，不提交 Git |
+| GEOFlow/Postiz/API keys | 生产 `.env` 或 secrets manager | 不提交 Git |
+
 安全说明：
 
 - root 初始密码已由用户在会话中提供，不写入仓库、不写入部署文档、不写入脚本。

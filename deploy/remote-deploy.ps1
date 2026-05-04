@@ -3,6 +3,7 @@ param(
   [string]$User = "root",
   [string]$KeyPath = "$env:USERPROFILE\.ssh\geo_ops_deploy_ed25519",
   [string]$RemoteDir = "/opt/geo-content-ops",
+  [switch]$UseIpCaddy,
   [switch]$RunMigrations
 )
 
@@ -41,6 +42,7 @@ try {
   $remoteCommands = @(
     "cd $RemoteDir",
     "test -f .env || (echo 'Missing $RemoteDir/.env. Create it from .env.example before starting services.' && exit 20)",
+    $(if ($UseIpCaddy) { "cp deploy/Caddyfile.ip.example deploy/Caddyfile.example" } else { "true" }),
     "docker compose -f deploy/docker-compose.prod.example.yml build",
     "docker compose -f deploy/docker-compose.prod.example.yml up -d postgres"
   )
