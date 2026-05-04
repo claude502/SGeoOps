@@ -145,6 +145,9 @@ GEO_OPS_AUTH_ENABLED="true"
 GEO_OPS_ADMIN_USERNAME="<admin username>"
 GEO_OPS_ADMIN_PASSWORD="<strong password>"
 GEO_OPS_AUTH_REALM="Wingheng GEO Ops"
+GEO_OPS_AUTH_MAX_ATTEMPTS="8"
+GEO_OPS_AUTH_WINDOW_SECONDS="300"
+GEO_OPS_REQUIRE_ACTION_HEADER="true"
 GEOFLOW_BASE_URL="https://geoflow.yourdomain.com"
 GEOFLOW_API_TOKEN="<GEOFlow API token>"
 GEOFLOW_TITLE_LIBRARY_ID="<catalog id>"
@@ -220,6 +223,22 @@ curl -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
   http://47.239.166.249/api/integrations/geoflow/status
 ```
 
+健康检查无需登录，应该返回 `200`：
+
+```bash
+curl -fsS http://47.239.166.249/api/healthz
+docker compose -f deploy/docker-compose.prod.example.yml ps
+```
+
+写入接口必须带动作头，缺少 `x-geo-ops-action` 应返回 `403`：
+
+```bash
+curl -i -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
+  -X POST http://47.239.166.249/api/geo/brief \
+  -H "content-type: application/json" \
+  --data '{"projectId":"proj_real_workspace","keywords":["GEO"]}'
+```
+
 有域名后：
 
 ```bash
@@ -273,13 +292,30 @@ docker compose -f deploy/docker-compose.prod.example.yml restart geo-ops
 
 ## 备份
 
-MVP 本机 PostgreSQL 备份：
+MVP 本机 PostgreSQL 备份脚本：
 
 ```bash
 cd /opt/geo-content-ops
-mkdir -p backups
-docker compose -f deploy/docker-compose.prod.example.yml exec -T postgres \
-  pg_dump -U geo_ops -d geo_content_ops -Fc > backups/geo_content_ops_$(date +%F_%H%M).dump
+APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh
+ls -lh /opt/geo-content-ops/backups
+```
+
+每日自动备份示例：
+
+```bash
+crontab -e
+```
+
+```cron
+15 2 * * * cd /opt/geo-content-ops && APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh >> /opt/geo-content-ops/logs/backup.log 2>&1
+```
+
+恢复示例：
+
+```bash
+cd /opt/geo-content-ops
+gzip -dc /opt/geo-content-ops/backups/geo_content_ops-YYYYMMDD-HHMMSS.sql.gz | \
+  docker compose -f deploy/docker-compose.prod.example.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
 生产建议把备份同步到 S3/R2，并保留 14-30 天。

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { generateChannelVariants } from "@/lib/geo-engine";
 import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import { saveChannelVariants } from "@/lib/geo-persistence";
 import { addVariants, getAsset } from "@/lib/geo-store";
 import { handoffVariantsToPostiz } from "@/lib/postiz-handoff";
 import { isDatabaseConfigured } from "@/lib/prisma";
@@ -54,15 +55,18 @@ export async function POST(request: Request) {
     accountPrefix: parsed.data.accountPrefix,
   });
 
-  addVariants(variants);
+  const savedVariants =
+    isDatabaseConfigured() && parsed.data.contentAssetId
+      ? await saveChannelVariants(variants)
+      : (addVariants(variants), variants);
 
   const handoff = parsed.data.handoffToPostiz
-    ? await handoffVariantsToPostiz(variants)
+    ? await handoffVariantsToPostiz(savedVariants)
     : {
         status: "not-configured" as const,
         message: "Variants were saved locally and are ready for review.",
-        variants,
+        variants: savedVariants,
       };
 
-  return NextResponse.json({ variants, handoff });
+  return NextResponse.json({ variants: savedVariants, handoff });
 }

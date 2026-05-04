@@ -2,11 +2,15 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getRuntimeProject } from "@/lib/dashboard-snapshot";
 import { runGeoAudit } from "@/lib/geo-engine";
-import { addRuns } from "@/lib/geo-store";
+import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import { saveGeoRuns } from "@/lib/geo-persistence";
+import { getAsset } from "@/lib/geo-store";
+import { isDatabaseConfigured } from "@/lib/prisma";
 import { providers } from "@/types/geo";
 
 const auditSchema = z.object({
   projectId: z.string().optional(),
+  contentAssetId: z.string().optional(),
   url: z.string().url().optional(),
   content: z.string().min(1).optional(),
   prompts: z.array(z.string().min(6)).max(20).optional(),
@@ -30,23 +34,33 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
+  const asset = parsed.data.contentAssetId
+    ? isDatabaseConfigured()
+      ? await new PrismaGeoFlowBridgeRepository().findContentAsset(parsed.data.contentAssetId)
+      : getAsset(parsed.data.contentAssetId)
+    : null;
+
+  if (parsed.data.contentAssetId && !asset) {
+    return NextResponse.json({ error: "Content asset not found" }, { status: 404 });
+  }
+
   const runs = runGeoAudit({
     project,
-    content: parsed.data.content,
+    content: parsed.data.content ?? asset?.body,
     url: parsed.data.url,
     prompts: parsed.data.prompts,
     provider: parsed.data.provider,
     locale: parsed.data.locale,
   });
 
-  addRuns(runs);
+  const savedRuns = await saveGeoRuns(runs, parsed.data.contentAssetId);
 
   return NextResponse.json({
-    mode: runs.every((run) => run.mode === "simulated") ? "simulated" : "provider",
+    mode: savedRuns.every((run) => run.mode === "simulated") ? "simulated" : "provider",
     warning:
-      runs.every((run) => run.mode === "simulated")
+      savedRuns.every((run) => run.mode === "simulated")
         ? "Provider API keys are not configured, so deterministic simulated runs were used."
         : null,
-    runs,
+    runs: savedRuns,
   });
 }

@@ -12,7 +12,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y ca-certificates curl gnupg git rsync ufw
+apt-get install -y ca-certificates curl gnupg git gzip cron rsync ufw
 
 if ! command -v docker >/dev/null 2>&1; then
   install -m 0755 -d /etc/apt/keyrings
@@ -34,6 +34,7 @@ usermod -aG docker "${APP_USER}"
 mkdir -p "${APP_DIR}" "${APP_DIR}/backups" "${APP_DIR}/logs"
 chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
 chmod 750 "${APP_DIR}"
+chmod 700 "${APP_DIR}/backups"
 
 ufw allow OpenSSH
 ufw allow 80/tcp

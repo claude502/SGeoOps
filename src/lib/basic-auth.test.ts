@@ -26,6 +26,9 @@ describe("basic auth", () => {
       username: "admin",
       password: "secret",
       realm: "Wingheng GEO Ops",
+      maxAttempts: 8,
+      windowSeconds: 300,
+      requireActionHeader: true,
     });
     expect(isBasicAuthConfigured(config)).toBe(true);
   });
@@ -65,6 +68,7 @@ describe("basic auth", () => {
   it("keeps framework assets outside the auth challenge", () => {
     expect(shouldBypassAuthPath("/_next/static/chunk.js")).toBe(true);
     expect(shouldBypassAuthPath("/_next/image/logo.png")).toBe(true);
+    expect(shouldBypassAuthPath("/api/healthz")).toBe(true);
     expect(shouldBypassAuthPath("/favicon.ico")).toBe(true);
     expect(shouldBypassAuthPath("/api/geo/runs")).toBe(false);
     expect(shouldBypassAuthPath("/")).toBe(false);

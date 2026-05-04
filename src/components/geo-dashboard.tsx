@@ -26,7 +26,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type {
   ChannelPlatform,
@@ -40,14 +40,22 @@ import type {
 } from "@/types/geo";
 
 type ActionState = "idle" | "audit" | "brief" | "variant" | "refresh" | "geoflow" | "sync";
+type NavSection = "overview" | "assets" | "runs" | "channels" | "settings";
+type ToastTone = "info" | "success" | "danger";
+type ToastMessage = { text: string; tone: ToastTone } | null;
+
+const actionHeaders = {
+  "content-type": "application/json",
+  "x-geo-ops-action": "true",
+};
 
 const navItems = [
-  { label: "总览 / Overview", icon: BarChart3 },
-  { label: "资产 / Assets", icon: FileText },
-  { label: "监测 / GEO Runs", icon: Bot },
-  { label: "渠道 / Channels", icon: Megaphone },
-  { label: "设置 / Settings", icon: Settings },
-];
+  { id: "overview", label: "总览 / Overview", icon: BarChart3 },
+  { id: "assets", label: "资产 / Assets", icon: FileText },
+  { id: "runs", label: "监测 / GEO Runs", icon: Bot },
+  { id: "channels", label: "渠道 / Channels", icon: Megaphone },
+  { id: "settings", label: "设置 / Settings", icon: Settings },
+] satisfies Array<{ id: NavSection; label: string; icon: typeof BarChart3 }>;
 
 const emptyAssetDraft = {
   title: "",
@@ -58,6 +66,24 @@ const emptyAssetDraft = {
   summary: "",
   body: "",
   owner: "",
+};
+
+type AssetDraft = typeof emptyAssetDraft;
+type AssetDraftErrors = Partial<Record<keyof AssetDraft, string>>;
+type IntegrationStatus = {
+  databaseConfigured: boolean;
+  geoFlowConfigured: boolean;
+  missing: string[];
+  catalogReachable: boolean;
+  catalogError: string | null;
+  links: GeoFlowTaskLinkView[];
+  auth?: {
+    enabled: boolean;
+    actionHeaderRequired: boolean;
+    maxAttempts: number;
+    windowSeconds: number;
+  };
+  postizConfigured?: boolean;
 };
 
 const providerPalette: Record<Provider, string> = {
@@ -167,7 +193,13 @@ function MetricTile({
   );
 }
 
-function Sidebar() {
+function Sidebar({
+  activeSection,
+  onSelect,
+}: {
+  activeSection: NavSection;
+  onSelect: (section: NavSection) => void;
+}) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -178,12 +210,14 @@ function Sidebar() {
       </div>
 
       <nav aria-label="Primary navigation" className="nav-list">
-        {navItems.map((item, index) => {
+        {navItems.map((item) => {
           const Icon = item.icon;
           return (
             <button
-              className={clsx("nav-item", index === 0 && "nav-item-active")}
+              aria-current={activeSection === item.id ? "page" : undefined}
+              className={clsx("nav-item", activeSection === item.id && "nav-item-active")}
               key={item.label}
+              onClick={() => onSelect(item.id)}
               type="button"
             >
               <Icon size={18} />
@@ -472,7 +506,7 @@ function RightRail({
   selectedAsset: ContentAsset;
   latestRun: GEORun | undefined;
   brief: GeoBrief | null;
-  message: string;
+  message: ToastMessage;
   geoFlowLink: GeoFlowTaskLinkView | undefined;
   action: ActionState;
   onSendToGeoFlow: () => void;
@@ -592,28 +626,37 @@ function RightRail({
       </section>
 
       {message ? (
-        <div className="toast" role="status">
-          {message}
+        <div className={clsx("toast", `toast-${message.tone}`)} role="status">
+          {message.text}
         </div>
       ) : null}
     </aside>
   );
 }
 
+function FieldError({ error }: { error?: string }) {
+  return error ? <small className="field-error">{error}</small> : null;
+}
+
 function AssetFormModal({
   draft,
+  errors,
   onChange,
+  onClearError,
   onClose,
   onSubmit,
   submitting,
 }: {
-  draft: typeof emptyAssetDraft;
-  onChange: (draft: typeof emptyAssetDraft) => void;
+  draft: AssetDraft;
+  errors: AssetDraftErrors;
+  onChange: (draft: AssetDraft) => void;
+  onClearError: (field: keyof AssetDraft) => void;
   onClose: () => void;
   onSubmit: () => void;
   submitting: boolean;
 }) {
-  function update(field: keyof typeof emptyAssetDraft, value: string) {
+  function update(field: keyof AssetDraft, value: string) {
+    onClearError(field);
     onChange({ ...draft, [field]: value });
   }
 
@@ -633,67 +676,83 @@ function AssetFormModal({
           <label>
             <span>标题 / Title</span>
             <input
+              aria-invalid={Boolean(errors.title)}
               onChange={(event) => update("title", event.target.value)}
               placeholder="例如：品牌 GEO 内容策略 / Brand GEO content strategy"
               value={draft.title}
             />
+            <FieldError error={errors.title} />
           </label>
           <label>
             <span>品牌实体 / Brand entity</span>
             <input
+              aria-invalid={Boolean(errors.brandEntity)}
               onChange={(event) => update("brandEntity", event.target.value)}
               placeholder="你的真实品牌名 / Your real brand"
               value={draft.brandEntity}
             />
+            <FieldError error={errors.brandEntity} />
           </label>
           <label>
             <span>Canonical URL</span>
             <input
+              aria-invalid={Boolean(errors.canonicalUrl)}
               onChange={(event) => update("canonicalUrl", event.target.value)}
               placeholder="https://www.example.com/article"
               value={draft.canonicalUrl}
             />
+            <FieldError error={errors.canonicalUrl} />
           </label>
           <label>
             <span>来源 URL / Source URL</span>
             <input
+              aria-invalid={Boolean(errors.sourceUrl)}
               onChange={(event) => update("sourceUrl", event.target.value)}
               placeholder="https://www.example.com/source"
               value={draft.sourceUrl}
             />
+            <FieldError error={errors.sourceUrl} />
           </label>
           <label>
             <span>目标关键词 / Target keywords</span>
             <input
+              aria-invalid={Boolean(errors.targetKeywords)}
               onChange={(event) => update("targetKeywords", event.target.value)}
               placeholder="GEO, AI 搜索优化, 品牌监测"
               value={draft.targetKeywords}
             />
+            <FieldError error={errors.targetKeywords} />
           </label>
           <label>
             <span>负责人 / Owner</span>
             <input
+              aria-invalid={Boolean(errors.owner)}
               onChange={(event) => update("owner", event.target.value)}
               placeholder="团队成员 / Team member"
               value={draft.owner}
             />
+            <FieldError error={errors.owner} />
           </label>
           <label className="wide">
             <span>摘要 / Summary</span>
             <textarea
+              aria-invalid={Boolean(errors.summary)}
               onChange={(event) => update("summary", event.target.value)}
               placeholder="一句话说明这条内容资产的真实用途。 / One sentence about this asset."
               value={draft.summary}
             />
+            <FieldError error={errors.summary} />
           </label>
           <label className="wide">
             <span>正文 / Body</span>
             <textarea
+              aria-invalid={Boolean(errors.body)}
               onChange={(event) => update("body", event.target.value)}
               placeholder="粘贴真实文章、官网页面、知识库内容或 brief。 / Paste real article, page copy, knowledge base content, or brief."
               rows={7}
               value={draft.body}
             />
+            <FieldError error={errors.body} />
           </label>
         </div>
         <div className="modal-actions">
@@ -713,21 +772,122 @@ function AssetFormModal({
   );
 }
 
+function SettingsPanel({
+  action,
+  onRefresh,
+  status,
+}: {
+  action: ActionState;
+  onRefresh: () => void;
+  status: IntegrationStatus | null;
+}) {
+  const missing = status?.missing ?? [];
+  const authEnabled = status?.auth?.enabled ?? false;
+  const actionHeaderRequired = status?.auth?.actionHeaderRequired ?? false;
+
+  return (
+    <section className="panel settings-panel workspace-section" id="section-settings">
+      <div className="panel-heading">
+        <div>
+          <p>系统设置 / Settings</p>
+          <h2>运行状态与集成配置 / Runtime and integration status</h2>
+        </div>
+        <Button
+          disabled={action !== "idle"}
+          icon={action === "refresh" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+          onClick={onRefresh}
+          variant="ghost"
+        >
+          刷新状态 / Refresh status
+        </Button>
+      </div>
+
+      <div className="settings-grid">
+        <article className="settings-card">
+          <div>
+            <strong>Auth</strong>
+            <Chip tone={authEnabled ? "success" : "danger"}>
+              {authEnabled ? "已开启 / Enabled" : "未开启 / Disabled"}
+            </Chip>
+          </div>
+          <p>
+            Basic Auth、失败限流和写入动作头。 / Basic Auth, failed-login throttling, and write action headers.
+          </p>
+          <small>
+            {actionHeaderRequired ? "x-geo-ops-action required" : "Action header disabled"} ·{" "}
+            {status?.auth ? `${status.auth.maxAttempts}/${status.auth.windowSeconds}s` : "loading"}
+          </small>
+        </article>
+
+        <article className="settings-card">
+          <div>
+            <strong>Database</strong>
+            <Chip tone={status?.databaseConfigured ? "success" : "danger"}>
+              {status?.databaseConfigured ? "PostgreSQL" : "缺失 / Missing"}
+            </Chip>
+          </div>
+          <p>内容资产、GEO runs、渠道版本和 GEOFlow 映射持久化。 / Persistent assets, runs, variants, and bridge links.</p>
+          <small>{status?.databaseConfigured ? "DATABASE_URL configured" : "DATABASE_URL not configured"}</small>
+        </article>
+
+        <article className="settings-card">
+          <div>
+            <strong>GEOFlow</strong>
+            <Chip tone={status?.geoFlowConfigured ? "success" : "warning"}>
+              {status?.geoFlowConfigured ? "可用 / Configured" : "待配置 / Pending"}
+            </Chip>
+          </div>
+          <p>通过 REST API 创建任务、入队生成，并由 GEO Ops 同步状态。 / Creates and syncs GEOFlow tasks through REST APIs.</p>
+          <small>
+            {status?.catalogReachable
+              ? "Catalog reachable"
+              : status?.catalogError || (missing.length ? `Missing: ${missing.join(", ")}` : "Not checked")}
+          </small>
+        </article>
+
+        <article className="settings-card">
+          <div>
+            <strong>Postiz</strong>
+            <Chip tone={status?.postizConfigured ? "success" : "warning"}>
+              {status?.postizConfigured ? "Webhook ready" : "Review queue"}
+            </Chip>
+          </div>
+          <p>社媒渠道版本可以继续交给 Postiz 排期发布。 / Social variants can be handed off to Postiz scheduling.</p>
+          <small>{status?.postizConfigured ? "POSTIZ_WEBHOOK_URL configured" : "POSTIZ_WEBHOOK_URL not configured"}</small>
+        </article>
+
+        <article className="settings-card">
+          <div>
+            <strong>Backup</strong>
+            <Chip tone="info">pg_dump</Chip>
+          </div>
+          <p>服务器备份目录：/opt/geo-content-ops/backups。 / Server backup directory: /opt/geo-content-ops/backups.</p>
+          <small>建议每日运行 deploy/backup-postgres.sh，保留 14 天。 / Run daily and retain 14 days.</small>
+        </article>
+      </div>
+    </section>
+  );
+}
+
 export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSnapshot }) {
   const [snapshot, setSnapshot] = useState({
     ...initialSnapshot,
     geoFlowLinks: initialSnapshot.geoFlowLinks ?? [],
   });
+  const [activeSection, setActiveSection] = useState<NavSection>("overview");
   const [selectedAssetId, setSelectedAssetId] = useState(initialSnapshot.assets[0]?.id ?? "");
   const [assetDraft, setAssetDraft] = useState(emptyAssetDraft);
+  const [assetErrors, setAssetErrors] = useState<AssetDraftErrors>({});
   const [isAssetFormOpen, setIsAssetFormOpen] = useState(false);
   const [brief, setBrief] = useState<GeoBrief | null>(null);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState<ToastMessage>(null);
+  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
   const [action, setAction] = useState<ActionState>("idle");
 
   const selectedAsset =
     snapshot.assets.find((asset) => asset.id === selectedAssetId) ?? snapshot.assets[0];
-  const latestRun = snapshot.runs[0];
+  const latestRun =
+    snapshot.runs.find((run) => run.contentAssetId === selectedAssetId) ?? snapshot.runs[0];
   const topScore = averageScore(snapshot.runs);
   const readyAssets = snapshot.assets.filter((asset) =>
     ["Ready", "Scheduled"].includes(asset.status),
@@ -738,6 +898,79 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
   const selectedAssetLink = snapshot.geoFlowLinks.find(
     (link) => link.contentAssetId === selectedAssetId,
   );
+
+  useEffect(() => {
+    void refreshIntegrationStatus().catch(() => {
+      setIntegrationStatus(null);
+    });
+  }, []);
+
+  function jumpToSection(section: NavSection) {
+    setActiveSection(section);
+    document.getElementById(`section-${section}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+
+  function clearAssetError(field: keyof AssetDraft) {
+    setAssetErrors((current) => {
+      if (!current[field]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }
+
+  function isHttpUrl(value: string) {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+
+  function validateAssetDraft(draft: AssetDraft) {
+    const errors: AssetDraftErrors = {};
+    const keywords = draft.targetKeywords
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (!draft.title.trim()) {
+      errors.title = "请输入标题 / Title is required.";
+    }
+    if (!draft.brandEntity.trim()) {
+      errors.brandEntity = "请输入品牌实体 / Brand entity is required.";
+    }
+    if (!draft.canonicalUrl.trim()) {
+      errors.canonicalUrl = "请输入 canonical URL / Canonical URL is required.";
+    } else if (!isHttpUrl(draft.canonicalUrl.trim())) {
+      errors.canonicalUrl = "请输入有效的 http(s) URL / Use a valid http(s) URL.";
+    }
+    if (draft.sourceUrl.trim() && !isHttpUrl(draft.sourceUrl.trim())) {
+      errors.sourceUrl = "请输入有效的 http(s) URL / Use a valid http(s) URL.";
+    }
+    if (!keywords.length) {
+      errors.targetKeywords = "至少输入一个关键词 / Add at least one keyword.";
+    }
+    if (!draft.body.trim()) {
+      errors.body = "请输入真实正文或 brief / Body or brief is required.";
+    }
+
+    return errors;
+  }
+
+  async function refreshIntegrationStatus() {
+    const response = await fetch("/api/integrations/geoflow/status");
+    if (!response.ok) {
+      throw new Error("Integration status refresh failed.");
+    }
+    setIntegrationStatus((await response.json()) as IntegrationStatus);
+  }
 
   async function refreshSnapshot() {
     const response = await fetch("/api/geo/runs");
@@ -769,13 +1002,16 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
   function runAction(nextAction: ActionState, callback: () => Promise<string>) {
     setAction(nextAction);
-    setMessage("");
+    setMessage(null);
     void callback()
       .then((nextMessage) => {
-        setMessage(nextMessage);
+        setMessage({ text: nextMessage, tone: "success" });
       })
       .catch((error: unknown) => {
-        setMessage(error instanceof Error ? error.message : "Action failed.");
+        setMessage({
+          text: error instanceof Error ? error.message : "Action failed.",
+          tone: "danger",
+        });
       })
       .finally(() => {
         setAction("idle");
@@ -791,7 +1027,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
   function handleRefresh() {
     runAction("refresh", async () => {
-      await refreshSnapshot();
+      await Promise.all([refreshSnapshot(), refreshIntegrationStatus()]);
       return "数据已刷新 / Snapshot refreshed.";
     });
   }
@@ -801,9 +1037,10 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       const asset = requireSelectedAsset();
       const response = await fetch("/api/geo/audit", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: actionHeaders,
         body: JSON.stringify({
           projectId: snapshot.project.id,
+          contentAssetId: asset.id,
           content: asset.body,
           provider: "All",
         }),
@@ -824,7 +1061,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       const asset = requireSelectedAsset();
       const response = await fetch("/api/geo/brief", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: actionHeaders,
         body: JSON.stringify({
           projectId: snapshot.project.id,
           keywords: asset.targetKeywords,
@@ -847,7 +1084,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       const asset = requireSelectedAsset();
       const response = await fetch("/api/geo/variant", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: actionHeaders,
         body: JSON.stringify({
           contentAssetId: asset.id,
           platforms: ["Knowledge Site", "LinkedIn", "X", "WeChat"] satisfies ChannelPlatform[],
@@ -870,7 +1107,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       const asset = requireSelectedAsset();
       const response = await fetch("/api/integrations/geoflow/tasks", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: actionHeaders,
         body: JSON.stringify({
           contentAssetId: asset.id,
           brief,
@@ -882,7 +1119,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       }
 
       const payload = await response.json();
-      await refreshSnapshot();
+      await Promise.all([refreshSnapshot(), refreshIntegrationStatus()]);
       return payload.reused
         ? "已复用 GEOFlow 任务 / Existing GEOFlow task link reused."
         : `GEOFlow 任务 ${payload.link.geoFlowTaskId} 已入队 / queued for generation.`;
@@ -893,6 +1130,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
     runAction("sync", async () => {
       const response = await fetch("/api/integrations/geoflow/sync", {
         method: "POST",
+        headers: actionHeaders,
       });
 
       if (!response.ok) {
@@ -900,16 +1138,27 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       }
 
       const payload = await response.json();
-      await refreshSnapshot();
+      await Promise.all([refreshSnapshot(), refreshIntegrationStatus()]);
       return `GEOFlow 同步完成 / sync complete: ${payload.successCount} updated, ${payload.failureCount} failed.`;
     });
   }
 
   function handleCreateAsset() {
+    const errors = validateAssetDraft(assetDraft);
+    setAssetErrors(errors);
+
+    if (Object.keys(errors).length) {
+      setMessage({
+        text: "请修正表单里的错误 / Please fix the highlighted fields.",
+        tone: "danger",
+      });
+      return;
+    }
+
     runAction("refresh", async () => {
       const response = await fetch("/api/content-assets", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: actionHeaders,
         body: JSON.stringify(assetDraft),
       });
 
@@ -920,8 +1169,9 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       const payload = await response.json();
       setSelectedAssetId(payload.asset.id);
       setAssetDraft(emptyAssetDraft);
+      setAssetErrors({});
       setIsAssetFormOpen(false);
-      await refreshSnapshot();
+      await Promise.all([refreshSnapshot(), refreshIntegrationStatus()]);
       return "真实内容资产已添加 / Real content asset added.";
     });
   }
@@ -931,7 +1181,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       <a className="skip-link" href="#main-workspace">
         跳到内容 / Skip to content
       </a>
-      <Sidebar />
+      <Sidebar activeSection={activeSection} onSelect={jumpToSection} />
       <div className="workspace" id="main-workspace">
         <Header
           action={action}
@@ -942,7 +1192,11 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
           snapshot={snapshot}
         />
 
-        <section className="metrics-grid" aria-label="GEO operating metrics">
+        <section
+          aria-label="GEO operating metrics"
+          className="metrics-grid workspace-section"
+          id="section-overview"
+        >
           <MetricTile
             icon={<Activity size={18} />}
             label="可见性 / Visibility"
@@ -970,16 +1224,28 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
         <div className="content-grid">
           <div className="content-stack">
-            <AssetTable
-              assets={snapshot.assets}
-              onAdd={() => setIsAssetFormOpen(true)}
-              onSelect={setSelectedAssetId}
-              selectedAssetId={selectedAssetId}
-            />
-            <VariantWorkflow selectedAssetId={selectedAssetId} variants={snapshot.variants} />
+            <div className="workspace-section" id="section-assets">
+              <AssetTable
+                assets={snapshot.assets}
+                onAdd={() => setIsAssetFormOpen(true)}
+                onSelect={setSelectedAssetId}
+                selectedAssetId={selectedAssetId}
+              />
+            </div>
+            <div className="workspace-section" id="section-channels">
+              <VariantWorkflow selectedAssetId={selectedAssetId} variants={snapshot.variants} />
+            </div>
           </div>
-          <RunTimeline onRefresh={handleRefresh} runs={snapshot.runs} />
+          <div className="workspace-section" id="section-runs">
+            <RunTimeline onRefresh={handleRefresh} runs={snapshot.runs} />
+          </div>
         </div>
+
+        <SettingsPanel
+          action={action}
+          onRefresh={handleRefresh}
+          status={integrationStatus}
+        />
       </div>
 
       {selectedAsset ? (
@@ -998,8 +1264,13 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       {isAssetFormOpen ? (
         <AssetFormModal
           draft={assetDraft}
+          errors={assetErrors}
+          onClearError={clearAssetError}
           onChange={setAssetDraft}
-          onClose={() => setIsAssetFormOpen(false)}
+          onClose={() => {
+            setAssetErrors({});
+            setIsAssetFormOpen(false);
+          }}
           onSubmit={handleCreateAsset}
           submitting={action !== "idle"}
         />

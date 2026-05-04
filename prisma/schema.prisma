@@ -40,10 +40,54 @@ model ContentAsset {
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
   geoFlowLinks   GeoFlowTaskLink[]
+  geoRuns        GeoRun[]
+  variants       ChannelVariant[]
 
   @@index([status])
   @@index([sourceSystem])
   @@index([publishedAt])
+}
+
+model GeoRun {
+  id              String        @id
+  projectId       String
+  contentAssetId  String?
+  contentAsset    ContentAsset? @relation(fields: [contentAssetId], references: [id], onDelete: SetNull)
+  prompt          String
+  provider        String
+  locale          String
+  competitors     String[]
+  modelAnswer     String
+  brandMentioned  Boolean
+  citedDomains    String[]
+  score           Int
+  recommendations Json
+  mode            String
+  createdAt       DateTime
+
+  @@index([projectId])
+  @@index([contentAssetId])
+  @@index([provider])
+  @@index([createdAt])
+}
+
+model ChannelVariant {
+  id             String       @id
+  contentAssetId String
+  contentAsset   ContentAsset @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
+  platform       String
+  accountId      String
+  copy           String
+  mediaAssets    String[]
+  scheduledAt    DateTime?
+  status         String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([contentAssetId])
+  @@index([platform])
+  @@index([status])
+  @@index([scheduledAt])
 }
 
 model GeoFlowTaskLink {

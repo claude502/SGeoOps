@@ -1,4 +1,5 @@
 import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import { listPersistentChannelVariants, listPersistentGeoRuns } from "@/lib/geo-persistence";
 import { getDashboardSnapshot } from "@/lib/geo-store";
 import { isDatabaseConfigured } from "@/lib/prisma";
 import type { ContentAsset, DashboardSnapshot, GeoProject, ProviderHealth } from "@/types/geo";
@@ -81,13 +82,17 @@ export async function getRuntimeDashboardSnapshot(): Promise<DashboardSnapshot> 
   ]);
   const project = getProjectFromEnvironment(assets);
   const assetIds = new Set(assets.map((asset) => asset.id));
+  const [runs, variants] = await Promise.all([
+    listPersistentGeoRuns(project.id).catch(() => []),
+    listPersistentChannelVariants([...assetIds]).catch(() => []),
+  ]);
 
   return {
     project,
     providerHealth: providerHealthFromEnv(),
-    runs: memorySnapshot.runs.filter((run) => run.projectId === project.id),
+    runs,
     assets,
-    variants: memorySnapshot.variants.filter((variant) => assetIds.has(variant.contentAssetId)),
+    variants,
     geoFlowLinks,
   };
 }

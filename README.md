@@ -56,6 +56,7 @@ npm run dev
 - PostgreSQL/Redis 不映射公网端口。
 - 所有公网入口必须 HTTPS。
 - GEO Ops 总控台和 API 必须启用登录保护；当前 MVP 使用 HTTP Basic Auth。
+- 写入 API 默认要求 `x-geo-ops-action: true`，并开启 Basic Auth 登录失败限流。
 - `.env`、API key、数据库密码不进 Git。
 - 生产数据库开启备份和恢复演练。
 
@@ -92,7 +93,10 @@ GET  /api/geo/runs
 POST /api/integrations/geoflow/tasks
 POST /api/integrations/geoflow/sync
 GET  /api/integrations/geoflow/status
+GET  /api/healthz
 ```
+
+除 `GET` 和 `HEAD` 外，写入接口默认需要请求头 `x-geo-ops-action: true`。
 
 ## 环境变量
 
@@ -117,6 +121,9 @@ GEO_OPS_AUTH_ENABLED=
 GEO_OPS_ADMIN_USERNAME=
 GEO_OPS_ADMIN_PASSWORD=
 GEO_OPS_AUTH_REALM=
+GEO_OPS_AUTH_MAX_ATTEMPTS=
+GEO_OPS_AUTH_WINDOW_SECONDS=
+GEO_OPS_REQUIRE_ACTION_HEADER=
 
 GEOFLOW_BASE_URL=
 GEOFLOW_API_TOKEN=
@@ -164,6 +171,8 @@ GEOFlow token 最小权限：
 桥接状态会写入 PostgreSQL：
 
 - `ContentAsset`
+- `GeoRun`
+- `ChannelVariant`
 - `GeoFlowTaskLink`
 - `GeoFlowSyncRun`
 

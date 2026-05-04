@@ -77,6 +77,7 @@ export interface GeoRecommendation {
 export interface GEORun {
   id: string;
   projectId: string;
+  contentAssetId?: string | null;
   prompt: string;
   provider: Provider;
   locale: string;

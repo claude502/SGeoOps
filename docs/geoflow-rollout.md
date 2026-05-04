@@ -51,6 +51,9 @@ GEO_OPS_AUTH_ENABLED=
 GEO_OPS_ADMIN_USERNAME=
 GEO_OPS_ADMIN_PASSWORD=
 GEO_OPS_AUTH_REALM=
+GEO_OPS_AUTH_MAX_ATTEMPTS=
+GEO_OPS_AUTH_WINDOW_SECONDS=
+GEO_OPS_REQUIRE_ACTION_HEADER=
 
 GEOFLOW_BASE_URL=
 GEOFLOW_API_TOKEN=
@@ -130,6 +133,8 @@ curl https://geo.example.com/api/integrations/geoflow/status
 ## 数据模型
 
 - `ContentAsset`：GEO Ops 追踪的主内容资产。
+- `GeoRun`：GEO 监测结果，关联内容资产并回写最近平均分。
+- `ChannelVariant`：官网/知识站和社媒渠道版本。
 - `GeoFlowTaskLink`：GEO Ops content asset 和 GEOFlow task/job/article 的映射。
 - `GeoFlowSyncRun`：每次同步的审计记录。
 
@@ -172,7 +177,7 @@ Bridge 状态：
 已完成：
 
 - Prisma schema 和 migration。
-- demo content assets seed。
+- 真实内容资产、GEO runs、channel variants 持久化。
 - GEOFlow REST client。
 - idempotent task creation。
 - PostgreSQL bridge repository。

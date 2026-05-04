@@ -3,21 +3,40 @@ export type BasicAuthConfig = {
   username: string | null;
   password: string | null;
   realm: string;
+  maxAttempts: number;
+  windowSeconds: number;
+  requireActionHeader: boolean;
 };
 
 type EnvMap = Record<string, string | undefined>;
 
 const DEFAULT_REALM = "GEO Ops";
 const DISABLED_VALUES = new Set(["0", "false", "off", "no"]);
+const DEFAULT_MAX_ATTEMPTS = 8;
+const DEFAULT_WINDOW_SECONDS = 300;
+
+function parsePositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseEnabled(value: string | undefined, defaultValue: boolean) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return defaultValue;
+  }
+  return !DISABLED_VALUES.has(normalized);
+}
 
 export function getBasicAuthConfig(env: EnvMap = process.env): BasicAuthConfig {
-  const enabledValue = env.GEO_OPS_AUTH_ENABLED?.trim().toLowerCase();
-
   return {
-    enabled: !enabledValue || !DISABLED_VALUES.has(enabledValue),
+    enabled: parseEnabled(env.GEO_OPS_AUTH_ENABLED, true),
     username: env.GEO_OPS_ADMIN_USERNAME?.trim() || null,
     password: env.GEO_OPS_ADMIN_PASSWORD || null,
     realm: env.GEO_OPS_AUTH_REALM?.trim() || DEFAULT_REALM,
+    maxAttempts: parsePositiveInt(env.GEO_OPS_AUTH_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS),
+    windowSeconds: parsePositiveInt(env.GEO_OPS_AUTH_WINDOW_SECONDS, DEFAULT_WINDOW_SECONDS),
+    requireActionHeader: parseEnabled(env.GEO_OPS_REQUIRE_ACTION_HEADER, true),
   };
 }
 
@@ -89,6 +108,7 @@ export function shouldBypassAuthPath(pathname: string) {
   return (
     pathname.startsWith("/_next/static/") ||
     pathname.startsWith("/_next/image/") ||
+    pathname === "/api/healthz" ||
     pathname === "/favicon.ico" ||
     pathname === "/robots.txt" ||
     pathname === "/sitemap.xml"

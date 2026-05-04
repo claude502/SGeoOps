@@ -9,10 +9,11 @@ Before running it:
 1. Copy `.env.example` to `.env` at the repository root.
 2. Replace all placeholder secrets and domains.
 3. Set `GEO_OPS_AUTH_ENABLED=true` and choose a strong `GEO_OPS_ADMIN_PASSWORD`.
-4. For this Compose file, set `DATABASE_URL` to use host `postgres`, not `localhost`.
-5. Edit `deploy/Caddyfile.example` for the real GEO Ops domain and SSL mode.
-6. Make sure DNS points that domain to the Linux server or to a Cloudflare proxied record.
-7. Open only ports `80` and `443` on the server firewall.
+4. Keep `GEO_OPS_REQUIRE_ACTION_HEADER=true` so write APIs require `x-geo-ops-action: true`.
+5. For this Compose file, set `DATABASE_URL` to use host `postgres`, not `localhost`.
+6. Edit `deploy/Caddyfile.example` for the real GEO Ops domain and SSL mode.
+7. Make sure DNS points that domain to the Linux server or to a Cloudflare proxied record.
+8. Open only ports `80` and `443` on the server firewall.
 
 The current `wingheng.technology` test deployment uses Cloudflare edge HTTPS with HTTP origin mode to avoid redirect loops under Cloudflare `Flexible`. For production, prefer Cloudflare `Full (strict)` plus an HTTPS Caddy site block.
 
@@ -23,6 +24,32 @@ docker compose -f deploy/docker-compose.prod.example.yml build
 docker compose -f deploy/docker-compose.prod.example.yml up -d postgres
 docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
 docker compose -f deploy/docker-compose.prod.example.yml up -d
+```
+
+Health check:
+
+```bash
+curl -fsS http://127.0.0.1/api/healthz
+docker compose -f deploy/docker-compose.prod.example.yml ps
+```
+
+Database backup:
+
+```bash
+APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh
+```
+
+Daily cron example:
+
+```cron
+15 2 * * * cd /opt/geo-content-ops && APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh >> /opt/geo-content-ops/logs/backup.log 2>&1
+```
+
+Restore example:
+
+```bash
+gzip -dc /opt/geo-content-ops/backups/geo_content_ops-YYYYMMDD-HHMMSS.sql.gz | \
+  docker compose -f deploy/docker-compose.prod.example.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
 Optional Redis service:
