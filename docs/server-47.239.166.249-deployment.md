@@ -26,6 +26,7 @@
 | --- | --- | --- |
 | root 初始密码 | 用户密码管理器或云厂商控制台 | 不写入 Git，不写入本文档明文 |
 | SSH deploy key | 本机 `~/.ssh/geo_ops_deploy_ed25519` | 只把 public key 写入服务器 |
+| GEO Ops 管理员登录 | 服务器 `/opt/geo-content-ops/.env` | 只保存用户名和密码环境变量，不写入 Git |
 | 生产 `.env` | 服务器 `/opt/geo-content-ops/.env` | 权限 `600`，不提交 Git |
 | GEOFlow/Postiz/API keys | 生产 `.env` 或 secrets manager | 不提交 Git |
 
@@ -34,6 +35,7 @@
 - root 初始密码已由用户在会话中提供，不写入仓库、不写入部署文档、不写入脚本。
 - 完成 SSH key 登录后，必须更换 root 密码或禁用 root 密码登录。
 - 生产 `.env` 只保存在服务器 `/opt/geo-content-ops/.env`，权限建议 `600`。
+- GEO Ops 登录账号密码通过 `GEO_OPS_ADMIN_USERNAME`、`GEO_OPS_ADMIN_PASSWORD` 配置，密码不写入本文档明文。
 - 所有 API key、数据库密码、GEOFlow token、Postiz token 都不能提交到 Git。
 
 ## 域名规划
@@ -139,6 +141,10 @@ POSTGRES_PASSWORD="<强密码>"
 ```bash
 NEXT_PUBLIC_APP_URL="https://geo.yourdomain.com"
 PUBLIC_CONTENT_BASE_URL="https://content.yourdomain.com"
+GEO_OPS_AUTH_ENABLED="true"
+GEO_OPS_ADMIN_USERNAME="<admin username>"
+GEO_OPS_ADMIN_PASSWORD="<strong password>"
+GEO_OPS_AUTH_REALM="Wingheng GEO Ops"
 GEOFLOW_BASE_URL="https://geoflow.yourdomain.com"
 GEOFLOW_API_TOKEN="<GEOFlow API token>"
 GEOFLOW_TITLE_LIBRARY_ID="<catalog id>"
@@ -200,20 +206,32 @@ docker compose -f deploy/docker-compose.prod.example.yml up -d
 
 ### 7. 验证
 
+未登录访问应该返回 `401`：
+
 ```bash
-curl http://47.239.166.249/api/integrations/geoflow/status
+curl -i http://47.239.166.249/api/integrations/geoflow/status
+```
+
+带登录账号密码访问应该返回业务 JSON：
+
+```bash
+source /opt/geo-content-ops/.env
+curl -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
+  http://47.239.166.249/api/integrations/geoflow/status
 ```
 
 有域名后：
 
 ```bash
-curl https://geo.yourdomain.com/api/integrations/geoflow/status
+curl -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
+  https://geo.yourdomain.com/api/integrations/geoflow/status
 ```
 
 当前域名：
 
 ```bash
-curl https://wingheng.technology/api/integrations/geoflow/status
+curl -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
+  https://wingheng.technology/api/integrations/geoflow/status
 ```
 
 预期：

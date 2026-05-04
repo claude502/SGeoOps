@@ -8,10 +8,11 @@ Before running it:
 
 1. Copy `.env.example` to `.env` at the repository root.
 2. Replace all placeholder secrets and domains.
-3. For this Compose file, set `DATABASE_URL` to use host `postgres`, not `localhost`.
-4. Edit `deploy/Caddyfile.example` for the real GEO Ops domain and SSL mode.
-5. Make sure DNS points that domain to the Linux server or to a Cloudflare proxied record.
-6. Open only ports `80` and `443` on the server firewall.
+3. Set `GEO_OPS_AUTH_ENABLED=true` and choose a strong `GEO_OPS_ADMIN_PASSWORD`.
+4. For this Compose file, set `DATABASE_URL` to use host `postgres`, not `localhost`.
+5. Edit `deploy/Caddyfile.example` for the real GEO Ops domain and SSL mode.
+6. Make sure DNS points that domain to the Linux server or to a Cloudflare proxied record.
+7. Open only ports `80` and `443` on the server firewall.
 
 The current `wingheng.technology` test deployment uses Cloudflare edge HTTPS with HTTP origin mode to avoid redirect loops under Cloudflare `Flexible`. For production, prefer Cloudflare `Full (strict)` plus an HTTPS Caddy site block.
 

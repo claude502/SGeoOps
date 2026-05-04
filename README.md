@@ -55,6 +55,7 @@ npm run dev
 - 只暴露 80/443。
 - PostgreSQL/Redis 不映射公网端口。
 - 所有公网入口必须 HTTPS。
+- GEO Ops 总控台和 API 必须启用登录保护；当前 MVP 使用 HTTP Basic Auth。
 - `.env`、API key、数据库密码不进 Git。
 - 生产数据库开启备份和恢复演练。
 
@@ -111,6 +112,11 @@ GEO_COMPETITORS=
 GEO_TARGET_KEYWORDS=
 GEO_CANONICAL_DOMAIN=
 SEED_DEMO_DATA=
+
+GEO_OPS_AUTH_ENABLED=
+GEO_OPS_ADMIN_USERNAME=
+GEO_OPS_ADMIN_PASSWORD=
+GEO_OPS_AUTH_REALM=
 
 GEOFLOW_BASE_URL=
 GEOFLOW_API_TOKEN=
