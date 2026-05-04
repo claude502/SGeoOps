@@ -23,5 +23,6 @@ export async function GET() {
     assets: snapshot.assets,
     variants: snapshot.variants,
     geoFlowLinks: snapshot.geoFlowLinks,
+    auditEvents: snapshot.auditEvents,
   });
 }
