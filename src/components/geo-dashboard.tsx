@@ -71,11 +71,15 @@ const emptyAssetDraft = {
 type AssetDraft = typeof emptyAssetDraft;
 type AssetDraftErrors = Partial<Record<keyof AssetDraft, string>>;
 type IntegrationStatus = {
+  checkedAt?: string;
   databaseConfigured: boolean;
+  databaseReachable?: boolean;
+  databaseError?: string | null;
   geoFlowConfigured: boolean;
   missing: string[];
   catalogReachable: boolean;
   catalogError: string | null;
+  geoFlowStatusTimeoutMs?: number;
   links: GeoFlowTaskLinkView[];
   auth?: {
     enabled: boolean;
@@ -784,6 +788,8 @@ function SettingsPanel({
   const missing = status?.missing ?? [];
   const authEnabled = status?.auth?.enabled ?? false;
   const actionHeaderRequired = status?.auth?.actionHeaderRequired ?? false;
+  const databaseHealthy = Boolean(status?.databaseConfigured && status?.databaseReachable);
+  const geoFlowHealthy = Boolean(status?.geoFlowConfigured && status?.catalogReachable);
 
   return (
     <section className="panel settings-panel workspace-section" id="section-settings">
@@ -822,25 +828,28 @@ function SettingsPanel({
         <article className="settings-card">
           <div>
             <strong>Database</strong>
-            <Chip tone={status?.databaseConfigured ? "success" : "danger"}>
-              {status?.databaseConfigured ? "PostgreSQL" : "缺失 / Missing"}
+            <Chip tone={databaseHealthy ? "success" : "danger"}>
+              {databaseHealthy ? "Reachable" : status?.databaseConfigured ? "Error" : "缺失 / Missing"}
             </Chip>
           </div>
           <p>内容资产、GEO runs、渠道版本和 GEOFlow 映射持久化。 / Persistent assets, runs, variants, and bridge links.</p>
-          <small>{status?.databaseConfigured ? "DATABASE_URL configured" : "DATABASE_URL not configured"}</small>
+          <small>
+            {status?.databaseError ||
+              (databaseHealthy ? "DATABASE_URL configured and reachable" : "DATABASE_URL not configured")}
+          </small>
         </article>
 
         <article className="settings-card">
           <div>
             <strong>GEOFlow</strong>
-            <Chip tone={status?.geoFlowConfigured ? "success" : "warning"}>
-              {status?.geoFlowConfigured ? "可用 / Configured" : "待配置 / Pending"}
+            <Chip tone={geoFlowHealthy ? "success" : "warning"}>
+              {geoFlowHealthy ? "Catalog ready" : status?.geoFlowConfigured ? "Configured" : "待配置 / Pending"}
             </Chip>
           </div>
           <p>通过 REST API 创建任务、入队生成，并由 GEO Ops 同步状态。 / Creates and syncs GEOFlow tasks through REST APIs.</p>
           <small>
             {status?.catalogReachable
-              ? "Catalog reachable"
+              ? `Catalog reachable within ${status.geoFlowStatusTimeoutMs ?? 2500}ms timeout`
               : status?.catalogError || (missing.length ? `Missing: ${missing.join(", ")}` : "Not checked")}
           </small>
         </article>
@@ -862,7 +871,10 @@ function SettingsPanel({
             <Chip tone="info">pg_dump</Chip>
           </div>
           <p>服务器备份目录：/opt/geo-content-ops/backups。 / Server backup directory: /opt/geo-content-ops/backups.</p>
-          <small>建议每日运行 deploy/backup-postgres.sh，保留 14 天。 / Run daily and retain 14 days.</small>
+          <small>
+            建议每日运行 deploy/backup-postgres.sh，保留 14 天。 / Last checked:{" "}
+            {status?.checkedAt ? formatDate(status.checkedAt) : "loading"}
+          </small>
         </article>
       </div>
     </section>

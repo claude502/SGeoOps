@@ -181,7 +181,10 @@ HTTPS：
 
 最低要求：
 
-- 应用健康检查：公开轻量 `/api/healthz` 用于容器/反向代理探测，`/api/integrations/geoflow/status` 用于登录后的配置诊断。
+- 应用健康检查分层：
+  - `/api/healthz` 是公开 liveness，只证明 Next 应用进程可响应，不访问数据库或外部服务。
+  - `/api/integrations/geoflow/status` 是登录后的 readiness/dependency 诊断，并行检查 PostgreSQL 和 GEOFlow catalog。
+  - 外部依赖检查必须有短超时，GEOFlow catalog 默认 `GEOFLOW_STATUS_TIMEOUT_MS=2500`，不能让慢外部系统拖住总控台。
 - 结构化日志：请求 ID、用户 ID、asset ID、GeoFlow task ID、sync run ID。
 - 错误告警：GEOFlow 401/422/500、sync 连续失败、队列积压、发布失败。
 - 指标：任务成功率、平均生成耗时、published URL 回填率、社媒 handoff 成功率。

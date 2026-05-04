@@ -1,6 +1,11 @@
 import type { GeoFlowConfig } from "@/lib/geoflow/config";
 
 type FetchLike = typeof fetch;
+const DEFAULT_TIMEOUT_MS = 15000;
+
+export interface GeoFlowClientOptions {
+  timeoutMs?: number;
+}
 
 export interface GeoFlowEnvelope<T> {
   success: boolean;
@@ -88,6 +93,7 @@ export class GeoFlowClient {
   constructor(
     private readonly config: Pick<GeoFlowConfig, "baseUrl" | "apiToken">,
     private readonly fetchFn: FetchLike = fetch,
+    private readonly options: GeoFlowClientOptions = {},
   ) {}
 
   getCatalog() {
@@ -124,15 +130,39 @@ export class GeoFlowClient {
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
-    const response = await this.fetchFn(`${this.config.baseUrl}${withLeadingSlash(path)}`, {
-      ...init,
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        authorization: `Bearer ${this.config.apiToken}`,
-        ...(init.headers || {}),
-      },
-    });
+    const timeoutMs = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+
+    try {
+      response = await this.fetchFn(`${this.config.baseUrl}${withLeadingSlash(path)}`, {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: `Bearer ${this.config.apiToken}`,
+          ...(init.headers || {}),
+        },
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new GeoFlowHttpError(
+          `GEOFlow request timed out after ${timeoutMs}ms.`,
+          504,
+          "geoflow_timeout",
+        );
+      }
+
+      throw new GeoFlowHttpError(
+        error instanceof Error ? error.message : "GEOFlow network request failed.",
+        502,
+        "geoflow_network_error",
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const text = await response.text();
     const parsed = parseJsonResponse(text);

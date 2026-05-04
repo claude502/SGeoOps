@@ -76,6 +76,39 @@ describe("GeoFlowClient", () => {
       code: "geoflow_http_error",
     } satisfies Partial<GeoFlowHttpError>);
   });
+
+  it("turns slow upstream calls into timeout errors", async () => {
+    const fetchFn = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
+        }),
+    );
+    const client = new GeoFlowClient(config, fetchFn, { timeoutMs: 1 });
+
+    await expect(client.getCatalog()).rejects.toMatchObject({
+      name: "GeoFlowHttpError",
+      status: 504,
+      code: "geoflow_timeout",
+    } satisfies Partial<GeoFlowHttpError>);
+  });
+
+  it("wraps network failures in stable client errors", async () => {
+    const client = new GeoFlowClient(
+      config,
+      vi.fn(async () => {
+        throw new Error("connection reset");
+      }),
+    );
+
+    await expect(client.getCatalog()).rejects.toMatchObject({
+      name: "GeoFlowHttpError",
+      status: 502,
+      code: "geoflow_network_error",
+    } satisfies Partial<GeoFlowHttpError>);
+  });
 });
 
 describe("readGeoFlowConfig", () => {
