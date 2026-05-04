@@ -6,9 +6,22 @@ const optionalTrimmedText = z.preprocess(
   z.string().trim().optional(),
 );
 
+const httpUrl = z
+  .string()
+  .trim()
+  .url()
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }, "URL must use http or https.");
+
 const optionalTrimmedUrl = z.preprocess(
   (value) => (typeof value === "string" && !value.trim() ? undefined : value),
-  z.string().trim().url().optional(),
+  httpUrl.optional(),
 );
 
 const keywordInput = z
@@ -26,7 +39,7 @@ export const contentAssetInputSchema = z.object({
   brandEntity: z.string().trim().min(1),
   sourceUrl: optionalTrimmedUrl,
   targetKeywords: keywordInput,
-  canonicalUrl: z.string().trim().url(),
+  canonicalUrl: httpUrl,
   owner: optionalTrimmedText,
 });
 

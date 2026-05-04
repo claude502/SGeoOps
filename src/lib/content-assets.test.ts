@@ -40,4 +40,25 @@ describe("content asset input", () => {
       );
     }
   });
+
+  it("rejects non-http canonical and source URLs", () => {
+    const canonical = contentAssetInputSchema.safeParse({
+      title: "Wingheng GEO page",
+      body: "Real article body.",
+      brandEntity: "Wingheng",
+      canonicalUrl: "ftp://wingheng.technology/geo",
+      targetKeywords: "GEO",
+    });
+    const source = contentAssetInputSchema.safeParse({
+      title: "Wingheng GEO page",
+      body: "Real article body.",
+      brandEntity: "Wingheng",
+      canonicalUrl: "https://wingheng.technology/geo",
+      sourceUrl: "mailto:ops@wingheng.technology",
+      targetKeywords: "GEO",
+    });
+
+    expect(canonical.success).toBe(false);
+    expect(source.success).toBe(false);
+  });
 });
