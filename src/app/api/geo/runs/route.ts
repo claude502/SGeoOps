@@ -1,18 +1,8 @@
 import { NextResponse } from "next/server";
-import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
-import { getDashboardSnapshot } from "@/lib/geo-store";
-import { isDatabaseConfigured } from "@/lib/prisma";
+import { getRuntimeDashboardSnapshot } from "@/lib/dashboard-snapshot";
 
 export async function GET() {
-  const snapshot = getDashboardSnapshot();
-  const repository = isDatabaseConfigured() ? new PrismaGeoFlowBridgeRepository() : null;
-  const [geoFlowLinks, persistentAssets] = repository
-    ? await Promise.all([
-        repository.listLinks().catch(() => []),
-        repository.listContentAssets().catch(() => []),
-      ])
-    : [[], []];
-  const assets = persistentAssets.length > 0 ? persistentAssets : snapshot.assets;
+  const snapshot = await getRuntimeDashboardSnapshot();
   const scoresByProvider = snapshot.runs.reduce<Record<string, number[]>>((acc, run) => {
     acc[run.provider] = [...(acc[run.provider] || []), run.score];
     return acc;
@@ -30,8 +20,8 @@ export async function GET() {
     providerHealth: snapshot.providerHealth,
     providerAverages,
     runs: snapshot.runs,
-    assets,
+    assets: snapshot.assets,
     variants: snapshot.variants,
-    geoFlowLinks,
+    geoFlowLinks: snapshot.geoFlowLinks,
   });
 }

@@ -75,3 +75,14 @@ export function addVariants(variants: ChannelVariant[]) {
   const current = state();
   current.variants = [...variants, ...current.variants].slice(0, 100);
 }
+
+export function upsertAsset(asset: ContentAsset) {
+  const current = state();
+  const existingIndex = current.assets.findIndex((item) => item.id === asset.id);
+  if (existingIndex >= 0) {
+    current.assets[existingIndex] = asset;
+    return;
+  }
+
+  current.assets = [asset, ...current.assets].slice(0, 100);
+}

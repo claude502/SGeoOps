@@ -15,6 +15,9 @@ GEO Content Ops 是一个 TypeScript/Next.js MVP，用来承载 GEO 内容账号
 - GEOFlow：知识库、AI 内容生成、文章审核、前台信源站发布。
 - Postiz：社媒账号连接、预览、排期和发布。
 
+生产/测试环境默认不写入 demo 内容。配置 `DATABASE_URL` 后，dashboard 只展示数据库中的真实内容资产；如果没有资产，会显示空状态并允许从界面添加真实资产。
+本地需要演示数据时，可以临时设置 `SEED_DEMO_DATA=true` 后运行 `npm run prisma:seed`。
+
 生产架构说明见 [docs/architecture.md](./docs/architecture.md)。
 GEOFlow 桥接落地说明见 [docs/geoflow-rollout.md](./docs/geoflow-rollout.md)。
 当前目标服务器部署记录见 [docs/server-47.239.166.249-deployment.md](./docs/server-47.239.166.249-deployment.md)。
@@ -99,6 +102,15 @@ DATABASE_URL=
 
 NEXT_PUBLIC_APP_URL=
 PUBLIC_CONTENT_BASE_URL=
+GEO_PROJECT_ID=
+GEO_PROJECT_NAME=
+GEO_BRAND=
+GEO_PRODUCT=
+GEO_LOCALE=
+GEO_COMPETITORS=
+GEO_TARGET_KEYWORDS=
+GEO_CANONICAL_DOMAIN=
+SEED_DEMO_DATA=
 
 GEOFLOW_BASE_URL=
 GEOFLOW_API_TOKEN=

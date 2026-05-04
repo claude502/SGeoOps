@@ -184,6 +184,7 @@ curl https://geo.yourdomain.com/api/integrations/geoflow/status
 - `databaseConfigured: true`
 - GEOFlow 配置完整后 `geoFlowConfigured: true`
 - Dashboard 可以打开
+- 默认不展示 demo 数据；需要从界面添加真实内容资产，或通过 API 写入真实资产
 - `Send to GEOFlow` 能创建 task
 - `Sync GEOFlow` 能同步 published article URL
 

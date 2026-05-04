@@ -1,6 +1,11 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
+if (process.env.SEED_DEMO_DATA !== "true") {
+  console.log("SEED_DEMO_DATA is not true; no demo content assets were seeded.");
+  process.exit(0);
+}
+
 const prisma = new PrismaClient({
   adapter: new PrismaPg({
     connectionString: process.env.DATABASE_URL,

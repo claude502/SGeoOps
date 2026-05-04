@@ -1,8 +1,8 @@
 import { GeoDashboard } from "@/components/geo-dashboard";
-import { getDashboardSnapshot } from "@/lib/geo-store";
+import { getRuntimeDashboardSnapshot } from "@/lib/dashboard-snapshot";
 
 export const dynamic = "force-dynamic";
 
-export default function Home() {
-  return <GeoDashboard initialSnapshot={getDashboardSnapshot()} />;
+export default async function Home() {
+  return <GeoDashboard initialSnapshot={await getRuntimeDashboardSnapshot()} />;
 }

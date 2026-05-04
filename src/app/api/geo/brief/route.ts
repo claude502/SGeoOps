@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { getRuntimeProject } from "@/lib/dashboard-snapshot";
 import { createGeoBrief } from "@/lib/geo-engine";
-import { getProject } from "@/lib/geo-store";
 
 const briefSchema = z.object({
   projectId: z.string().optional(),
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const project = getProject(parsed.data.projectId);
+  const project = await getRuntimeProject(parsed.data.projectId);
   if (!project) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }

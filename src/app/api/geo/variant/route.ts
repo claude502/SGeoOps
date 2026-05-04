@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { generateChannelVariants } from "@/lib/geo-engine";
+import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
 import { addVariants, getAsset } from "@/lib/geo-store";
 import { handoffVariantsToPostiz } from "@/lib/postiz-handoff";
+import { isDatabaseConfigured } from "@/lib/prisma";
 import { channelPlatforms } from "@/types/geo";
 
 const variantSchema = z.object({
@@ -32,7 +34,9 @@ export async function POST(request: Request) {
   }
 
   const asset = parsed.data.contentAssetId
-    ? getAsset(parsed.data.contentAssetId)
+    ? isDatabaseConfigured()
+      ? await new PrismaGeoFlowBridgeRepository().findContentAsset(parsed.data.contentAssetId)
+      : getAsset(parsed.data.contentAssetId)
     : parsed.data.content
       ? { id: "ad_hoc_asset", ...parsed.data.content }
       : null;

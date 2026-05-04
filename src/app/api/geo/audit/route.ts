@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { getRuntimeProject } from "@/lib/dashboard-snapshot";
 import { runGeoAudit } from "@/lib/geo-engine";
-import { addRuns, getProject } from "@/lib/geo-store";
+import { addRuns } from "@/lib/geo-store";
 import { providers } from "@/types/geo";
 
 const auditSchema = z.object({
@@ -24,7 +25,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const project = getProject(parsed.data.projectId);
+  const project = await getRuntimeProject(parsed.data.projectId);
   if (!project) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }

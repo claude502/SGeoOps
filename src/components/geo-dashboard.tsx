@@ -42,12 +42,23 @@ import type {
 type ActionState = "idle" | "audit" | "brief" | "variant" | "refresh" | "geoflow" | "sync";
 
 const navItems = [
-  { label: "Overview", icon: BarChart3 },
-  { label: "Assets", icon: FileText },
-  { label: "GEO Runs", icon: Bot },
-  { label: "Channels", icon: Megaphone },
-  { label: "Settings", icon: Settings },
+  { label: "总览 / Overview", icon: BarChart3 },
+  { label: "资产 / Assets", icon: FileText },
+  { label: "监测 / GEO Runs", icon: Bot },
+  { label: "渠道 / Channels", icon: Megaphone },
+  { label: "设置 / Settings", icon: Settings },
 ];
+
+const emptyAssetDraft = {
+  title: "",
+  brandEntity: "",
+  canonicalUrl: "",
+  sourceUrl: "",
+  targetKeywords: "",
+  summary: "",
+  body: "",
+  owner: "",
+};
 
 const providerPalette: Record<Provider, string> = {
   ChatGPT: "teal",
@@ -66,7 +77,7 @@ function averageScore(runs: GEORun[]) {
 
 function formatDate(value: string | null) {
   if (!value) {
-    return "Unscheduled";
+    return "未排期 / Unscheduled";
   }
 
   return new Intl.DateTimeFormat("en", {
@@ -184,8 +195,8 @@ function Sidebar() {
 
       <div className="sidebar-callout">
         <ShieldCheck size={18} />
-        <strong>Postiz handoff</strong>
-        <p>Variants stay in review until a Postiz webhook is configured.</p>
+        <strong>Postiz 交接 / Postiz handoff</strong>
+        <p>配置 Postiz webhook 前，渠道版本会保留在审核队列。 / Variants stay in review until configured.</p>
       </div>
     </aside>
   );
@@ -194,12 +205,14 @@ function Sidebar() {
 function Header({
   snapshot,
   action,
+  hasAsset,
   onAudit,
   onBrief,
   onVariant,
 }: {
   snapshot: DashboardSnapshot;
   action: ActionState;
+  hasAsset: boolean;
   onAudit: () => void;
   onBrief: () => void;
   onVariant: () => void;
@@ -217,27 +230,27 @@ function Header({
       </div>
       <div className="top-actions">
         <Button
-          disabled={isBusy}
+          disabled={isBusy || !hasAsset}
           icon={action === "audit" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
           onClick={onAudit}
         >
-          Run GEO Audit
+          运行 GEO 审计 / Run GEO Audit
         </Button>
         <Button
-          disabled={isBusy}
+          disabled={isBusy || !hasAsset}
           icon={action === "brief" ? <Loader2 className="spin" size={16} /> : <BookOpenText size={16} />}
           onClick={onBrief}
           variant="secondary"
         >
-          Create Brief
+          创建 Brief / Create Brief
         </Button>
         <Button
-          disabled={isBusy}
+          disabled={isBusy || !hasAsset}
           icon={action === "variant" ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
           onClick={onVariant}
           variant="secondary"
         >
-          Generate Variants
+          生成渠道版本 / Generate Variants
         </Button>
       </div>
     </header>
@@ -260,10 +273,10 @@ function ProviderStrip({ runs, snapshot }: { runs: GEORun[]; snapshot: Dashboard
     <section className="panel provider-panel">
       <div className="panel-heading">
         <div>
-          <p>Provider coverage</p>
-          <h2>AI answer engine status</h2>
+          <p>Provider 覆盖 / Provider coverage</p>
+          <h2>AI 答案引擎状态 / AI answer engine status</h2>
         </div>
-        <Chip tone="info">{runs.length} stored runs</Chip>
+        <Chip tone="info">{runs.length} 次监测 / stored runs</Chip>
       </div>
       <div className="provider-grid">
         {providerScores.map((provider) => (
@@ -280,7 +293,7 @@ function ProviderStrip({ runs, snapshot }: { runs: GEORun[]; snapshot: Dashboard
               </div>
             </div>
             <p>
-              {provider.runs} runs - {provider.latencyMs}ms - {formatDate(provider.lastRunAt)}
+              {provider.runs} 次 / runs - {provider.latencyMs}ms - {formatDate(provider.lastRunAt)}
             </p>
           </div>
         ))}
@@ -292,32 +305,34 @@ function ProviderStrip({ runs, snapshot }: { runs: GEORun[]; snapshot: Dashboard
 function AssetTable({
   assets,
   selectedAssetId,
+  onAdd,
   onSelect,
 }: {
   assets: ContentAsset[];
   selectedAssetId: string;
+  onAdd: () => void;
   onSelect: (assetId: string) => void;
 }) {
   return (
     <section className="panel asset-panel">
       <div className="panel-heading">
         <div>
-          <p>Content assets</p>
-          <h2>Canonical source queue</h2>
+          <p>内容资产 / Content assets</p>
+          <h2>真实信源队列 / Real source queue</h2>
         </div>
-        <Button icon={<Plus size={16} />} variant="ghost">
-          Add Asset
+        <Button icon={<Plus size={16} />} onClick={onAdd} variant="ghost">
+          添加真实资产 / Add Asset
         </Button>
       </div>
 
       <div aria-label="Content assets" className="asset-table" role="listbox">
         <div className="table-row table-head">
-          <span>Title</span>
-          <span>Keywords</span>
-          <span>Status</span>
+          <span>标题 / Title</span>
+          <span>关键词 / Keywords</span>
+          <span>状态 / Status</span>
           <span>GEO</span>
         </div>
-        {assets.map((asset) => (
+        {assets.length ? assets.map((asset) => (
           <button
             className={clsx("table-row asset-row", selectedAssetId === asset.id && "row-active")}
             key={asset.id}
@@ -346,7 +361,16 @@ function AssetTable({
               <small>/100</small>
             </span>
           </button>
-        ))}
+        )) : (
+          <div className="empty-state">
+            <FileText size={28} />
+            <strong>还没有真实内容资产 / No real content assets yet</strong>
+            <p>添加你的品牌文章、官网页面或 GEO brief，系统将只展示真实录入的数据。 / Add your real brand content, source page, or brief.</p>
+            <Button icon={<Plus size={16} />} onClick={onAdd} variant="secondary">
+              添加第一条资产 / Add first asset
+            </Button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -366,10 +390,10 @@ function VariantWorkflow({
     <section className="panel variant-panel">
       <div className="panel-heading">
         <div>
-          <p>Channel variants</p>
-          <h2>Knowledge site to accounts</h2>
+          <p>渠道版本 / Channel variants</p>
+          <h2>知识站到账号 / Knowledge site to accounts</h2>
         </div>
-        <Chip tone="info">{visible.length} variants</Chip>
+        <Chip tone="info">{visible.length} 个版本 / variants</Chip>
       </div>
       <div className="variant-flow">
         {visible.map((variant) => (
@@ -398,15 +422,15 @@ function RunTimeline({ onRefresh, runs }: { onRefresh: () => void; runs: GEORun[
     <section className="panel run-panel">
       <div className="panel-heading">
         <div>
-          <p>Recent GEO runs</p>
-          <h2>Visibility evidence</h2>
+          <p>近期 GEO 监测 / Recent GEO runs</p>
+          <h2>可见性证据 / Visibility evidence</h2>
         </div>
         <Button icon={<RefreshCw size={16} />} onClick={onRefresh} variant="ghost">
-          Refresh
+          刷新 / Refresh
         </Button>
       </div>
       <div className="run-list">
-        {runs.slice(0, 5).map((run) => (
+        {runs.length ? runs.slice(0, 5).map((run) => (
           <article className="run-item" key={run.id}>
             <div className={clsx("run-icon", providerPalette[run.provider])}>
               <Bot size={16} />
@@ -415,15 +439,21 @@ function RunTimeline({ onRefresh, runs }: { onRefresh: () => void; runs: GEORun[
               <div className="run-line">
                 <strong>{run.provider}</strong>
                 <Chip tone={run.brandMentioned ? "success" : "warning"}>
-                  {run.brandMentioned ? "Brand found" : "Brand missing"}
+                  {run.brandMentioned ? "品牌出现 / Brand found" : "品牌缺失 / Brand missing"}
                 </Chip>
                 <span>{run.score}/100</span>
               </div>
               <p>{run.prompt}</p>
-              <small>{run.citedDomains.length ? run.citedDomains.join(", ") : "No citations"}</small>
+              <small>{run.citedDomains.length ? run.citedDomains.join(", ") : "无引用 / No citations"}</small>
             </div>
           </article>
-        ))}
+        )) : (
+          <div className="empty-state compact">
+            <Bot size={24} />
+            <strong>暂无真实 GEO 监测 / No real GEO runs yet</strong>
+            <p>添加真实资产后运行 GEO 审计。 / Add a real asset, then run an audit.</p>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -457,7 +487,7 @@ function RightRail({
       <section className="panel action-panel">
         <div className="panel-heading">
           <div>
-            <p>Selected asset</p>
+            <p>当前资产 / Selected asset</p>
             <h2>{selectedAsset.title}</h2>
           </div>
           <Chip tone={statusTone(selectedAsset.status)}>{selectedAsset.status}</Chip>
@@ -465,7 +495,7 @@ function RightRail({
         <p className="asset-summary">{selectedAsset.summary}</p>
         <div className="asset-score-box">
           <Gauge size={18} />
-          <span>GEO score</span>
+          <span>GEO 分数 / GEO score</span>
           <strong>{selectedAsset.geoScore}</strong>
         </div>
       </section>
@@ -473,23 +503,23 @@ function RightRail({
       <section className="panel geoflow-panel">
         <div className="panel-heading">
           <div>
-            <p>GEOFlow bridge</p>
-            <h2>Content factory handoff</h2>
+            <p>GEOFlow 桥接 / GEOFlow bridge</p>
+            <h2>内容工厂交接 / Content factory handoff</h2>
           </div>
           <Chip tone={statusTone(geoFlowStatus)}>{geoFlowStatusLabel(geoFlowStatus)}</Chip>
         </div>
         <div className="geoflow-body">
           <div className="geoflow-state">
-            <span>Task</span>
-            <strong>{geoFlowLink?.geoFlowTaskId ?? "Not sent"}</strong>
+            <span>任务 / Task</span>
+            <strong>{geoFlowLink?.geoFlowTaskId ?? "未发送 / Not sent"}</strong>
           </div>
           <div className="geoflow-state">
-            <span>Job</span>
-            <strong>{geoFlowLink?.geoFlowJobId ?? "No job"}</strong>
+            <span>作业 / Job</span>
+            <strong>{geoFlowLink?.geoFlowJobId ?? "无作业 / No job"}</strong>
           </div>
           {geoFlowLink?.geoFlowArticleUrl ? (
             <a className="external-link" href={geoFlowLink.geoFlowArticleUrl} rel="noreferrer" target="_blank">
-              Open published article
+              打开已发布文章 / Open published article
               <ExternalLink size={14} />
             </a>
           ) : null}
@@ -501,7 +531,7 @@ function RightRail({
               onClick={onSendToGeoFlow}
               variant="secondary"
             >
-              Send to GEOFlow
+              发送到 GEOFlow / Send to GEOFlow
             </Button>
             <Button
               disabled={isBusy}
@@ -509,7 +539,7 @@ function RightRail({
               onClick={onSyncGeoFlow}
               variant="ghost"
             >
-              Sync GEOFlow
+              同步 GEOFlow / Sync GEOFlow
             </Button>
           </div>
         </div>
@@ -518,8 +548,8 @@ function RightRail({
       <section className="panel recommendations">
         <div className="panel-heading">
           <div>
-            <p>Recommendations</p>
-            <h2>Next fixes</h2>
+            <p>建议 / Recommendations</p>
+            <h2>下一步修复 / Next fixes</h2>
           </div>
           <Lightbulb size={18} />
         </div>
@@ -539,8 +569,8 @@ function RightRail({
       <section className="panel brief-panel">
         <div className="panel-heading">
           <div>
-            <p>Content brief</p>
-            <h2>{brief?.title ?? "Ready to generate"}</h2>
+            <p>内容 Brief / Content brief</p>
+            <h2>{brief?.title ?? "可生成 / Ready to generate"}</h2>
           </div>
           <ClipboardList size={18} />
         </div>
@@ -557,7 +587,7 @@ function RightRail({
             </div>
           </div>
         ) : (
-          <p className="muted">Create Brief will generate entity coverage, outline, FAQ, comparison angles, and schema suggestions.</p>
+          <p className="muted">创建 Brief 会生成实体覆盖、提纲、FAQ、对比角度和 schema 建议。 / Create Brief will generate entity coverage, outline, FAQ, comparison angles, and schema suggestions.</p>
         )}
       </section>
 
@@ -570,12 +600,127 @@ function RightRail({
   );
 }
 
+function AssetFormModal({
+  draft,
+  onChange,
+  onClose,
+  onSubmit,
+  submitting,
+}: {
+  draft: typeof emptyAssetDraft;
+  onChange: (draft: typeof emptyAssetDraft) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+  submitting: boolean;
+}) {
+  function update(field: keyof typeof emptyAssetDraft, value: string) {
+    onChange({ ...draft, [field]: value });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-modal="true" className="modal-panel" role="dialog">
+        <div className="panel-heading">
+          <div>
+            <p>真实内容资产 / Real content asset</p>
+            <h2>添加品牌信源 / Add brand source</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} type="button">
+            ×
+          </button>
+        </div>
+        <div className="asset-form">
+          <label>
+            <span>标题 / Title</span>
+            <input
+              onChange={(event) => update("title", event.target.value)}
+              placeholder="例如：品牌 GEO 内容策略 / Brand GEO content strategy"
+              value={draft.title}
+            />
+          </label>
+          <label>
+            <span>品牌实体 / Brand entity</span>
+            <input
+              onChange={(event) => update("brandEntity", event.target.value)}
+              placeholder="你的真实品牌名 / Your real brand"
+              value={draft.brandEntity}
+            />
+          </label>
+          <label>
+            <span>Canonical URL</span>
+            <input
+              onChange={(event) => update("canonicalUrl", event.target.value)}
+              placeholder="https://www.example.com/article"
+              value={draft.canonicalUrl}
+            />
+          </label>
+          <label>
+            <span>来源 URL / Source URL</span>
+            <input
+              onChange={(event) => update("sourceUrl", event.target.value)}
+              placeholder="https://www.example.com/source"
+              value={draft.sourceUrl}
+            />
+          </label>
+          <label>
+            <span>目标关键词 / Target keywords</span>
+            <input
+              onChange={(event) => update("targetKeywords", event.target.value)}
+              placeholder="GEO, AI 搜索优化, 品牌监测"
+              value={draft.targetKeywords}
+            />
+          </label>
+          <label>
+            <span>负责人 / Owner</span>
+            <input
+              onChange={(event) => update("owner", event.target.value)}
+              placeholder="团队成员 / Team member"
+              value={draft.owner}
+            />
+          </label>
+          <label className="wide">
+            <span>摘要 / Summary</span>
+            <textarea
+              onChange={(event) => update("summary", event.target.value)}
+              placeholder="一句话说明这条内容资产的真实用途。 / One sentence about this asset."
+              value={draft.summary}
+            />
+          </label>
+          <label className="wide">
+            <span>正文 / Body</span>
+            <textarea
+              onChange={(event) => update("body", event.target.value)}
+              placeholder="粘贴真实文章、官网页面、知识库内容或 brief。 / Paste real article, page copy, knowledge base content, or brief."
+              rows={7}
+              value={draft.body}
+            />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <Button disabled={submitting} onClick={onClose} variant="ghost">
+            取消 / Cancel
+          </Button>
+          <Button
+            disabled={submitting}
+            icon={submitting ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+            onClick={onSubmit}
+          >
+            保存真实资产 / Save real asset
+          </Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSnapshot }) {
   const [snapshot, setSnapshot] = useState({
     ...initialSnapshot,
     geoFlowLinks: initialSnapshot.geoFlowLinks ?? [],
   });
   const [selectedAssetId, setSelectedAssetId] = useState(initialSnapshot.assets[0]?.id ?? "");
+  const [assetDraft, setAssetDraft] = useState(emptyAssetDraft);
+  const [isAssetFormOpen, setIsAssetFormOpen] = useState(false);
   const [brief, setBrief] = useState<GeoBrief | null>(null);
   const [message, setMessage] = useState("");
   const [action, setAction] = useState<ActionState>("idle");
@@ -600,14 +745,18 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       throw new Error("Snapshot refresh failed.");
     }
     const next = await response.json();
+    const nextAssets = next.assets as ContentAsset[];
     setSnapshot({
       project: next.project,
-      assets: next.assets,
+      assets: nextAssets,
       variants: next.variants,
       runs: next.runs,
       providerHealth: next.providerHealth,
       geoFlowLinks: next.geoFlowLinks ?? [],
     });
+    if (!nextAssets.some((asset) => asset.id === selectedAssetId)) {
+      setSelectedAssetId(nextAssets[0]?.id ?? "");
+    }
   }
 
   async function parseApiError(response: Response, fallback: string) {
@@ -633,21 +782,29 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       });
   }
 
+  function requireSelectedAsset() {
+    if (!selectedAsset) {
+      throw new Error("请先添加真实内容资产 / Add a real content asset first.");
+    }
+    return selectedAsset;
+  }
+
   function handleRefresh() {
     runAction("refresh", async () => {
       await refreshSnapshot();
-      return "Snapshot refreshed.";
+      return "数据已刷新 / Snapshot refreshed.";
     });
   }
 
   function handleAudit() {
     runAction("audit", async () => {
+      const asset = requireSelectedAsset();
       const response = await fetch("/api/geo/audit", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           projectId: snapshot.project.id,
-          content: selectedAsset.body,
+          content: asset.body,
           provider: "All",
         }),
       });
@@ -658,18 +815,19 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
       const payload = await response.json();
       await refreshSnapshot();
-      return `${payload.runs.length} GEO runs completed in ${payload.mode} mode.`;
+      return `${payload.runs.length} 次 GEO 监测完成 / runs completed in ${payload.mode} mode.`;
     });
   }
 
   function handleBrief() {
     runAction("brief", async () => {
+      const asset = requireSelectedAsset();
       const response = await fetch("/api/geo/brief", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           projectId: snapshot.project.id,
-          keywords: selectedAsset.targetKeywords,
+          keywords: asset.targetKeywords,
           audience: "content and revenue operations teams",
         }),
       });
@@ -680,17 +838,18 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
       const payload = (await response.json()) as { brief: GeoBrief };
       setBrief(payload.brief);
-      return "Content brief created with outline, FAQ, comparison angles, and schema suggestions.";
+      return "内容 Brief 已创建 / Content brief created.";
     });
   }
 
   function handleVariants() {
     runAction("variant", async () => {
+      const asset = requireSelectedAsset();
       const response = await fetch("/api/geo/variant", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          contentAssetId: selectedAsset.id,
+          contentAssetId: asset.id,
           platforms: ["Knowledge Site", "LinkedIn", "X", "WeChat"] satisfies ChannelPlatform[],
           handoffToPostiz: true,
         }),
@@ -702,17 +861,18 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
       const payload = await response.json();
       await refreshSnapshot();
-      return `${payload.variants.length} variants generated. ${payload.handoff.message}`;
+      return `${payload.variants.length} 个渠道版本已生成 / variants generated. ${payload.handoff.message}`;
     });
   }
 
   function handleSendToGeoFlow() {
     runAction("geoflow", async () => {
+      const asset = requireSelectedAsset();
       const response = await fetch("/api/integrations/geoflow/tasks", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          contentAssetId: selectedAsset.id,
+          contentAssetId: asset.id,
           brief,
         }),
       });
@@ -724,8 +884,8 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
       const payload = await response.json();
       await refreshSnapshot();
       return payload.reused
-        ? "Existing GEOFlow task link reused."
-        : `GEOFlow task ${payload.link.geoFlowTaskId} queued for generation.`;
+        ? "已复用 GEOFlow 任务 / Existing GEOFlow task link reused."
+        : `GEOFlow 任务 ${payload.link.geoFlowTaskId} 已入队 / queued for generation.`;
     });
   }
 
@@ -741,19 +901,41 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
 
       const payload = await response.json();
       await refreshSnapshot();
-      return `GEOFlow sync complete: ${payload.successCount} updated, ${payload.failureCount} failed.`;
+      return `GEOFlow 同步完成 / sync complete: ${payload.successCount} updated, ${payload.failureCount} failed.`;
+    });
+  }
+
+  function handleCreateAsset() {
+    runAction("refresh", async () => {
+      const response = await fetch("/api/content-assets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(assetDraft),
+      });
+
+      if (!response.ok) {
+        throw new Error(await parseApiError(response, "Content asset creation failed."));
+      }
+
+      const payload = await response.json();
+      setSelectedAssetId(payload.asset.id);
+      setAssetDraft(emptyAssetDraft);
+      setIsAssetFormOpen(false);
+      await refreshSnapshot();
+      return "真实内容资产已添加 / Real content asset added.";
     });
   }
 
   return (
     <main className="app-shell">
       <a className="skip-link" href="#main-workspace">
-        Skip to content
+        跳到内容 / Skip to content
       </a>
       <Sidebar />
       <div className="workspace" id="main-workspace">
         <Header
           action={action}
+          hasAsset={Boolean(selectedAsset)}
           onAudit={handleAudit}
           onBrief={handleBrief}
           onVariant={handleVariants}
@@ -763,23 +945,23 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
         <section className="metrics-grid" aria-label="GEO operating metrics">
           <MetricTile
             icon={<Activity size={18} />}
-            label="Visibility"
+            label="可见性 / Visibility"
             tone="teal"
-            trend="+8 from last benchmark"
+            trend="基于真实监测 / from real runs"
             value={`${topScore}/100`}
           />
           <MetricTile
             icon={<Layers3 size={18} />}
-            label="Ready assets"
+            label="就绪资产 / Ready assets"
             tone="cobalt"
-            trend={`${snapshot.assets.length} total canonical items`}
+            trend={`${snapshot.assets.length} 条真实资产 / real canonical items`}
             value={`${readyAssets}`}
           />
           <MetricTile
             icon={<CalendarClock size={18} />}
-            label="Scheduled"
+            label="已排期 / Scheduled"
             tone="amber"
-            trend="Across Knowledge Site, LinkedIn, X, WeChat"
+            trend="知识站、LinkedIn、X、微信 / channels"
             value={`${scheduledVariants}`}
           />
         </section>
@@ -790,6 +972,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
           <div className="content-stack">
             <AssetTable
               assets={snapshot.assets}
+              onAdd={() => setIsAssetFormOpen(true)}
               onSelect={setSelectedAssetId}
               selectedAssetId={selectedAssetId}
             />
@@ -809,6 +992,16 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
           onSendToGeoFlow={handleSendToGeoFlow}
           onSyncGeoFlow={handleSyncGeoFlow}
           selectedAsset={selectedAsset}
+        />
+      ) : null}
+
+      {isAssetFormOpen ? (
+        <AssetFormModal
+          draft={assetDraft}
+          onChange={setAssetDraft}
+          onClose={() => setIsAssetFormOpen(false)}
+          onSubmit={handleCreateAsset}
+          submitting={action !== "idle"}
         />
       ) : null}
 
