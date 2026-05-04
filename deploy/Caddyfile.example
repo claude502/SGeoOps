@@ -1,4 +1,9 @@
-geo.example.com {
+wingheng.technology, www.wingheng.technology {
+  encode gzip zstd
+  reverse_proxy geo-ops:3000
+}
+
+:80 {
   encode gzip zstd
   reverse_proxy geo-ops:3000
 }
@@ -6,17 +11,17 @@ geo.example.com {
 # If GEOFlow and Postiz are deployed on the same private Docker network,
 # add their services here. Otherwise point these domains at their own hosts.
 #
-# geoflow.example.com {
+# geoflow.wingheng.technology {
 #   encode gzip zstd
 #   reverse_proxy geoflow:8000
 # }
 #
-# postiz.example.com {
+# postiz.wingheng.technology {
 #   encode gzip zstd
 #   reverse_proxy postiz:5000
 # }
 #
-# content.example.com {
+# content.wingheng.technology {
 #   encode gzip zstd
 #   reverse_proxy content-site:3000
 # }

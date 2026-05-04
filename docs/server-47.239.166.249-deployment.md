@@ -41,13 +41,14 @@
 正式部署建议绑定域名：
 
 ```text
-geo.yourdomain.com       -> 47.239.166.249
-geoflow.yourdomain.com   -> GEOFlow 服务
-postiz.yourdomain.com    -> Postiz 服务
-content.yourdomain.com   -> 公开内容站
+wingheng.technology          -> 47.239.166.249
+www.wingheng.technology      -> 47.239.166.249
+geoflow.wingheng.technology  -> GEOFlow 服务
+postiz.wingheng.technology   -> Postiz 服务
+content.wingheng.technology  -> 公开内容站
 ```
 
-如果域名还没准备好，可以先用 `http://47.239.166.249` 临时验证 GEO Ops。
+如果 DNS 还没准备好，可以先用 `http://47.239.166.249` 临时验证 GEO Ops。
 裸 IP 无法正常签发标准 HTTPS 证书，所以正式环境仍然需要域名。
 
 ## 端口策略
@@ -150,6 +151,13 @@ nano /opt/geo-content-ops/deploy/Caddyfile.example
 ```
 
 把 `geo.example.com` 替换为真实域名。
+
+当前测试域名为：
+
+```text
+wingheng.technology
+www.wingheng.technology
+```
 
 无域名临时测试时，可以使用：
 
