@@ -1,0 +1,43 @@
+import { describe, expect, it } from "vitest";
+import { buildContentAsset, contentAssetInputSchema } from "@/lib/content-assets";
+
+describe("content asset input", () => {
+  it("accepts blank optional source URL and falls back to canonical URL", () => {
+    const parsed = contentAssetInputSchema.parse({
+      title: "  Wingheng GEO page  ",
+      body: "  Real article body.  ",
+      brandEntity: "  Wingheng  ",
+      canonicalUrl: " https://wingheng.technology/geo ",
+      sourceUrl: "",
+      targetKeywords: " GEO, AI search, GEO ",
+      owner: "",
+    });
+
+    const asset = buildContentAsset(parsed, new Date("2026-05-04T00:00:00.000Z"));
+
+    expect(asset.title).toBe("Wingheng GEO page");
+    expect(asset.body).toBe("Real article body.");
+    expect(asset.brandEntity).toBe("Wingheng");
+    expect(asset.sourceUrl).toBe("https://wingheng.technology/geo");
+    expect(asset.targetKeywords).toEqual(["GEO", "AI search", "GEO"]);
+    expect(asset.owner).toBe("GEO Ops");
+    expect(asset.id).toBe("asset_wingheng-geo-page_1777852800000");
+  });
+
+  it("requires at least one target keyword at the API boundary", () => {
+    const parsed = contentAssetInputSchema.safeParse({
+      title: "Wingheng GEO page",
+      body: "Real article body.",
+      brandEntity: "Wingheng",
+      canonicalUrl: "https://wingheng.technology/geo",
+      targetKeywords: " , ",
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.flatten().fieldErrors.targetKeywords?.[0]).toContain(
+        "At least one target keyword",
+      );
+    }
+  });
+});

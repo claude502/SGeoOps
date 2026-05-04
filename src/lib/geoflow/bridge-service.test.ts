@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GeoFlowBridgeService, type GeoFlowApi } from "@/lib/geoflow/bridge-service";
-import { GeoFlowClient } from "@/lib/geoflow/client";
+import { GeoFlowClient, GeoFlowHttpError } from "@/lib/geoflow/client";
 import { readGeoFlowConfig, type GeoFlowConfig } from "@/lib/geoflow/config";
 import { InMemoryGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
 import { seedAssets } from "@/lib/sample-data";
@@ -49,6 +49,32 @@ describe("GeoFlowClient", () => {
         }),
       }),
     );
+  });
+
+  it("wraps non-JSON success responses in a stable client error", async () => {
+    const client = new GeoFlowClient(
+      config,
+      vi.fn(async () => new Response("<html>ok</html>", { status: 200 })),
+    );
+
+    await expect(client.getCatalog()).rejects.toMatchObject({
+      name: "GeoFlowHttpError",
+      status: 502,
+      code: "geoflow_invalid_json",
+    } satisfies Partial<GeoFlowHttpError>);
+  });
+
+  it("wraps non-JSON HTTP failures without leaking parser errors", async () => {
+    const client = new GeoFlowClient(
+      config,
+      vi.fn(async () => new Response("<html>server error</html>", { status: 500 })),
+    );
+
+    await expect(client.getCatalog()).rejects.toMatchObject({
+      name: "GeoFlowHttpError",
+      status: 500,
+      code: "geoflow_http_error",
+    } satisfies Partial<GeoFlowHttpError>);
   });
 });
 

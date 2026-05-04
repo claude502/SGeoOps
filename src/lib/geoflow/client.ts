@@ -72,6 +72,18 @@ function withLeadingSlash(path: string) {
   return path.startsWith("/") ? path : `/${path}`;
 }
 
+function parseJsonResponse(text: string) {
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 export class GeoFlowClient {
   constructor(
     private readonly config: Pick<GeoFlowConfig, "baseUrl" | "apiToken">,
@@ -123,7 +135,7 @@ export class GeoFlowClient {
     });
 
     const text = await response.text();
-    const parsed = text ? (JSON.parse(text) as unknown) : null;
+    const parsed = parseJsonResponse(text);
     const envelope = isEnvelope<T>(parsed) ? parsed : null;
 
     if (!response.ok || envelope?.success === false) {
@@ -132,6 +144,15 @@ export class GeoFlowClient {
         response.status,
         envelope?.error?.code,
         envelope?.error?.details,
+      );
+    }
+
+    if (parsed === undefined) {
+      throw new GeoFlowHttpError(
+        "GEOFlow response was not valid JSON.",
+        502,
+        "geoflow_invalid_json",
+        text.slice(0, 500),
       );
     }
 
