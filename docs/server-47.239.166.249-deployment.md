@@ -7,7 +7,7 @@
 | 公网 IPv4 | `47.239.166.249` |
 | 目标用途 | GEO 内容账号系统 MVP/试运营部署 |
 | 推荐系统 | Ubuntu 24.04 LTS |
-| 推荐部署方式 | Docker Compose + Caddy HTTPS reverse proxy |
+| 推荐部署方式 | Docker Compose + Caddy reverse proxy；当前由 Cloudflare 提供边缘 HTTPS |
 | 应用目录 | `/opt/geo-content-ops` |
 | 备份目录 | `/opt/geo-content-ops/backups` |
 | 日志目录 | `/opt/geo-content-ops/logs` |
@@ -41,15 +41,22 @@
 正式部署建议绑定域名：
 
 ```text
-wingheng.technology          -> 47.239.166.249
-www.wingheng.technology      -> 47.239.166.249
+wingheng.technology          -> 47.239.166.249 或 Cloudflare proxied A/CNAME
+www.wingheng.technology      -> 47.239.166.249 或 Cloudflare proxied A/CNAME
 geoflow.wingheng.technology  -> GEOFlow 服务
 postiz.wingheng.technology   -> Postiz 服务
 content.wingheng.technology  -> 公开内容站
 ```
 
+当前 `wingheng.technology` 与 `www.wingheng.technology` 已通过 Cloudflare 代理访问 GEO Ops。
 如果 DNS 还没准备好，可以先用 `http://47.239.166.249` 临时验证 GEO Ops。
 裸 IP 无法正常签发标准 HTTPS 证书，所以正式环境仍然需要域名。
+
+Cloudflare SSL 策略：
+
+- 当前测试配置兼容 Cloudflare `Flexible`：Caddy 只监听 HTTP 源站，避免 Cloudflare HTTPS -> origin HTTP 时触发源站 HTTPS redirect loop。
+- 行业最佳实践是 Cloudflare `Full (strict)`：Cloudflare 到源站也走 HTTPS，并使用有效源站证书。切换到该模式前，把 `deploy/Caddyfile.example` 改回 `wingheng.technology, www.wingheng.technology { ... }` 形式，让 Caddy 自动签发/续期证书。
+- 不建议长期使用 `Flexible` 承载生产敏感流量，因为 Cloudflare 到源站链路不是端到端 HTTPS。
 
 ## 端口策略
 
@@ -57,8 +64,8 @@ content.wingheng.technology  -> 公开内容站
 
 ```text
 22/tcp   SSH，建议后续限制来源 IP 或改端口
-80/tcp   HTTP，给 Caddy 跳转 HTTPS/临时验证
-443/tcp  HTTPS
+80/tcp   HTTP，给 Caddy/Cloudflare 回源和 ACME 验证
+443/tcp  HTTPS，切换 Cloudflare Full (strict) 后使用
 ```
 
 不要开放：
@@ -150,7 +157,23 @@ POSTIZ_API_KEY="<Postiz API key>"
 nano /opt/geo-content-ops/deploy/Caddyfile.example
 ```
 
-把 `geo.example.com` 替换为真实域名。
+当前仓库的 `deploy/Caddyfile.example` 已按 Cloudflare `Flexible` 测试模式配置：
+
+```caddy
+http://wingheng.technology, http://www.wingheng.technology, :80 {
+  encode gzip zstd
+  reverse_proxy geo-ops:3000
+}
+```
+
+如果 Cloudflare 改为 `Full (strict)`，建议改成：
+
+```caddy
+wingheng.technology, www.wingheng.technology {
+  encode gzip zstd
+  reverse_proxy geo-ops:3000
+}
+```
 
 当前测试域名为：
 
@@ -185,6 +208,12 @@ curl http://47.239.166.249/api/integrations/geoflow/status
 
 ```bash
 curl https://geo.yourdomain.com/api/integrations/geoflow/status
+```
+
+当前域名：
+
+```bash
+curl https://wingheng.technology/api/integrations/geoflow/status
 ```
 
 预期：
