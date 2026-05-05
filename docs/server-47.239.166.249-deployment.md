@@ -38,6 +38,11 @@
 - GEO Ops 登录账号密码通过 `GEO_OPS_ADMIN_USERNAME`、`GEO_OPS_ADMIN_PASSWORD` 配置；明文仅写入私有凭证文档和服务器 `.env`，不提交 Git。
 - 所有 API key、数据库密码、GEOFlow token、Postiz token 都不能提交到 Git。
 
+相关文档：
+
+- [账号与凭证文档说明](./account-documentation.md)
+- 私密明文凭证：`.secrets/wingheng-geo-ops-credentials.md`
+
 ## 域名规划
 
 正式部署建议绑定域名：

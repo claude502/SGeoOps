@@ -4,11 +4,12 @@ Last updated: 2026-05-05
 
 这份文档用于快速定位当前远程部署、系统架构设计、账号密码保存位置。它不包含明文密码，可以提交到 Git。明文凭证只保存在本地 `.secrets/`。
 
-如果你只想先找到“系统相关文档”，优先看这 4 份：
+如果你只想先找到“系统相关文档”，优先看这 5 份：
 
 - [system-reference.md](./system-reference.md)
 - [system-sop.md](./system-sop.md)
 - [server-47.239.166.249-deployment.md](./server-47.239.166.249-deployment.md)
+- [account-documentation.md](./account-documentation.md)
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
 
 ## 1. 当前远程部署
@@ -92,6 +93,7 @@ Txpuro 当前的最终接入方式不是整站接管，而是：
 | --- | --- | --- |
 | GEO Ops 管理员账号密码 | `.secrets/wingheng-geo-ops-credentials.md` | 包含登录账号、密码、远程目录、常用命令 |
 | 远程 `.env` 快照 | `.secrets/wingheng-prod.env.snapshot` | 从 `/opt/geo-content-ops/.env` 同步 |
+| 账号文档索引 | `docs/account-documentation.md` | 说明公开文档与私密凭证分别放在哪里 |
 | Git 忽略规则 | `.gitignore` | `.secrets/` 已被忽略 |
 
 远程保存位置：
