@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowRight, BadgeCheck, CheckCircle2, ExternalLink, FileText, Globe2, Layers3, ShieldCheck } from "lucide-react";
 import type { ContentAsset, ContentLocale } from "@/types/geo";
 import { txpuroGuidesPath } from "@/lib/site-context";
-import { txpuroCompanyLabel, txpuroSiteLabel, txpuroStructuredSections } from "@/lib/txpuro";
+import { txpuroCompanyLabel, txpuroLinkGroups, txpuroSiteLabel, txpuroStructuredSections } from "@/lib/txpuro";
 
 function defaultSignupUrl() {
   return process.env.TXPURO_SELF_SIGNUP_URL || "https://txpuro.com/contact";
@@ -76,6 +76,7 @@ export function TxpuroSitePage({
   const contactUrl = defaultContactUrl();
   const isEnglish = locale === "en";
   const alternatePath = txpuroGuidesPath(asset.slug || "home", locale === "en" ? "zh-CN" : "en");
+  const linkGroups = txpuroLinkGroups(asset, locale);
   const structuredData =
     asset.schemaType === "faq"
       ? {
@@ -202,6 +203,32 @@ export function TxpuroSitePage({
           </article>
         ))}
       </section>
+
+      {linkGroups.length ? (
+        <section className="txpuro-link-groups">
+          {linkGroups.map((group) => (
+            <article className="txpuro-link-group" key={group.title}>
+              <div className="txpuro-section-heading">
+                <span>{isEnglish ? "Recommended path" : "推荐路径"}</span>
+                <h2>{group.title}</h2>
+                <p>{group.description}</p>
+              </div>
+              <div className="txpuro-link-grid">
+                {group.links.map((item) => (
+                  <Link className="txpuro-link-card" key={item.href} href={item.href}>
+                    <strong>{item.label}</strong>
+                    <p>{item.blurb}</p>
+                    <span>
+                      {isEnglish ? "Open guide" : "查看页面"}
+                      <ArrowRight size={14} />
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </article>
+          ))}
+        </section>
+      ) : null}
 
       <section className="txpuro-proof-grid">
         <article className="txpuro-proof-card">

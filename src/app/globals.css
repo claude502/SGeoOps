@@ -1213,6 +1213,7 @@ h2 {
 .txpuro-hero,
 .txpuro-keyword-strip,
 .txpuro-section-grid,
+.txpuro-link-groups,
 .txpuro-proof-grid,
 .txpuro-faq,
 .txpuro-cta-band {
@@ -1381,6 +1382,7 @@ h2 {
 }
 
 .txpuro-section-grid,
+.txpuro-link-groups,
 .txpuro-proof-grid,
 .txpuro-faq-list {
   display: grid;
@@ -1394,8 +1396,41 @@ h2 {
 
 .txpuro-section-card,
 .txpuro-proof-card,
-.txpuro-faq-item {
+.txpuro-faq-item,
+.txpuro-link-group {
   padding: 1.4rem;
+}
+
+.txpuro-link-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.txpuro-link-card {
+  background: white;
+  border: 1px solid var(--txpuro-border);
+  border-radius: 8px;
+  color: inherit;
+  display: grid;
+  gap: 0.7rem;
+  min-height: 180px;
+  padding: 1.2rem;
+  text-decoration: none;
+}
+
+.txpuro-link-card p,
+.txpuro-link-group .txpuro-section-heading p {
+  color: rgba(20, 33, 61, 0.76);
+  margin: 0;
+}
+
+.txpuro-link-card span {
+  align-items: center;
+  color: var(--txpuro-accent);
+  display: inline-flex;
+  gap: 0.35rem;
+  font-weight: 700;
 }
 
 .txpuro-proof-grid {
@@ -1434,6 +1469,7 @@ h2 {
 @media (max-width: 980px) {
   .txpuro-hero,
   .txpuro-section-grid,
+  .txpuro-link-grid,
   .txpuro-proof-grid {
     grid-template-columns: 1fr;
   }

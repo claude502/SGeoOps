@@ -4,6 +4,11 @@ import { isDatabaseConfigured } from "@/lib/prisma";
 import { txpuroCanonicalUrl, txpuroGuidesPath } from "@/lib/site-context";
 
 type TxpuroFaq = { question: string; answer: string };
+export type TxpuroLinkGroup = {
+  title: string;
+  description: string;
+  links: Array<{ href: string; label: string; blurb: string }>;
+};
 type TxpuroSpec = {
   slug: string;
   assetType: ContentAssetType;
@@ -800,4 +805,106 @@ export function txpuroSiteLabel(locale: ContentLocale) {
 
 export function txpuroCompanyLabel(locale: ContentLocale) {
   return locale === "en" ? companyName : "永亨佳邦科技 / Wing Heng Technology";
+}
+
+export function txpuroLinkGroups(asset: ContentAsset, locale: ContentLocale): TxpuroLinkGroup[] {
+  const zh = locale === "zh-CN";
+  const homeGroups: TxpuroLinkGroup[] = [
+    {
+      title: zh ? "先从这里开始" : "Start here",
+      description: zh
+        ? "给第一次接触马来西亚电子发票的访客一条最短理解路径。"
+        : "A shortest-path reading sequence for first-time Malaysia e-Invoice buyers.",
+      links: [
+        {
+          href: txpuroGuidesPath("what-is-myinvois", locale),
+          label: zh ? "什么是 MyInvois" : "What is MyInvois",
+          blurb: zh ? "先搞清楚官方系统角色，再决定要不要上第三方系统。" : "Understand the official system before choosing software.",
+        },
+        {
+          href: txpuroGuidesPath("malaysia-einvoice-implementation-timeline", locale),
+          label: zh ? "实施时间线" : "Implementation timeline",
+          blurb: zh ? "明确你的企业何时必须上线。" : "See when your business needs to be ready.",
+        },
+        {
+          href: txpuroGuidesPath("how-to-start-einvoice-for-sme", locale),
+          label: zh ? "SME 上线路径" : "SME rollout path",
+          blurb: zh ? "从准备流程、选系统到内部推进的落地顺序。" : "A practical rollout order for SMEs.",
+        },
+      ],
+    },
+    {
+      title: zh ? "高意图决策页" : "High-intent decision pages",
+      description: zh
+        ? "适合已经在比较方案、预算和交付方式的访客。"
+        : "For visitors already comparing fit, cost, and implementation models.",
+      links: [
+        {
+          href: txpuroGuidesPath("compare/txpuro-vs-myinvois-portal", locale),
+          label: zh ? "Txpuro vs MyInvois Portal" : "Txpuro vs MyInvois Portal",
+          blurb: zh ? "判断 portal 够不够用。" : "Decide whether the official portal is enough.",
+        },
+        {
+          href: txpuroGuidesPath("compare/txpuro-vs-manual-process", locale),
+          label: zh ? "Txpuro vs 人工流程" : "Txpuro vs manual process",
+          blurb: zh ? "回答继续靠 Excel 和人工协作的代价。" : "Quantify the cost of staying manual.",
+        },
+        {
+          href: txpuroGuidesPath("pricing", locale),
+          label: zh ? "价格与交付方式" : "Pricing and delivery",
+          blurb: zh ? "把标准版、定制版和 API 集成放到同一页里看。" : "Compare standard, customized, and API-led delivery.",
+        },
+      ],
+    },
+    {
+      title: zh ? "功能与实施重点" : "Feature and rollout priorities",
+      description: zh
+        ? "适合进入项目评估或实施准备阶段的团队。"
+        : "Useful for teams moving into evaluation or implementation planning.",
+      links: [
+        {
+          href: txpuroGuidesPath("features/myinvois-integration", locale),
+          label: zh ? "MyInvois 对接能力" : "MyInvois integration",
+          blurb: zh ? "官方接入和业务执行如何衔接。" : "How official integration connects to real operations.",
+        },
+        {
+          href: txpuroGuidesPath("features/api-integration", locale),
+          label: zh ? "API 与 ERP 集成" : "API and ERP integration",
+          blurb: zh ? "已有系统的企业如何平滑接进来。" : "A fit check for teams with existing systems.",
+        },
+        {
+          href: txpuroGuidesPath("faq", locale),
+          label: zh ? "常见问题总览" : "FAQ hub",
+          blurb: zh ? "把上线、合规、交付和例外处理问题集中查看。" : "A single place for rollout and exception questions.",
+        },
+      ],
+    },
+  ];
+
+  if (asset.slug === "home") {
+    return homeGroups;
+  }
+
+  if (asset.slug === "pricing" || asset.slug === "compare/txpuro-vs-myinvois-portal") {
+    return [homeGroups[1]];
+  }
+
+  if (
+    asset.slug === "features" ||
+    asset.slug === "features/myinvois-integration" ||
+    asset.slug === "features/api-integration"
+  ) {
+    return [homeGroups[2]];
+  }
+
+  if (
+    asset.slug === "what-is-myinvois" ||
+    asset.slug === "guides/what-is-myinvois" ||
+    asset.slug === "malaysia-einvoice-implementation-timeline" ||
+    asset.slug === "guides/malaysia-einvoice-implementation-timeline"
+  ) {
+    return [homeGroups[0]];
+  }
+
+  return [];
 }

@@ -73,6 +73,7 @@ Txpuro 当前的最终接入方式不是整站接管，而是：
 - [architecture.md](./architecture.md)
 - [geoflow-rollout.md](./geoflow-rollout.md)
 - [txpuro-geo-strategy.md](./txpuro-geo-strategy.md)
+- [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
 
 ## 3. 账号密码保存位置
 
