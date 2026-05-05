@@ -34,6 +34,7 @@ interface BriefInput {
   competitors: string[];
   audience?: string;
   locale?: string;
+  assetType?: string;
 }
 
 interface VariantInput {
@@ -275,10 +276,17 @@ export function createGeoBrief(input: BriefInput): GeoBrief {
   const competitorList = input.competitors.length
     ? input.competitors.join(", ")
     : "known alternatives";
+  const pageMode = input.assetType || "guide-page";
+  const openingInstruction =
+    pageMode === "compare-page"
+      ? `Create a neutral comparison page around ${primaryKeyword} with fit criteria, tradeoffs, and implementation differences.`
+      : pageMode === "faq-page"
+        ? `Create an FAQ-first page that answers ${primaryKeyword} questions in short, citable paragraphs.`
+        : `Create a canonical page that helps ${audience} understand when ${input.brand} is the right choice and gives answer engines concrete, citable facts.`;
 
   return {
     title: `${input.brand} GEO content brief for ${primaryKeyword}`,
-    objective: `Create a canonical page that helps ${audience} understand when ${input.brand} is the right choice and gives answer engines concrete, citable facts.`,
+    objective: openingInstruction,
     searchIntent: `High-intent evaluation around ${primaryKeyword}, alternatives, implementation fit, and category education.`,
     entityCoverage: unique([
       input.brand,
@@ -291,8 +299,8 @@ export function createGeoBrief(input: BriefInput): GeoBrief {
     ]).slice(0, 12),
     outline: [
       `Define ${input.brand} and the product category in the first 120 words.`,
-      `Answer the core ${primaryKeyword} query with a short recommendation table.`,
-      `Compare ${input.brand} with ${competitorList} using neutral fit criteria.`,
+      `Answer the core ${primaryKeyword} query with a short recommendation table or direct-answer block.`,
+      `Compare ${input.brand} with ${competitorList} using neutral fit criteria where relevant.`,
       "Add implementation workflow, required integrations, and team readiness guidance.",
       "Close with FAQ answers written as extractable, citation-friendly paragraphs.",
     ],

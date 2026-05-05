@@ -37,6 +37,18 @@ model ContentAsset {
   sourceSystem   String            @default("geo_ops")
   externalUrl    String?
   publishedAt    DateTime?
+  slug           String?
+  locale         String            @default("zh-CN")
+  assetType      String            @default("guide-page")
+  audience       String?
+  seoTitle       String?
+  metaDescription String?
+  faqs           Json?
+  schemaType     String            @default("article")
+  ctaMode        String            @default("self_signup")
+  publishTarget  String            @default("geo_ops_internal")
+  isPublic       Boolean           @default(false)
+  publishedPath  String?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
   geoFlowLinks   GeoFlowTaskLink[]
@@ -46,6 +58,8 @@ model ContentAsset {
   @@index([status])
   @@index([sourceSystem])
   @@index([publishedAt])
+  @@index([publishTarget, isPublic])
+  @@index([locale, slug])
 }
 
 model GeoRun {

@@ -32,15 +32,26 @@ import type {
   ChannelPlatform,
   ChannelVariant,
   ContentAsset,
+  ContentAssetType,
+  ContentLocale,
   DashboardSnapshot,
   GEORun,
   AuditEventView,
   GeoFlowTaskLinkView,
   GeoBrief,
+  PublishTarget,
   Provider,
 } from "@/types/geo";
 
-type ActionState = "idle" | "audit" | "brief" | "variant" | "refresh" | "geoflow" | "sync";
+type ActionState =
+  | "idle"
+  | "audit"
+  | "brief"
+  | "variant"
+  | "refresh"
+  | "geoflow"
+  | "sync"
+  | "workspace";
 type NavSection = "overview" | "assets" | "runs" | "channels" | "settings";
 type ToastTone = "info" | "success" | "danger";
 type ToastMessage = { text: string; tone: ToastTone } | null;
@@ -67,6 +78,12 @@ const emptyAssetDraft = {
   summary: "",
   body: "",
   owner: "",
+  slug: "",
+  locale: "zh-CN" as ContentLocale,
+  assetType: "guide-page" as ContentAssetType,
+  audience: "",
+  isPublic: false,
+  publishTarget: "geo_ops_internal" as PublishTarget,
 };
 
 type AssetDraft = typeof emptyAssetDraft;
@@ -89,6 +106,11 @@ type IntegrationStatus = {
     windowSeconds: number;
   };
   postizConfigured?: boolean;
+};
+type TxpuroInitPayload = {
+  project: DashboardSnapshot["project"];
+  prompts: string[];
+  assets: ContentAsset[];
 };
 
 const providerPalette: Record<Provider, string> = {
@@ -386,6 +408,9 @@ function AssetTable({
                 <Link2 size={13} />
                 {asset.canonicalUrl.replace("https://", "")}
               </small>
+              <small>
+                {asset.locale ?? "zh-CN"} · {asset.assetType ?? "guide-page"} · {asset.isPublic ? "txpuro public" : "internal"}
+              </small>
             </span>
             <span className="keyword-stack">
               {asset.targetKeywords.slice(0, 2).map((keyword) => (
@@ -660,7 +685,7 @@ function AssetFormModal({
   onSubmit: () => void;
   submitting: boolean;
 }) {
-  function update(field: keyof AssetDraft, value: string) {
+  function update(field: keyof AssetDraft, value: AssetDraft[keyof AssetDraft]) {
     onClearError(field);
     onChange({ ...draft, [field]: value });
   }
@@ -738,6 +763,58 @@ function AssetFormModal({
             />
             <FieldError error={errors.owner} />
           </label>
+          <label>
+            <span>Slug</span>
+            <input
+              aria-invalid={Boolean(errors.slug)}
+              onChange={(event) => update("slug", event.target.value)}
+              placeholder="what-is-myinvois"
+              value={draft.slug}
+            />
+            <FieldError error={errors.slug} />
+          </label>
+          <label>
+            <span>语言 / Locale</span>
+            <select onChange={(event) => update("locale", event.target.value as ContentLocale)} value={draft.locale}>
+              <option value="zh-CN">zh-CN</option>
+              <option value="en">en</option>
+            </select>
+          </label>
+          <label>
+            <span>类型 / Asset type</span>
+            <select
+              onChange={(event) => update("assetType", event.target.value as ContentAssetType)}
+              value={draft.assetType}
+            >
+              <option value="money-page">money-page</option>
+              <option value="feature-page">feature-page</option>
+              <option value="guide-page">guide-page</option>
+              <option value="compare-page">compare-page</option>
+              <option value="faq-page">faq-page</option>
+            </select>
+          </label>
+          <label>
+            <span>受众 / Audience</span>
+            <input
+              aria-invalid={Boolean(errors.audience)}
+              onChange={(event) => update("audience", event.target.value)}
+              placeholder="SMEs, finance teams, ERP owners"
+              value={draft.audience}
+            />
+            <FieldError error={errors.audience} />
+          </label>
+          <label className="wide checkbox-row">
+            <input
+              checked={draft.isPublic}
+              onChange={(event) => {
+                const checked = event.target.checked;
+                update("isPublic", checked);
+                update("publishTarget", checked ? "txpuro" : "geo_ops_internal");
+              }}
+              type="checkbox"
+            />
+            <span>公开到 Txpuro 产品站 / Publish on Txpuro public site</span>
+          </label>
           <label className="wide">
             <span>摘要 / Summary</span>
             <textarea
@@ -781,12 +858,16 @@ function SettingsPanel({
   action,
   auditEvents,
   onRefresh,
+  onInitializeTxpuro,
   status,
+  txpuroAssetCount,
 }: {
   action: ActionState;
   auditEvents: AuditEventView[];
   onRefresh: () => void;
+  onInitializeTxpuro: () => void;
   status: IntegrationStatus | null;
+  txpuroAssetCount: number;
 }) {
   const missing = status?.missing ?? [];
   const authEnabled = status?.auth?.enabled ?? false;
@@ -813,6 +894,25 @@ function SettingsPanel({
       </div>
 
       <div className="settings-grid">
+        <article className="settings-card">
+          <div>
+            <strong>Txpuro Workspace</strong>
+            <Chip tone={txpuroAssetCount ? "success" : "warning"}>
+              {txpuroAssetCount ? `${txpuroAssetCount} assets` : "Not initialized"}
+            </Chip>
+          </div>
+          <p>初始化 Txpuro 项目模板、公开内容资产和首批 GEO prompts。 / Initialize the Txpuro workspace, public assets, and GEO prompts.</p>
+          <small>Public host: txpuro.com / www.txpuro.com</small>
+          <Button
+            disabled={action !== "idle"}
+            icon={action === "refresh" ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
+            onClick={onInitializeTxpuro}
+            variant="secondary"
+          >
+            初始化 Txpuro / Init Txpuro
+          </Button>
+        </article>
+
         <article className="settings-card">
           <div>
             <strong>Auth</strong>
@@ -944,6 +1044,7 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
   const scheduledVariants = snapshot.variants.filter(
     (variant) => variant.status === "Scheduled",
   ).length;
+  const txpuroAssetCount = snapshot.assets.filter((asset) => asset.publishTarget === "txpuro").length;
   const selectedAssetLink = snapshot.geoFlowLinks.find(
     (link) => link.contentAssetId === selectedAssetId,
   );
@@ -1008,6 +1109,12 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
     }
     if (!draft.body.trim()) {
       errors.body = "请输入真实正文或 brief / Body or brief is required.";
+    }
+    if (draft.slug.trim() && !/^[a-z0-9/-]+$/.test(draft.slug.trim())) {
+      errors.slug = "Slug 只能包含小写字母、数字、-、/ 。 / Use lowercase letters, numbers, - and /.";
+    }
+    if (draft.isPublic && !draft.audience.trim()) {
+      errors.audience = "公开页面请填写受众 / Audience is required for public pages.";
     }
 
     return errors;
@@ -1115,7 +1222,9 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
         body: JSON.stringify({
           projectId: snapshot.project.id,
           keywords: asset.targetKeywords,
-          audience: "content and revenue operations teams",
+          audience: asset.audience || "content and revenue operations teams",
+          locale: asset.locale || "zh-CN",
+          assetType: asset.assetType || "guide-page",
         }),
       });
 
@@ -1226,6 +1335,24 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
     });
   }
 
+  function handleInitializeTxpuro() {
+    runAction("workspace", async () => {
+      const response = await fetch("/api/workspaces/txpuro/init", {
+        method: "POST",
+        headers: actionHeaders,
+      });
+
+      if (!response.ok) {
+        throw new Error(await parseApiError(response, "Txpuro workspace initialization failed."));
+      }
+
+      const payload = (await response.json()) as TxpuroInitPayload;
+      await Promise.all([refreshSnapshot(), refreshIntegrationStatus()]);
+      setSelectedAssetId(payload.assets[0]?.id ?? "");
+      return `Txpuro Workspace 已初始化 / initialized with ${payload.assets.length} assets and ${payload.prompts.length} prompts.`;
+    });
+  }
+
   return (
     <main className="app-shell">
       <a className="skip-link" href="#main-workspace">
@@ -1294,8 +1421,10 @@ export function GeoDashboard({ initialSnapshot }: { initialSnapshot: DashboardSn
         <SettingsPanel
           action={action}
           auditEvents={snapshot.auditEvents}
+          onInitializeTxpuro={handleInitializeTxpuro}
           onRefresh={handleRefresh}
           status={integrationStatus}
+          txpuroAssetCount={txpuroAssetCount}
         />
       </div>
 

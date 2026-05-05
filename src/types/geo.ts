@@ -6,9 +6,25 @@ export const channelPlatforms = [
   "WeChat",
   "Xiaohongshu",
 ] as const;
+export const contentLocales = ["zh-CN", "en"] as const;
+export const contentAssetTypes = [
+  "money-page",
+  "feature-page",
+  "guide-page",
+  "compare-page",
+  "faq-page",
+] as const;
+export const schemaTypes = ["product", "faq", "article"] as const;
+export const ctaModes = ["self_signup", "demo", "contact"] as const;
+export const publishTargets = ["txpuro", "geo_ops_internal"] as const;
 
 export type Provider = (typeof providers)[number];
 export type ChannelPlatform = (typeof channelPlatforms)[number];
+export type ContentLocale = (typeof contentLocales)[number];
+export type ContentAssetType = (typeof contentAssetTypes)[number];
+export type SchemaType = (typeof schemaTypes)[number];
+export type CtaMode = (typeof ctaModes)[number];
+export type PublishTarget = (typeof publishTargets)[number];
 export type ContentStatus = "Draft" | "Review" | "Ready" | "Scheduled";
 export type VariantStatus = "Draft" | "Review" | "Ready" | "Scheduled" | "Published";
 export type GeoFlowTaskStatus =
@@ -53,6 +69,18 @@ export interface ContentAsset {
   sourceSystem?: string;
   externalUrl?: string | null;
   publishedAt?: string | null;
+  slug?: string;
+  locale?: ContentLocale;
+  assetType?: ContentAssetType;
+  audience?: string | null;
+  seoTitle?: string | null;
+  metaDescription?: string | null;
+  faqs?: Array<{ question: string; answer: string }>;
+  schemaType?: SchemaType;
+  ctaMode?: CtaMode;
+  publishTarget?: PublishTarget;
+  isPublic?: boolean;
+  publishedPath?: string | null;
 }
 
 export interface ChannelVariant {

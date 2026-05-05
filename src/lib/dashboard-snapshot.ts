@@ -3,6 +3,7 @@ import { listPersistentChannelVariants, listPersistentGeoRuns } from "@/lib/geo-
 import { getDashboardSnapshot } from "@/lib/geo-store";
 import { isDatabaseConfigured } from "@/lib/prisma";
 import { listRecentAuditEvents } from "@/lib/audit-log";
+import { txpuroProject } from "@/lib/txpuro";
 import type { ContentAsset, DashboardSnapshot, GeoProject, ProviderHealth } from "@/types/geo";
 import { providers } from "@/types/geo";
 
@@ -30,6 +31,14 @@ function unique(items: string[]) {
 }
 
 export function getProjectFromEnvironment(assets: ContentAsset[] = []): GeoProject {
+  const txpuroAssets = assets.filter((asset) => asset.publishTarget === "txpuro");
+  if (!process.env.GEO_PROJECT_ID && txpuroAssets.length) {
+    return {
+      ...txpuroProject,
+      targetKeywords: unique(txpuroAssets.flatMap((asset) => asset.targetKeywords)).slice(0, 20),
+    };
+  }
+
   const firstAsset = assets[0];
   const keywordsFromAssets = unique(assets.flatMap((asset) => asset.targetKeywords));
   const domain =

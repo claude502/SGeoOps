@@ -12,6 +12,7 @@ const briefSchema = z.object({
   competitors: z.array(z.string().min(1)).optional(),
   audience: z.string().optional(),
   locale: z.string().optional(),
+  assetType: z.string().optional(),
 });
 
 export async function POST(request: Request) {
@@ -53,6 +54,7 @@ export async function POST(request: Request) {
       : project.competitors,
     audience: parsed.data.audience,
     locale: parsed.data.locale || project.locale,
+    assetType: parsed.data.assetType,
   });
 
   await recordAuditEvent({

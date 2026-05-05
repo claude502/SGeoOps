@@ -1183,3 +1183,264 @@ h2 {
     gap: 8px;
   }
 }
+
+.checkbox-row {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+}
+
+.checkbox-row input {
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+.txpuro-shell {
+  --txpuro-ink: #14213d;
+  --txpuro-accent: #0d9488;
+  --txpuro-border: rgba(20, 33, 61, 0.12);
+  --txpuro-surface: rgba(255, 255, 255, 0.94);
+  background:
+    radial-gradient(circle at top left, rgba(13, 148, 136, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.14), transparent 24%),
+    linear-gradient(180deg, #f7fbfc 0%, #eef5f7 100%);
+  color: var(--txpuro-ink);
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.txpuro-topbar,
+.txpuro-hero,
+.txpuro-keyword-strip,
+.txpuro-section-grid,
+.txpuro-proof-grid,
+.txpuro-faq,
+.txpuro-cta-band {
+  margin-inline: auto;
+  max-width: 1180px;
+}
+
+.txpuro-topbar,
+.txpuro-nav,
+.txpuro-nav-actions,
+.txpuro-hero-actions,
+.txpuro-cta-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.txpuro-topbar {
+  justify-content: space-between;
+  margin-bottom: 2rem;
+}
+
+.txpuro-brand {
+  align-items: center;
+  color: inherit;
+  display: flex;
+  gap: 0.9rem;
+  text-decoration: none;
+}
+
+.txpuro-brand-mark {
+  align-items: center;
+  background: linear-gradient(135deg, #0d9488, #f97316);
+  border-radius: 10px;
+  color: white;
+  display: inline-flex;
+  font-size: 1.1rem;
+  font-weight: 800;
+  height: 2.6rem;
+  justify-content: center;
+  width: 2.6rem;
+}
+
+.txpuro-brand div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.txpuro-brand span {
+  color: rgba(20, 33, 61, 0.72);
+  font-size: 0.85rem;
+}
+
+.txpuro-nav a,
+.txpuro-link-button,
+.txpuro-primary-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.txpuro-link-button,
+.txpuro-primary-link {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 0.45rem;
+  padding: 0.7rem 1rem;
+}
+
+.txpuro-link-button {
+  border: 1px solid var(--txpuro-border);
+}
+
+.txpuro-primary-link {
+  background: var(--txpuro-ink);
+  color: white;
+}
+
+.txpuro-hero {
+  display: grid;
+  gap: 1.4rem;
+  grid-template-columns: minmax(0, 1.8fr) minmax(290px, 0.9fr);
+  margin-bottom: 1.25rem;
+}
+
+.txpuro-hero-copy,
+.txpuro-hero-card,
+.txpuro-section-card,
+.txpuro-proof-card,
+.txpuro-faq-item,
+.txpuro-cta-band {
+  background: var(--txpuro-surface);
+  border: 1px solid var(--txpuro-border);
+  border-radius: 8px;
+  box-shadow: 0 20px 45px rgba(20, 33, 61, 0.06);
+}
+
+.txpuro-hero-copy {
+  padding: 2rem;
+}
+
+.txpuro-kicker {
+  color: var(--txpuro-accent);
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.85rem;
+  text-transform: uppercase;
+}
+
+.txpuro-hero-copy h1 {
+  font-size: clamp(2.2rem, 3.5vw, 4rem);
+  line-height: 1.02;
+  margin: 0;
+}
+
+.txpuro-hero-copy p {
+  color: rgba(20, 33, 61, 0.82);
+  font-size: 1.05rem;
+  max-width: 56ch;
+}
+
+.txpuro-hero-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1.5rem;
+}
+
+.txpuro-hero-card div {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+}
+
+.txpuro-hero-card ul {
+  display: grid;
+  gap: 0.8rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.txpuro-hero-card li {
+  align-items: start;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: auto 1fr;
+}
+
+.txpuro-keyword-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-bottom: 1.35rem;
+}
+
+.txpuro-keyword-strip span {
+  background: white;
+  border: 1px solid var(--txpuro-border);
+  border-radius: 999px;
+  color: rgba(20, 33, 61, 0.84);
+  font-size: 0.9rem;
+  padding: 0.55rem 0.85rem;
+}
+
+.txpuro-section-grid,
+.txpuro-proof-grid,
+.txpuro-faq-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.txpuro-section-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 1rem;
+}
+
+.txpuro-section-card,
+.txpuro-proof-card,
+.txpuro-faq-item {
+  padding: 1.4rem;
+}
+
+.txpuro-proof-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 1rem;
+}
+
+.txpuro-proof-card {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.txpuro-faq {
+  margin-bottom: 1rem;
+}
+
+.txpuro-section-heading {
+  margin-bottom: 1rem;
+}
+
+.txpuro-section-heading span {
+  color: var(--txpuro-accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.txpuro-cta-band {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1.5rem;
+}
+
+@media (max-width: 980px) {
+  .txpuro-hero,
+  .txpuro-section-grid,
+  .txpuro-proof-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .txpuro-topbar,
+  .txpuro-cta-band {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

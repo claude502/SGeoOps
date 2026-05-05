@@ -10,6 +10,7 @@ Last updated: 2026-05-05
 | --- | --- |
 | 服务器公网 IP | `47.239.166.249` |
 | 主域名 | `wingheng.technology` |
+| Txpuro 公开域名 | `txpuro.com` / `www.txpuro.com` |
 | 临时 IP 入口 | `http://47.239.166.249` |
 | 正式入口 | `https://wingheng.technology` |
 | 远程目录 | `/opt/geo-content-ops` |
@@ -28,6 +29,7 @@ Last updated: 2026-05-05
 | `/api/healthz` | `200` |
 | 未登录访问 `/` | `401` |
 | 写入 API | 需要 Basic Auth + `x-geo-ops-action: true` |
+| Txpuro 公开站 | 与当前 Next.js 服务同仓同机部署 |
 
 详细远程部署文档：
 
@@ -63,6 +65,7 @@ flowchart TB
 
 - [architecture.md](./architecture.md)
 - [geoflow-rollout.md](./geoflow-rollout.md)
+- [txpuro-geo-strategy.md](./txpuro-geo-strategy.md)
 
 ## 3. 账号密码保存位置
 

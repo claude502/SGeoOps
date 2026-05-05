@@ -25,6 +25,7 @@ export interface UpdateGeoFlowTaskLinkInput {
 export interface GeoFlowBridgeRepository {
   ensureContentAsset(asset: ContentAsset): Promise<void>;
   findContentAsset(contentAssetId: string): Promise<ContentAsset | null>;
+  findPublicContentAsset(slug: string, locale: string, publishTarget?: string): Promise<ContentAsset | null>;
   listContentAssets(): Promise<ContentAsset[]>;
   seedContentAssets(assets: ContentAsset[]): Promise<void>;
   findLinkByIdempotencyKey(idempotencyKey: string): Promise<GeoFlowTaskLinkRecord | null>;
@@ -107,6 +108,18 @@ function mapAsset(asset: {
   externalUrl: string | null;
   publishedAt: Date | string | null;
   updatedAt: Date | string;
+  slug: string | null;
+  locale: string;
+  assetType: string;
+  audience: string | null;
+  seoTitle: string | null;
+  metaDescription: string | null;
+  faqs: unknown;
+  schemaType: string;
+  ctaMode: string;
+  publishTarget: string;
+  isPublic: boolean;
+  publishedPath: string | null;
 }): ContentAsset {
   return {
     id: asset.id,
@@ -124,6 +137,18 @@ function mapAsset(asset: {
     externalUrl: asset.externalUrl,
     publishedAt: toIso(asset.publishedAt),
     updatedAt: toIso(asset.updatedAt) ?? new Date().toISOString(),
+    slug: asset.slug ?? undefined,
+    locale: asset.locale as ContentAsset["locale"],
+    assetType: asset.assetType as ContentAsset["assetType"],
+    audience: asset.audience,
+    seoTitle: asset.seoTitle,
+    metaDescription: asset.metaDescription,
+    faqs: Array.isArray(asset.faqs) ? (asset.faqs as ContentAsset["faqs"]) : [],
+    schemaType: asset.schemaType as ContentAsset["schemaType"],
+    ctaMode: asset.ctaMode as ContentAsset["ctaMode"],
+    publishTarget: asset.publishTarget as ContentAsset["publishTarget"],
+    isPublic: asset.isPublic,
+    publishedPath: asset.publishedPath,
   };
 }
 
@@ -147,6 +172,18 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
         sourceSystem: asset.sourceSystem ?? "geo_ops",
         externalUrl: asset.externalUrl ?? null,
         publishedAt: toDate(asset.publishedAt),
+        slug: asset.slug ?? null,
+        locale: asset.locale ?? "zh-CN",
+        assetType: asset.assetType ?? "guide-page",
+        audience: asset.audience ?? null,
+        seoTitle: asset.seoTitle ?? null,
+        metaDescription: asset.metaDescription ?? null,
+        faqs: (asset.faqs ?? []) as object[],
+        schemaType: asset.schemaType ?? "article",
+        ctaMode: asset.ctaMode ?? "self_signup",
+        publishTarget: asset.publishTarget ?? "geo_ops_internal",
+        isPublic: asset.isPublic ?? false,
+        publishedPath: asset.publishedPath ?? null,
       },
       update: {
         title: asset.title,
@@ -162,12 +199,32 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
         sourceSystem: asset.sourceSystem ?? "geo_ops",
         externalUrl: asset.externalUrl ?? null,
         publishedAt: toDate(asset.publishedAt),
+        slug: asset.slug ?? null,
+        locale: asset.locale ?? "zh-CN",
+        assetType: asset.assetType ?? "guide-page",
+        audience: asset.audience ?? null,
+        seoTitle: asset.seoTitle ?? null,
+        metaDescription: asset.metaDescription ?? null,
+        faqs: (asset.faqs ?? []) as object[],
+        schemaType: asset.schemaType ?? "article",
+        ctaMode: asset.ctaMode ?? "self_signup",
+        publishTarget: asset.publishTarget ?? "geo_ops_internal",
+        isPublic: asset.isPublic ?? false,
+        publishedPath: asset.publishedPath ?? null,
       },
     });
   }
 
   async findContentAsset(contentAssetId: string) {
     const asset = await getPrisma().contentAsset.findUnique({ where: { id: contentAssetId } });
+    return asset ? mapAsset(asset) : null;
+  }
+
+  async findPublicContentAsset(slug: string, locale: string, publishTarget = "txpuro") {
+    const asset = await getPrisma().contentAsset.findFirst({
+      where: { slug, locale, publishTarget, isPublic: true },
+      orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
+    });
     return asset ? mapAsset(asset) : null;
   }
 
@@ -287,6 +344,18 @@ export class InMemoryGeoFlowBridgeRepository implements GeoFlowBridgeRepository 
 
   async findContentAsset(contentAssetId: string) {
     return this.assets.get(contentAssetId) ?? null;
+  }
+
+  async findPublicContentAsset(slug: string, locale: string, publishTarget = "txpuro") {
+    return (
+      Array.from(this.assets.values()).find(
+        (asset) =>
+          asset.slug === slug &&
+          asset.locale === locale &&
+          asset.publishTarget === publishTarget &&
+          asset.isPublic,
+      ) ?? null
+    );
   }
 
   async listContentAssets() {

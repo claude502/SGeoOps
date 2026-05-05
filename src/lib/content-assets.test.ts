@@ -21,7 +21,7 @@ describe("content asset input", () => {
     expect(asset.sourceUrl).toBe("https://wingheng.technology/geo");
     expect(asset.targetKeywords).toEqual(["GEO", "AI search", "GEO"]);
     expect(asset.owner).toBe("GEO Ops");
-    expect(asset.id).toBe("asset_wingheng-geo-page_1777852800000");
+    expect(asset.id).toBe("asset_wingheng-geo-page_zh-cn_1777852800000");
   });
 
   it("requires at least one target keyword at the API boundary", () => {
@@ -60,5 +60,29 @@ describe("content asset input", () => {
 
     expect(canonical.success).toBe(false);
     expect(source.success).toBe(false);
+  });
+
+  it("builds public txpuro assets with locale, slug, and publish defaults", () => {
+    const parsed = contentAssetInputSchema.parse({
+      title: "What is MyInvois",
+      body: "Direct answer.\n\n## Workflow\n\nUseful content.",
+      brandEntity: "Txpuro",
+      canonicalUrl: "https://txpuro.com/guides/what-is-myinvois",
+      targetKeywords: "MyInvois, Malaysia e-Invoice",
+      locale: "en",
+      slug: "guides/what-is-myinvois",
+      assetType: "guide-page",
+      audience: "SMEs",
+      isPublic: true,
+    });
+
+    const asset = buildContentAsset(parsed, new Date("2026-05-05T00:00:00.000Z"));
+
+    expect(asset.locale).toBe("en");
+    expect(asset.slug).toBe("guides/what-is-myinvois");
+    expect(asset.publishTarget).toBe("txpuro");
+    expect(asset.isPublic).toBe(true);
+    expect(asset.publishedPath).toBe("/en/guides/what-is-myinvois");
+    expect(asset.schemaType).toBe("article");
   });
 });

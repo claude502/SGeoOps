@@ -45,12 +45,15 @@
 ```text
 wingheng.technology          -> 47.239.166.249 或 Cloudflare proxied A/CNAME
 www.wingheng.technology      -> 47.239.166.249 或 Cloudflare proxied A/CNAME
+txpuro.com                  -> 47.239.166.249 或 Cloudflare proxied A/CNAME
+www.txpuro.com              -> 47.239.166.249 或 Cloudflare proxied A/CNAME
 geoflow.wingheng.technology  -> GEOFlow 服务
 postiz.wingheng.technology   -> Postiz 服务
 content.wingheng.technology  -> 公开内容站
 ```
 
 当前 `wingheng.technology` 与 `www.wingheng.technology` 已通过 Cloudflare 代理访问 GEO Ops。
+`txpuro.com` 与 `www.txpuro.com` 用于同一套 Next.js 应用中的公开产品站。
 如果 DNS 还没准备好，可以先用 `http://47.239.166.249` 临时验证 GEO Ops。
 裸 IP 无法正常签发标准 HTTPS 证书，所以正式环境仍然需要域名。
 
@@ -171,6 +174,11 @@ nano /opt/geo-content-ops/deploy/Caddyfile.example
 
 ```caddy
 http://wingheng.technology, http://www.wingheng.technology, :80 {
+  encode gzip zstd
+  reverse_proxy geo-ops:3000
+}
+
+http://txpuro.com, http://www.txpuro.com {
   encode gzip zstd
   reverse_proxy geo-ops:3000
 }

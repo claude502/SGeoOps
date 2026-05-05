@@ -7,6 +7,7 @@ import {
   isBasicAuthConfigured,
   shouldBypassAuthPath,
 } from "@/lib/basic-auth";
+import { isTxpuroHost } from "@/lib/site-context";
 
 const failedAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -87,8 +88,16 @@ function jsonResponse(body: unknown, status: number, requestId: string, headers?
 
 export function middleware(request: NextRequest) {
   const id = requestId(request);
+  const isPublicHost = isTxpuroHost(request.headers.get("host"));
+  const pathname = request.nextUrl.pathname;
 
-  if (shouldBypassAuthPath(request.nextUrl.pathname)) {
+  if (
+    shouldBypassAuthPath(pathname) ||
+    (isPublicHost &&
+      (pathname === "/" ||
+        pathname === "/llms.txt" ||
+        !pathname.startsWith("/api/")))
+  ) {
     return nextResponse(request, id);
   }
 

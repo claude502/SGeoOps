@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { ContentAsset } from "@/types/geo";
+import type { ContentAsset, ContentAssetType, ContentLocale, CtaMode, PublishTarget, SchemaType } from "@/types/geo";
+import { contentAssetTypes, contentLocales, ctaModes, publishTargets, schemaTypes } from "@/types/geo";
 
 const optionalTrimmedText = z.preprocess(
   (value) => (typeof value === "string" && !value.trim() ? undefined : value),
@@ -32,6 +33,15 @@ const keywordInput = z
     message: "At least one target keyword is required.",
   });
 
+const faqInput = z
+  .array(
+    z.object({
+      question: z.string().trim().min(1),
+      answer: z.string().trim().min(1),
+    }),
+  )
+  .optional();
+
 export const contentAssetInputSchema = z.object({
   title: z.string().trim().min(1),
   body: z.string().trim().min(1),
@@ -41,6 +51,18 @@ export const contentAssetInputSchema = z.object({
   targetKeywords: keywordInput,
   canonicalUrl: httpUrl,
   owner: optionalTrimmedText,
+  slug: optionalTrimmedText,
+  locale: z.enum(contentLocales).optional(),
+  assetType: z.enum(contentAssetTypes).optional(),
+  audience: optionalTrimmedText,
+  seoTitle: optionalTrimmedText,
+  metaDescription: optionalTrimmedText,
+  faqs: faqInput,
+  schemaType: z.enum(schemaTypes).optional(),
+  ctaMode: z.enum(ctaModes).optional(),
+  publishTarget: z.enum(publishTargets).optional(),
+  isPublic: z.boolean().optional(),
+  publishedPath: optionalTrimmedText,
 });
 
 export type ContentAssetInput = z.infer<typeof contentAssetInputSchema>;
@@ -64,11 +86,63 @@ function keywords(input: string[] | string | undefined) {
     .filter(Boolean);
 }
 
+function normalizeSlug(input: string | undefined, title: string) {
+  if (input?.trim()) {
+    return input
+      .trim()
+      .split("/")
+      .map((segment) => slug(segment))
+      .filter(Boolean)
+      .join("/") || "content";
+  }
+  return slug(title) || "content";
+}
+
+function normalizeLocale(input: ContentLocale | undefined) {
+  return input || "zh-CN";
+}
+
+function normalizeAssetType(input: ContentAssetType | undefined) {
+  return input || "guide-page";
+}
+
+function normalizeSchemaType(input: SchemaType | undefined, assetType: ContentAssetType) {
+  if (input) {
+    return input;
+  }
+  if (assetType === "faq-page") {
+    return "faq";
+  }
+  if (assetType === "money-page" || assetType === "feature-page") {
+    return "product";
+  }
+  return "article";
+}
+
+function normalizePublishTarget(input: PublishTarget | undefined, isPublic: boolean) {
+  if (input) {
+    return input;
+  }
+  return isPublic ? "txpuro" : "geo_ops_internal";
+}
+
+function normalizePublishedPath(input: string | undefined, locale: ContentLocale, pageSlug: string) {
+  if (input?.trim()) {
+    return input.trim().startsWith("/") ? input.trim() : `/${input.trim()}`;
+  }
+  return locale === "en" ? `/en/${pageSlug}` : `/${pageSlug}`;
+}
+
 export function buildContentAsset(input: ContentAssetInput, now = new Date()): ContentAsset {
   const timestamp = now.toISOString();
+  const locale = normalizeLocale(input.locale);
+  const assetType = normalizeAssetType(input.assetType);
+  const pageSlug = normalizeSlug(input.slug, input.title);
+  const isPublic = Boolean(input.isPublic);
+  const publishTarget = normalizePublishTarget(input.publishTarget, isPublic);
 
   return {
-    id: `asset_${slug(input.title) || "content"}_${now.getTime()}`,
+    id: `asset_${pageSlug}_${locale.toLowerCase()}_${now.getTime()}`,
     title: input.title,
     body: input.body,
     summary: input.summary || input.body.replace(/\s+/g, " ").slice(0, 180),
@@ -83,5 +157,17 @@ export function buildContentAsset(input: ContentAssetInput, now = new Date()): C
     sourceSystem: "geo_ops",
     externalUrl: null,
     publishedAt: null,
+    slug: pageSlug,
+    locale,
+    assetType,
+    audience: input.audience || null,
+    seoTitle: input.seoTitle || input.title,
+    metaDescription: input.metaDescription || input.summary || input.body.replace(/\s+/g, " ").slice(0, 160),
+    faqs: input.faqs || [],
+    schemaType: normalizeSchemaType(input.schemaType, assetType),
+    ctaMode: (input.ctaMode as CtaMode | undefined) || "self_signup",
+    publishTarget,
+    isPublic,
+    publishedPath: normalizePublishedPath(input.publishedPath, locale, pageSlug),
   };
 }
