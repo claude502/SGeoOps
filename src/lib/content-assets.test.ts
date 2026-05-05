@@ -82,7 +82,7 @@ describe("content asset input", () => {
     expect(asset.slug).toBe("guides/what-is-myinvois");
     expect(asset.publishTarget).toBe("txpuro");
     expect(asset.isPublic).toBe(true);
-    expect(asset.publishedPath).toBe("/en/guides/what-is-myinvois");
+    expect(asset.publishedPath).toBe("/guides/en/what-is-myinvois");
     expect(asset.schemaType).toBe("article");
   });
 });

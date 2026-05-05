@@ -11,15 +11,15 @@ export async function GET() {
 
   const assets = await listTxpuroPublicAssets();
   const priorityPaths = new Set([
-    "/",
-    "/pricing",
-    "/features",
-    "/faq",
+    "/guides",
+    "/guides/pricing",
+    "/guides/features",
+    "/guides/faq",
     "/guides/malaysia-einvoice-implementation-timeline",
     "/guides/what-is-myinvois",
-    "/compare/txpuro-vs-myinvois-portal",
-    "/security",
-    "/contact",
+    "/guides/compare/txpuro-vs-myinvois-portal",
+    "/guides/security",
+    "/guides/contact",
   ]);
   const lines = [
     "# Txpuro public knowledge map",

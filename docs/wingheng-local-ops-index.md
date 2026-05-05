@@ -10,7 +10,8 @@ Last updated: 2026-05-05
 | --- | --- |
 | 服务器公网 IP | `47.239.166.249` |
 | 主域名 | `wingheng.technology` |
-| Txpuro 公开域名 | `txpuro.com` / `www.txpuro.com` |
+| Txpuro GEO 公网 URL | `txpuro.com/guides/*` |
+| Txpuro GEO 源站域名 | `geo-origin.winghengtech.com` |
 | 临时 IP 入口 | `http://47.239.166.249` |
 | 正式入口 | `https://wingheng.technology` |
 | 远程目录 | `/opt/geo-content-ops` |
@@ -29,7 +30,7 @@ Last updated: 2026-05-05
 | `/api/healthz` | `200` |
 | 未登录访问 `/` | `401` |
 | 写入 API | 需要 Basic Auth + `x-geo-ops-action: true` |
-| Txpuro 公开站 | 与当前 Next.js 服务同仓同机部署 |
+| Txpuro GEO 内容区 | 由当前 Next.js 服务承载，经 Cloudflare 路径代理到 `txpuro.com/guides/*` |
 
 详细远程部署文档：
 
@@ -60,6 +61,12 @@ flowchart TB
 | Postiz | 社媒账号连接、预览、排期、发布 |
 | PostgreSQL | ContentAsset、GeoRun、ChannelVariant、GeoFlowTaskLink、GeoFlowSyncRun、AuditEvent |
 | Caddy | 反向代理，当前兼容 Cloudflare Flexible，后续建议 Full strict |
+
+Txpuro 当前的最终接入方式不是整站接管，而是：
+
+- `txpuro.com` 主站继续跑现有系统
+- `txpuro.com/guides/*`、`/llms.txt`、`/sitemap-guides.xml` 由 Cloudflare Origin Rule 转发到 `geo-origin.winghengtech.com`
+- `geo-origin.winghengtech.com` 再回源到这台 `geo-ops` 服务
 
 详细架构文档：
 

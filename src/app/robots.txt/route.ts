@@ -11,7 +11,7 @@ export async function GET() {
   }
 
   return new NextResponse(
-    `User-agent: *\nAllow: /\nSitemap: ${txpuroBaseUrl()}/sitemap.xml\n`,
+    `User-agent: *\nAllow: /guides/\nSitemap: ${txpuroBaseUrl()}/sitemap-guides.xml\n`,
     {
       headers: { "content-type": "text/plain; charset=utf-8" },
     },

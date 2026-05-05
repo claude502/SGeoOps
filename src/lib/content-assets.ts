@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ContentAsset, ContentAssetType, ContentLocale, CtaMode, PublishTarget, SchemaType } from "@/types/geo";
 import { contentAssetTypes, contentLocales, ctaModes, publishTargets, schemaTypes } from "@/types/geo";
+import { txpuroGuidesPath } from "@/lib/site-context";
 
 const optionalTrimmedText = z.preprocess(
   (value) => (typeof value === "string" && !value.trim() ? undefined : value),
@@ -126,9 +127,17 @@ function normalizePublishTarget(input: PublishTarget | undefined, isPublic: bool
   return isPublic ? "txpuro" : "geo_ops_internal";
 }
 
-function normalizePublishedPath(input: string | undefined, locale: ContentLocale, pageSlug: string) {
+function normalizePublishedPath(
+  input: string | undefined,
+  locale: ContentLocale,
+  pageSlug: string,
+  publishTarget: PublishTarget,
+) {
   if (input?.trim()) {
     return input.trim().startsWith("/") ? input.trim() : `/${input.trim()}`;
+  }
+  if (publishTarget === "txpuro") {
+    return txpuroGuidesPath(pageSlug, locale);
   }
   return locale === "en" ? `/en/${pageSlug}` : `/${pageSlug}`;
 }
@@ -168,6 +177,6 @@ export function buildContentAsset(input: ContentAssetInput, now = new Date()): C
     ctaMode: (input.ctaMode as CtaMode | undefined) || "self_signup",
     publishTarget,
     isPublic,
-    publishedPath: normalizePublishedPath(input.publishedPath, locale, pageSlug),
+    publishedPath: normalizePublishedPath(input.publishedPath, locale, pageSlug, publishTarget),
   };
 }

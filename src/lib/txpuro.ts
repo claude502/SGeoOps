@@ -1,7 +1,7 @@
 import type { ContentAsset, ContentAssetType, ContentLocale, GeoProject } from "@/types/geo";
 import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
 import { isDatabaseConfigured } from "@/lib/prisma";
-import { txpuroBaseUrl } from "@/lib/site-context";
+import { txpuroCanonicalUrl, txpuroGuidesPath } from "@/lib/site-context";
 
 type TxpuroFaq = { question: string; answer: string };
 type TxpuroSpec = {
@@ -66,21 +66,26 @@ function sectionBlock(title: string, paragraphs: string[]) {
   return [`## ${title}`, ...paragraphs].join("\n\n");
 }
 
-function publicPath(slug: string, locale: ContentLocale) {
-  const normalized = slug === "home" ? "" : slug;
-  if (locale === "en") {
-    return normalized ? `/en/${normalized}` : "/en";
-  }
-  return normalized ? `/${normalized}` : "/";
-}
-
-function canonicalUrl(slug: string, locale: ContentLocale) {
-  const path = publicPath(slug, locale);
-  return `${txpuroBaseUrl()}${path === "/" ? "" : path}`;
-}
-
 function assetId(slug: string, locale: ContentLocale) {
   return `asset_txpuro_${slug.replace(/\//g, "_")}_${locale.toLowerCase()}`;
+}
+
+function normalizeStoredSlug(slug: string) {
+  return slug.replace(/^guides\//, "") || "home";
+}
+
+function normalizePublicAsset(asset: ContentAsset): ContentAsset {
+  if (asset.publishTarget !== "txpuro" || !asset.isPublic) {
+    return asset;
+  }
+
+  const locale = asset.locale || "zh-CN";
+  const slug = asset.slug || "home";
+  return {
+    ...asset,
+    canonicalUrl: txpuroCanonicalUrl(slug, locale),
+    publishedPath: txpuroGuidesPath(slug, locale),
+  };
 }
 
 function productFaqs(locale: ContentLocale): TxpuroFaq[] {
@@ -685,8 +690,8 @@ export const txpuroStarterSpecs = [...coreSpecs, ...generatedSpecs];
 export function txpuroStarterAssets() {
   return txpuroStarterSpecs.map((spec) => {
     const now = "2026-05-05T00:00:00.000Z";
-    const path = publicPath(spec.slug, spec.locale);
-    const canonical = canonicalUrl(spec.slug, spec.locale);
+    const path = txpuroGuidesPath(spec.slug, spec.locale);
+    const canonical = txpuroCanonicalUrl(spec.slug, spec.locale);
     return {
       id: assetId(spec.slug, spec.locale),
       title: spec.title,
@@ -731,19 +736,30 @@ export function txpuroSpecByPath(slug: string, locale: ContentLocale) {
 export async function getTxpuroPublicAsset(slug: string, locale: ContentLocale) {
   if (isDatabaseConfigured()) {
     const repository = new PrismaGeoFlowBridgeRepository();
-    const persisted = await repository.findPublicContentAsset(slug, locale, "txpuro");
-    if (persisted) {
-      return persisted;
+    const candidates = Array.from(new Set([slug, normalizeStoredSlug(slug), `guides/${normalizeStoredSlug(slug)}`]));
+    for (const candidate of candidates) {
+      const persisted = await repository.findPublicContentAsset(candidate, locale, "txpuro");
+      if (persisted) {
+        return normalizePublicAsset(persisted);
+      }
     }
   }
-  return txpuroStarterAssets().find((asset) => asset.slug === slug && asset.locale === locale) ?? null;
+  return (
+    txpuroStarterAssets().find(
+      (asset) =>
+        asset.locale === locale &&
+        normalizeStoredSlug(asset.slug || "home") === normalizeStoredSlug(slug),
+    ) ?? null
+  );
 }
 
 export async function listTxpuroPublicAssets() {
   if (isDatabaseConfigured()) {
     const repository = new PrismaGeoFlowBridgeRepository();
     const assets = await repository.listContentAssets();
-    const publicAssets = assets.filter((asset) => asset.publishTarget === "txpuro" && asset.isPublic);
+    const publicAssets = assets
+      .filter((asset) => asset.publishTarget === "txpuro" && asset.isPublic)
+      .map(normalizePublicAsset);
     if (publicAssets.length) {
       return publicAssets;
     }

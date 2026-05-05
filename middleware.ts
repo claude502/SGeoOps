@@ -7,7 +7,7 @@ import {
   isBasicAuthConfigured,
   shouldBypassAuthPath,
 } from "@/lib/basic-auth";
-import { isTxpuroHost } from "@/lib/site-context";
+import { isTxpuroHost, TXPURO_GUIDES_PREFIX } from "@/lib/site-context";
 
 const failedAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -90,14 +90,13 @@ export function middleware(request: NextRequest) {
   const id = requestId(request);
   const isPublicHost = isTxpuroHost(request.headers.get("host"));
   const pathname = request.nextUrl.pathname;
+  const isPublicPath =
+    pathname === "/llms.txt" ||
+    pathname === "/sitemap-guides.xml" ||
+    pathname === TXPURO_GUIDES_PREFIX ||
+    pathname.startsWith(`${TXPURO_GUIDES_PREFIX}/`);
 
-  if (
-    shouldBypassAuthPath(pathname) ||
-    (isPublicHost &&
-      (pathname === "/" ||
-        pathname === "/llms.txt" ||
-        !pathname.startsWith("/api/")))
-  ) {
+  if (shouldBypassAuthPath(pathname) || (isPublicHost && isPublicPath)) {
     return nextResponse(request, id);
   }
 

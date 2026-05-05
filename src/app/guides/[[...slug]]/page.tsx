@@ -2,16 +2,18 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { TxpuroSitePage } from "@/components/txpuro-site";
-import { isTxpuroHost, normalizeLocaleFromSlug } from "@/lib/site-context";
+import { isTxpuroHost, normalizeLocaleFromGuidesSlug } from "@/lib/site-context";
 import { getTxpuroPublicAsset, txpuroCompanyLabel, txpuroSiteLabel } from "@/lib/txpuro";
 
 type PageProps = {
-  params: Promise<{ slug: string[] }>;
+  params: Promise<{ slug?: string[] }>;
 };
 
 function slugKey(segments: string[]) {
   return segments.length ? segments.join("/") : "home";
 }
+
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const host = (await headers()).get("host");
@@ -20,7 +22,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   }
 
   const { slug } = await params;
-  const { locale, pathSegments } = normalizeLocaleFromSlug(slug);
+  const { locale, pathSegments } = normalizeLocaleFromGuidesSlug(slug);
   const asset = await getTxpuroPublicAsset(slugKey(pathSegments), locale);
   if (!asset) {
     return {};
@@ -46,14 +48,14 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   };
 }
 
-export default async function TxpuroCatchAllPage({ params }: PageProps) {
+export default async function TxpuroGuidesPage({ params }: PageProps) {
   const host = (await headers()).get("host");
   if (!isTxpuroHost(host)) {
     notFound();
   }
 
   const { slug } = await params;
-  const { locale, pathSegments } = normalizeLocaleFromSlug(slug);
+  const { locale, pathSegments } = normalizeLocaleFromGuidesSlug(slug);
   const asset = await getTxpuroPublicAsset(slugKey(pathSegments), locale);
   if (!asset) {
     notFound();

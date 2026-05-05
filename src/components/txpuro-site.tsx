@@ -1,37 +1,35 @@
 import Link from "next/link";
 import { ArrowRight, BadgeCheck, CheckCircle2, ExternalLink, FileText, Globe2, Layers3, ShieldCheck } from "lucide-react";
 import type { ContentAsset, ContentLocale } from "@/types/geo";
+import { txpuroGuidesPath } from "@/lib/site-context";
 import { txpuroCompanyLabel, txpuroSiteLabel, txpuroStructuredSections } from "@/lib/txpuro";
 
 function defaultSignupUrl() {
-  return process.env.TXPURO_SELF_SIGNUP_URL || "/contact";
+  return process.env.TXPURO_SELF_SIGNUP_URL || "https://txpuro.com/contact";
 }
 
 function defaultDemoUrl() {
-  return process.env.TXPURO_DEMO_URL || "/contact";
+  return process.env.TXPURO_DEMO_URL || "https://txpuro.com/contact";
 }
 
 function defaultContactUrl() {
-  return process.env.TXPURO_CONTACT_URL || "/contact";
+  return process.env.TXPURO_CONTACT_URL || "https://txpuro.com/contact";
 }
 
-function localizedPath(locale: ContentLocale, path: string) {
-  if (locale === "en") {
-    return path === "/" ? "/en" : `/en${path}`;
-  }
-  return path;
+function localizedPath(locale: ContentLocale, slug: string) {
+  return txpuroGuidesPath(slug, locale);
 }
 
 function navItems(locale: ContentLocale) {
   return [
-    { href: localizedPath(locale, "/pricing"), label: locale === "en" ? "Pricing" : "价格" },
-    { href: localizedPath(locale, "/features"), label: locale === "en" ? "Features" : "功能" },
-    { href: localizedPath(locale, "/faq"), label: locale === "en" ? "FAQ" : "常见问题" },
+    { href: localizedPath(locale, "pricing"), label: locale === "en" ? "Pricing" : "价格" },
+    { href: localizedPath(locale, "features"), label: locale === "en" ? "Features" : "功能" },
+    { href: localizedPath(locale, "faq"), label: locale === "en" ? "FAQ" : "常见问题" },
     {
-      href: localizedPath(locale, "/guides/what-is-myinvois"),
+      href: localizedPath(locale, "what-is-myinvois"),
       label: locale === "en" ? "Guides" : "指南",
     },
-    { href: localizedPath(locale, "/contact"), label: locale === "en" ? "Contact" : "联系" },
+    { href: localizedPath(locale, "contact"), label: locale === "en" ? "Contact" : "联系" },
   ];
 }
 
@@ -77,14 +75,7 @@ export function TxpuroSitePage({
   const demoUrl = defaultDemoUrl();
   const contactUrl = defaultContactUrl();
   const isEnglish = locale === "en";
-  const alternatePath =
-    locale === "en"
-      ? asset.slug === "home"
-        ? "/"
-        : `/${asset.slug || ""}`
-      : asset.slug === "home"
-        ? "/en"
-        : `/en/${asset.slug || ""}`;
+  const alternatePath = txpuroGuidesPath(asset.slug || "home", locale === "en" ? "zh-CN" : "en");
   const structuredData =
     asset.schemaType === "faq"
       ? {
@@ -135,7 +126,7 @@ export function TxpuroSitePage({
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
       <header className="txpuro-topbar">
-        <Link className="txpuro-brand" href={localizedPath(locale, "/")}>
+        <Link className="txpuro-brand" href={localizedPath(locale, "home")}>
           <span className="txpuro-brand-mark">T</span>
           <div>
             <strong>{txpuroSiteLabel(locale)}</strong>

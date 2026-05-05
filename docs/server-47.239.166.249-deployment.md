@@ -53,7 +53,19 @@ content.wingheng.technology  -> 公开内容站
 ```
 
 当前 `wingheng.technology` 与 `www.wingheng.technology` 已通过 Cloudflare 代理访问 GEO Ops。
-`txpuro.com` 与 `www.txpuro.com` 用于同一套 Next.js 应用中的公开产品站。
+`txpuro.com` 主站保留给现有系统；当前 GEO 内容通过 Cloudflare 路径代理方式接入：
+
+```text
+txpuro.com/guides/*            -> geo-origin.winghengtech.com
+txpuro.com/llms.txt           -> geo-origin.winghengtech.com
+txpuro.com/sitemap-guides.xml -> geo-origin.winghengtech.com
+```
+
+源站域名：
+
+```text
+geo-origin.winghengtech.com -> 47.239.166.249
+```
 如果 DNS 还没准备好，可以先用 `http://47.239.166.249` 临时验证 GEO Ops。
 裸 IP 无法正常签发标准 HTTPS 证书，所以正式环境仍然需要域名。
 
@@ -178,10 +190,30 @@ http://wingheng.technology, http://www.wingheng.technology, :80 {
   reverse_proxy geo-ops:3000
 }
 
-http://txpuro.com, http://www.txpuro.com {
+geo-origin.winghengtech.com {
   encode gzip zstd
   reverse_proxy geo-ops:3000
 }
+```
+
+Cloudflare Origin Rule 表达式：
+
+```text
+(http.host eq "txpuro.com" and starts_with(http.request.uri.path, "/guides/"))
+or
+(http.host eq "txpuro.com" and http.request.uri.path eq "/guides")
+or
+(http.host eq "txpuro.com" and http.request.uri.path eq "/llms.txt")
+or
+(http.host eq "txpuro.com" and http.request.uri.path eq "/sitemap-guides.xml")
+```
+
+Origin Rule override 建议：
+
+```text
+Host header override = geo-origin.winghengtech.com
+DNS record override  = geo-origin.winghengtech.com
+SNI override         = geo-origin.winghengtech.com
 ```
 
 如果 Cloudflare 改为 `Full (strict)`，建议改成：

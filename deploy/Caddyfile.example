@@ -3,7 +3,7 @@ http://wingheng.technology, http://www.wingheng.technology, :80 {
   reverse_proxy geo-ops:3000
 }
 
-http://txpuro.com, http://www.txpuro.com {
+geo-origin.winghengtech.com {
   encode gzip zstd
   reverse_proxy geo-ops:3000
 }
