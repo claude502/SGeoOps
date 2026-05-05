@@ -4,6 +4,13 @@ Last updated: 2026-05-05
 
 这份文档用于快速定位当前远程部署、系统架构设计、账号密码保存位置。它不包含明文密码，可以提交到 Git。明文凭证只保存在本地 `.secrets/`。
 
+如果你只想先找到“系统相关文档”，优先看这 4 份：
+
+- [system-reference.md](./system-reference.md)
+- [system-sop.md](./system-sop.md)
+- [server-47.239.166.249-deployment.md](./server-47.239.166.249-deployment.md)
+- [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
+
 ## 1. 当前远程部署
 
 | 项目 | 当前值 |
@@ -30,7 +37,7 @@ Last updated: 2026-05-05
 | `/api/healthz` | `200` |
 | 未登录访问 `/` | `401` |
 | 写入 API | 需要 Basic Auth + `x-geo-ops-action: true` |
-| Txpuro GEO 内容区 | 由当前 Next.js 服务承载，经 Cloudflare 路径代理到 `txpuro.com/guides/*` |
+| Txpuro GEO 内容区 | 由当前 Next.js 服务承载，经 Cloudflare Worker routes 代理到 `txpuro.com/guides/*` |
 
 详细远程部署文档：
 
@@ -65,11 +72,13 @@ flowchart TB
 Txpuro 当前的最终接入方式不是整站接管，而是：
 
 - `txpuro.com` 主站继续跑现有系统
-- `txpuro.com/guides/*`、`/llms.txt`、`/sitemap-guides.xml` 由 Cloudflare Origin Rule 转发到 `geo-origin.winghengtech.com`
+- `txpuro.com/guides/*`、`/llms.txt`、`/sitemap-guides.xml` 由 Cloudflare Worker routes 转发到 `geo-origin.winghengtech.com`
 - `geo-origin.winghengtech.com` 再回源到这台 `geo-ops` 服务
 
 详细架构文档：
 
+- [system-reference.md](./system-reference.md)
+- [system-sop.md](./system-sop.md)
 - [architecture.md](./architecture.md)
 - [geoflow-rollout.md](./geoflow-rollout.md)
 - [txpuro-geo-strategy.md](./txpuro-geo-strategy.md)

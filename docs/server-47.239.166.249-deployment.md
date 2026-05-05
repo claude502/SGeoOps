@@ -53,7 +53,7 @@ content.wingheng.technology  -> 公开内容站
 ```
 
 当前 `wingheng.technology` 与 `www.wingheng.technology` 已通过 Cloudflare 代理访问 GEO Ops。
-`txpuro.com` 主站保留给现有系统；当前 GEO 内容通过 Cloudflare 路径代理方式接入：
+`txpuro.com` 主站保留给现有系统；当前 GEO 内容通过 Cloudflare Worker 路径代理方式接入：
 
 ```text
 txpuro.com/guides/*            -> geo-origin.winghengtech.com
@@ -196,24 +196,19 @@ geo-origin.winghengtech.com {
 }
 ```
 
-Cloudflare Origin Rule 表达式：
+Cloudflare Worker Routes：
 
 ```text
-(http.host eq "txpuro.com" and starts_with(http.request.uri.path, "/guides/"))
-or
-(http.host eq "txpuro.com" and http.request.uri.path eq "/guides")
-or
-(http.host eq "txpuro.com" and http.request.uri.path eq "/llms.txt")
-or
-(http.host eq "txpuro.com" and http.request.uri.path eq "/sitemap-guides.xml")
+txpuro.com/guides
+txpuro.com/guides/*
+txpuro.com/llms.txt
+txpuro.com/sitemap-guides.xml
 ```
 
-Origin Rule override 建议：
+Worker 回源目标：
 
 ```text
-Host header override = geo-origin.winghengtech.com
-DNS record override  = geo-origin.winghengtech.com
-SNI override         = geo-origin.winghengtech.com
+geo-origin.winghengtech.com
 ```
 
 如果 Cloudflare 改为 `Full (strict)`，建议改成：
