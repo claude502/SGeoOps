@@ -32,9 +32,13 @@ Private network
 
 ## 系统边界
 
+当前项目的最新边界是：系统本身可以通过“源站链接”分发内容，但不直接承担社媒账号发布。
+
+也就是说，当前系统负责热点采集、内容生成、公开 URL、`llms.txt`、sitemap 和后续内容包 API；专门的外部分发系统负责连接平台账号、排期、发布和回传状态。Postiz 如果继续使用，只作为可选下游分发系统之一。
+
 | 模块 | 职责 | 访问方式 | 是否公网 |
 | --- | --- | --- | --- |
-| GEO Ops | 总控台、GEO 监测、brief、内容资产、GEOFlow/Postiz handoff | `geo.example.com` | 只给内部团队 |
+| GEO Ops | 总控台、GEO 监测、brief、内容资产、源站链接、内容包输出、GEOFlow bridge、分发状态回传 | `geo.example.com` | 只给内部团队 |
 | GEOFlow | 知识库、AI 内容生成、文章审核、前台信源站发布 | `geoflow.example.com` + API | 后台只给内部团队，发布页可公网 |
 | Postiz | 多社媒账号连接、排期、预览、发布 | `postiz.example.com` | 只给内部团队/OAuth 回调 |
 | 内容站 | 官网、知识站、FAQ、对比页、文章页、`llms.txt` | `content.example.com` 或主域 | 公网 |
@@ -144,7 +148,7 @@ sequenceDiagram
 
 访问控制：
 
-- GEO Ops、GEOFlow、Postiz 后台默认不公开给全网团队以外用户。
+- GEO Ops、GEOFlow、外部分发系统后台默认不公开给全网团队以外用户。
 - 生产建议使用 Cloudflare Access、VPN、SSO、IP allowlist 或应用内 MFA。
 - 内容站公开，后台和 API 不允许搜索引擎索引。
 
@@ -253,7 +257,7 @@ HTTPS：
 - Kubernetes/ECS/Nomad。
 - 私有 VPC、多可用区。
 - SSO/SAML/OIDC、RBAC、审计日志。
-- 独立 worker 池处理 GEO 监测、GEOFlow sync、Postiz handoff。
+- 独立 worker 池处理 GEO 监测、GEOFlow sync、内容包生成和分发状态回传。
 - 数据仓库或 BI 系统沉淀 GEO 趋势。
 
 ## 当前项目执行项

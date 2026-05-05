@@ -4,7 +4,7 @@
 
 将 GEOFlow 作为 GEO 内容账号系统的一环，而不是替代 GEO Ops 总控台。
 
-- GEO Ops 负责 GEO 监测、brief、内容资产、社媒 variants、Postiz handoff。
+- GEO Ops 负责 GEO 监测、brief、内容资产、源站链接、内容包输出和分发状态回传；Postiz 如继续使用，只作为可选下游分发系统之一。
 - GEOFlow 负责知识库辅助内容生成、文章审核、前台信源站发布。
 - Postiz 负责多社媒账号连接、预览、排期、发布。
 
@@ -24,7 +24,7 @@ GEO Ops Dashboard
   -> POST /api/integrations/geoflow/sync
   -> PostgreSQL ContentAsset + GeoFlowTaskLink update
   -> Generate social variants
-  -> Postiz handoff
+  -> Export package / source link output
 ```
 
 ## 必需服务
@@ -172,7 +172,7 @@ Bridge 状态：
 - 移除或清空 `GEOFLOW_API_TOKEN` 即可停用 GEOFlow bridge。
 - GEO audit、brief、variant 生成仍可继续运行。
 - 数据库记录不在回滚时删除。
-- Postiz handoff 保持独立。
+- 分发系统保持独立；当前系统只输出源站链接和内容包。
 
 ## 当前执行状态
 

@@ -132,22 +132,23 @@ Last updated: 2026-05-05
 
 同步回当前资产。
 
-### 步骤 7：生成渠道版本
+### 步骤 7：发布源站链接或生成内容包
 
-对已确定的主内容生成：
+对已确定的主内容，当前系统优先做两件事：
 
-- LinkedIn
-- X
-- WeChat
-- Xiaohongshu
+- 发布为 `txpuro.com/guides/*` 源站链接
+- 生成可交给外部分发系统的内容包
 
-### 步骤 8：交给 Postiz
+### 步骤 8：交给外部分发系统
 
-用于：
+外部分发系统负责：
 
-- 预览
-- 排期
-- 发布
+- 选择平台账号
+- 适配平台格式
+- 排期发布
+- 回传发布 URL 和发布状态
+
+Postiz 如果继续使用，只作为可选下游分发系统之一，不再是当前系统核心职责。
 
 ## 4. Txpuro guides 运营优先级
 
@@ -220,11 +221,11 @@ Last updated: 2026-05-05
 
 ### 周四
 
-- 把主内容生成渠道 variants
+- 把主内容整理成源站链接和内容包
 
 ### 周五
 
-- 在 Postiz 排期
+- 在外部分发系统排期
 - 复盘 AI 提及与引用变化
 
 ## 7. 出问题先查哪里
@@ -282,3 +283,4 @@ Last updated: 2026-05-05
 - [server-47.239.166.249-deployment.md](./server-47.239.166.249-deployment.md)
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
 - [txpuro-geo-strategy.md](./txpuro-geo-strategy.md)
+- [content-source-and-distribution-boundary.md](./content-source-and-distribution-boundary.md)

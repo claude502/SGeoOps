@@ -4,7 +4,9 @@ Last updated: 2026-05-05
 
 ## 1. 系统定位
 
-这套系统不是单一官网，也不是单一内容工具，而是一套围绕 `GEO / AEO / AI Search` 运营的内容与分发系统。
+这套系统不是单一官网，也不是单一内容工具，而是一套围绕 `GEO / AEO / AI Search` 运营的内容情报、生成与源站输出系统。
+
+当前系统可以做“分发”，但分发方式是发布为当前系统自己的公开 URL 和标准化内容包，不直接承担社媒账号连接、OAuth、排期发布和平台风控。外部专门的分发系统负责把这些链接和内容包发布到指定平台账号。
 
 当前实际组成：
 
@@ -29,7 +31,8 @@ flowchart TB
   Caddy --> Ops["GEO Ops Next.js"]
   Ops --> PG[("PostgreSQL")]
   Ops --> GeoFlow["GEOFlow API bridge"]
-  Ops --> Postiz["Postiz handoff"]
+  Ops --> Source["Source links / Export packages"]
+  Source --> Distributor["External distribution system"]
 ```
 
 说明：
@@ -41,6 +44,7 @@ flowchart TB
   - `/llms.txt`
   - `/sitemap-guides.xml`
 - GEO Ops 内部后台仍然挂在 `wingheng.technology`
+- 当前系统输出 `txpuro.com/guides/*` 公开链接和后续 `ExportPackage` 内容包，外部分发系统负责发到具体平台账号
 
 ## 3. 域名与入口
 
@@ -88,7 +92,8 @@ flowchart TB
 - GEO audit
 - 渠道变体 `ChannelVariant`
 - GEOFlow 发送与同步
-- Postiz handoff
+- Source links / Export packages
+- Distribution status callback
 - 系统健康检查与操作审计
 
 核心页面：
@@ -118,12 +123,14 @@ flowchart TB
 - 轮询同步文章状态
 - 回写 published article URL 到内容资产
 
-### 4.4 Postiz Handoff
+### 4.4 Source Links / Export Packages
 
 职责：
 
-- 将主内容转成社媒 variants
-- 接到 Postiz 做排期与发布
+- 将内容发布为当前系统源站 URL
+- 输出可被下游系统读取的内容包
+- 记录外部分发系统回传的发布状态
+- Postiz 如继续使用，只作为可选下游分发系统之一，不再是当前系统核心模块
 
 ## 5. 数据模型
 
@@ -346,9 +353,10 @@ APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh
 4. 跑 GEO audit
 5. 如需长文生产，发送到 GEOFlow
 6. 发布成功后同步 GEOFlow 状态
-7. 生成渠道 variants
-8. handoff 到 Postiz
-9. 对外流量通过主站或 AI 搜索进入 `txpuro.com/guides/*`
+7. 发布为当前系统源站 URL，或生成可分发内容包
+8. 外部分发系统通过 URL/API 拉取内容并发布到指定平台
+9. 外部分发系统回传发布状态
+10. 对外流量通过主站、AI 搜索或分发平台进入 `txpuro.com/guides/*`
 
 ## 12. 当前文档清单
 
@@ -360,3 +368,4 @@ APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh
 - [geoflow-rollout.md](./geoflow-rollout.md)
 - [txpuro-geo-strategy.md](./txpuro-geo-strategy.md)
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
+- [content-source-and-distribution-boundary.md](./content-source-and-distribution-boundary.md)

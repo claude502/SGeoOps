@@ -4,12 +4,13 @@ Last updated: 2026-05-05
 
 这份文档用于快速定位当前远程部署、系统架构设计、账号密码保存位置。它不包含明文密码，可以提交到 Git。明文凭证只保存在本地 `.secrets/`。
 
-如果你只想先找到“系统相关文档”，优先看这 5 份：
+如果你只想先找到“系统相关文档”，优先看这 6 份：
 
 - [system-reference.md](./system-reference.md)
 - [system-sop.md](./system-sop.md)
 - [server-47.239.166.249-deployment.md](./server-47.239.166.249-deployment.md)
 - [account-documentation.md](./account-documentation.md)
+- [content-source-and-distribution-boundary.md](./content-source-and-distribution-boundary.md)
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
 
 ## 1. 当前远程部署
@@ -55,16 +56,17 @@ flowchart TB
   Caddy --> Ops["GEO Ops Next.js"]
   Ops --> PG[("PostgreSQL")]
   Ops --> Flow["GEOFlow API bridge"]
-  Ops --> Postiz["Postiz handoff"]
+  Ops --> Export["Source links / Export packages"]
+  Export --> Dist["External distribution system"]
   Flow --> Site["官网 / 知识站 / 信源站"]
-  Postiz --> Social["LinkedIn / X / 小红书 / 公众号等"]
+  Dist --> Social["LinkedIn / X / 小红书 / 公众号等"]
 ```
 
 核心职责：
 
 | 模块 | 职责 |
 | --- | --- |
-| GEO Ops | 总控台、内容资产、GEO audit、brief、社媒 variants、GEOFlow/Postiz handoff |
+| GEO Ops | 总控台、内容资产、GEO audit、brief、源站链接、内容包输出、GEOFlow bridge、分发状态回传 |
 | GEOFlow | 知识库、AI 内容生成、文章审核、前台信源站发布 |
 | Postiz | 社媒账号连接、预览、排期、发布 |
 | PostgreSQL | ContentAsset、GeoRun、ChannelVariant、GeoFlowTaskLink、GeoFlowSyncRun、AuditEvent |
@@ -84,6 +86,7 @@ Txpuro 当前的最终接入方式不是整站接管，而是：
 - [geoflow-rollout.md](./geoflow-rollout.md)
 - [txpuro-geo-strategy.md](./txpuro-geo-strategy.md)
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
+- [content-source-and-distribution-boundary.md](./content-source-and-distribution-boundary.md)
 
 ## 3. 账号密码保存位置
 
