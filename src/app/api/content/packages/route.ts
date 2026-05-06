@@ -6,7 +6,10 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const platform = searchParams.get("platform") ?? undefined;
   const cursor = searchParams.get("cursor") ?? undefined;
-  const limit = Math.min(parseInt(searchParams.get("limit") ?? "20", 10), 100);
+  const requestedLimit = parseInt(searchParams.get("limit") ?? "20", 10);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(requestedLimit, 1), 100)
+    : 20;
 
   const assets = await db.contentAsset.findMany({
     where: {

@@ -18,6 +18,11 @@ export async function PATCH(
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
+  const existingTopic = await db.trendTopic.findUnique({ where: { id } });
+  if (!existingTopic) {
+    return NextResponse.json({ error: "Trend topic not found" }, { status: 404 });
+  }
+
   const topic = await db.trendTopic.update({
     where: { id },
     data: { status: parsed.data.status },
