@@ -3,6 +3,7 @@ import { z } from "zod";
 import { recordAuditEvent } from "@/lib/audit-log";
 import { getRuntimeProject } from "@/lib/dashboard-snapshot";
 import { createGeoBrief } from "@/lib/geo-engine";
+import { contentAssetTypes } from "@/types/geo";
 
 const briefSchema = z.object({
   projectId: z.string().optional(),
@@ -10,9 +11,9 @@ const briefSchema = z.object({
   product: z.string().optional(),
   keywords: z.array(z.string().min(1)).optional(),
   competitors: z.array(z.string().min(1)).optional(),
-  audience: z.string().optional(),
+  audience: z.string().max(500).optional(),
   locale: z.string().optional(),
-  assetType: z.string().optional(),
+  assetType: z.enum(contentAssetTypes).optional(),
 });
 
 export async function POST(request: Request) {

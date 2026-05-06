@@ -22,11 +22,16 @@ export interface UpdateGeoFlowTaskLinkInput {
   lastError?: string | null;
 }
 
+export interface ListContentAssetsOptions {
+  take?: number;
+  cursor?: string;
+}
+
 export interface GeoFlowBridgeRepository {
   ensureContentAsset(asset: ContentAsset): Promise<void>;
   findContentAsset(contentAssetId: string): Promise<ContentAsset | null>;
   findPublicContentAsset(slug: string, locale: string, publishTarget?: string): Promise<ContentAsset | null>;
-  listContentAssets(): Promise<ContentAsset[]>;
+  listContentAssets(options?: ListContentAssetsOptions): Promise<ContentAsset[]>;
   seedContentAssets(assets: ContentAsset[]): Promise<void>;
   findLinkByIdempotencyKey(idempotencyKey: string): Promise<GeoFlowTaskLinkRecord | null>;
   createLink(input: CreateGeoFlowTaskLinkInput): Promise<GeoFlowTaskLinkRecord>;
@@ -228,10 +233,13 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
     return asset ? mapAsset(asset) : null;
   }
 
-  async listContentAssets() {
+  async listContentAssets(options?: ListContentAssetsOptions) {
+    const take = options?.take ?? 100;
+    const cursor = options?.cursor;
     const assets = await getPrisma().contentAsset.findMany({
       orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
-      take: 100,
+      take,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     });
     return assets.map(mapAsset);
   }
@@ -358,8 +366,12 @@ export class InMemoryGeoFlowBridgeRepository implements GeoFlowBridgeRepository 
     );
   }
 
-  async listContentAssets() {
-    return Array.from(this.assets.values());
+  async listContentAssets(options?: ListContentAssetsOptions) {
+    const all = Array.from(this.assets.values());
+    const take = options?.take ?? all.length;
+    const cursor = options?.cursor;
+    const start = cursor ? all.findIndex((a) => a.id === cursor) + 1 : 0;
+    return all.slice(start, start + take);
   }
 
   async seedContentAssets(assets: ContentAsset[]) {

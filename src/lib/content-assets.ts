@@ -107,17 +107,16 @@ function normalizeAssetType(input: ContentAssetType | undefined) {
   return input || "guide-page";
 }
 
-function normalizeSchemaType(input: SchemaType | undefined, assetType: ContentAssetType) {
-  if (input) {
-    return input;
-  }
-  if (assetType === "faq-page") {
-    return "faq";
-  }
-  if (assetType === "money-page" || assetType === "feature-page") {
-    return "product";
-  }
-  return "article";
+const SCHEMA_TYPE_DEFAULTS: Record<ContentAssetType, SchemaType> = {
+  "faq-page": "faq",
+  "money-page": "product",
+  "feature-page": "product",
+  "guide-page": "article",
+  "compare-page": "article",
+};
+
+function normalizeSchemaType(input: SchemaType | undefined, assetType: ContentAssetType): SchemaType {
+  return input ?? SCHEMA_TYPE_DEFAULTS[assetType] ?? "article";
 }
 
 function normalizePublishTarget(input: PublishTarget | undefined, isPublic: boolean) {
@@ -151,7 +150,7 @@ export function buildContentAsset(input: ContentAssetInput, now = new Date()): C
   const publishTarget = normalizePublishTarget(input.publishTarget, isPublic);
 
   return {
-    id: `asset_${pageSlug}_${locale.toLowerCase()}_${now.getTime()}`,
+    id: `asset_${pageSlug}_${locale.toLowerCase()}_${crypto.randomUUID().slice(0, 8)}`,
     title: input.title,
     body: input.body,
     summary: input.summary || input.body.replace(/\s+/g, " ").slice(0, 180),

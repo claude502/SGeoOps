@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeLocaleFromGuidesSlug, txpuroCanonicalUrl, txpuroGuidesPath } from "@/lib/site-context";
+import { isTxpuroHost, isOpsHost, normalizeLocaleFromGuidesSlug, txpuroCanonicalUrl, txpuroGuidesPath } from "@/lib/site-context";
 
 describe("site context helpers", () => {
   it("builds guide paths inside the dedicated public namespace", () => {
@@ -24,5 +24,20 @@ describe("site context helpers", () => {
       locale: "zh-CN",
       pathSegments: ["compare", "txpuro-vs-manual-process"],
     });
+  });
+
+  it("recognises txpuro canonical and www hosts", () => {
+    expect(isTxpuroHost("txpuro.com")).toBe(true);
+    expect(isTxpuroHost("www.txpuro.com")).toBe(true);
+    expect(isTxpuroHost("txpuro.com:3000")).toBe(true);
+    expect(isTxpuroHost("evil.com")).toBe(false);
+    expect(isTxpuroHost(null)).toBe(false);
+    expect(isTxpuroHost(undefined)).toBe(false);
+  });
+
+  it("recognises ops hosts from env defaults", () => {
+    expect(isOpsHost("wingheng.technology")).toBe(true);
+    expect(isOpsHost("www.wingheng.technology")).toBe(true);
+    expect(isOpsHost("txpuro.com")).toBe(false);
   });
 });

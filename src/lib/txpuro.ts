@@ -694,7 +694,7 @@ export const txpuroStarterSpecs = [...coreSpecs, ...generatedSpecs];
 
 export function txpuroStarterAssets() {
   return txpuroStarterSpecs.map((spec) => {
-    const now = "2026-05-05T00:00:00.000Z";
+    const now = new Date().toISOString();
     const path = txpuroGuidesPath(spec.slug, spec.locale);
     const canonical = txpuroCanonicalUrl(spec.slug, spec.locale);
     return {

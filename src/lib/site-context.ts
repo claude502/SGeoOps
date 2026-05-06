@@ -39,7 +39,8 @@ export function getOpsHosts() {
       .map((value) => {
         try {
           return new URL(value!).host;
-        } catch {
+        } catch (e) {
+          console.warn("Invalid NEXT_PUBLIC_APP_URL:", value, e);
           return value!;
         }
       })

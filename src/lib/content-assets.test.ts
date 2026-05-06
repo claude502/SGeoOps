@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildContentAsset, contentAssetInputSchema } from "@/lib/content-assets";
+import { contentAssetTypes } from "@/types/geo";
 
 describe("content asset input", () => {
   it("accepts blank optional source URL and falls back to canonical URL", () => {
@@ -21,7 +22,7 @@ describe("content asset input", () => {
     expect(asset.sourceUrl).toBe("https://wingheng.technology/geo");
     expect(asset.targetKeywords).toEqual(["GEO", "AI search", "GEO"]);
     expect(asset.owner).toBe("GEO Ops");
-    expect(asset.id).toBe("asset_wingheng-geo-page_zh-cn_1777852800000");
+    expect(asset.id).toMatch(/^asset_wingheng-geo-page_zh-cn_[0-9a-f]{8}$/);
   });
 
   it("requires at least one target keyword at the API boundary", () => {
@@ -84,5 +85,52 @@ describe("content asset input", () => {
     expect(asset.isPublic).toBe(true);
     expect(asset.publishedPath).toBe("/guides/en/what-is-myinvois");
     expect(asset.schemaType).toBe("article");
+  });
+
+  it("truncates slugs generated from titles longer than 48 chars", () => {
+    const parsed = contentAssetInputSchema.parse({
+      title: "This is a very long title that definitely exceeds the 48 character limit for slugs",
+      body: "body",
+      brandEntity: "Test",
+      canonicalUrl: "https://example.com/page",
+      targetKeywords: "test",
+    });
+    const asset = buildContentAsset(parsed);
+    expect(asset.slug!.length).toBeLessThanOrEqual(48);
+  });
+
+  it("assigns correct schema types for every asset type", () => {
+    const base = {
+      title: "Test",
+      body: "body",
+      brandEntity: "Test",
+      canonicalUrl: "https://example.com/page",
+      targetKeywords: "test",
+    };
+    const expected: Record<string, string> = {
+      "faq-page": "faq",
+      "money-page": "product",
+      "feature-page": "product",
+      "guide-page": "article",
+      "compare-page": "article",
+    };
+    for (const assetType of contentAssetTypes) {
+      const parsed = contentAssetInputSchema.parse({ ...base, assetType });
+      const asset = buildContentAsset(parsed);
+      expect(asset.schemaType).toBe(expected[assetType]);
+    }
+  });
+
+  it("generates unique IDs for concurrent builds of the same asset", () => {
+    const parsed = contentAssetInputSchema.parse({
+      title: "Same Title",
+      body: "body",
+      brandEntity: "Test",
+      canonicalUrl: "https://example.com/page",
+      targetKeywords: "test",
+    });
+    const ids = Array.from({ length: 20 }, () => buildContentAsset(parsed).id);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(20);
   });
 });
