@@ -1,0 +1,20 @@
+{
+  "name": "geo-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts"
+  },
+  "dependencies": {
+    "@trigger.dev/sdk": "^3.0.0",
+    "@prisma/client": "^5.0.0",
+    "zod": "^3.0.0",
+    "google-trends-api": "^4.9.2",
+    "@mendable/firecrawl-js": "^0.0.28"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
