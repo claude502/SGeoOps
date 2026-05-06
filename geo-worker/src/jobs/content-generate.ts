@@ -11,8 +11,9 @@ client.defineJob({
     name: "trend.approved",
     schema: z.object({ topicId: z.string(), keyword: z.string(), platform: z.string() }),
   }),
-  run: async (payload, io) => {
-    await io.logger.info("Generating content", { topicId: payload.topicId });
-    return { topicId: payload.topicId, status: "generated" };
+  run: async (payload: unknown, io) => {
+    const event = payload as { topicId: string; keyword: string; platform: string };
+    await io.logger.info("Generating content", { topicId: event.topicId });
+    return { topicId: event.topicId, status: "generated" };
   },
 });

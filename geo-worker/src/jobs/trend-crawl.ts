@@ -12,7 +12,7 @@ client.defineJob({
   name: "热搜抓取（每15分钟）",
   version: "1.0.0",
   trigger: cronTrigger({ cron: "*/15 * * * *" }),
-  run: async (_payload, io) => {
+  run: async (_payload: unknown, io) => {
     await io.logger.info("Trend crawl started");
 
     const [google, weibo] = await Promise.allSettled([fetchGoogleTrends("MY"), fetchWeiboTrending()]);
