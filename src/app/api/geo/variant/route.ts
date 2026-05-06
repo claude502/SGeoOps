@@ -11,6 +11,7 @@ import { channelPlatforms } from "@/types/geo";
 
 const variantSchema = z.object({
   contentAssetId: z.string().optional(),
+  assetId: z.string().optional(),
   content: z
     .object({
       title: z.string().min(1),
@@ -42,10 +43,12 @@ export async function POST(request: Request) {
     );
   }
 
-  const asset = parsed.data.contentAssetId
+  const resolvedAssetId = parsed.data.contentAssetId ?? parsed.data.assetId;
+
+  const asset = resolvedAssetId
     ? isDatabaseConfigured()
-      ? await new PrismaGeoFlowBridgeRepository().findContentAsset(parsed.data.contentAssetId)
-      : getAsset(parsed.data.contentAssetId)
+      ? await new PrismaGeoFlowBridgeRepository().findContentAsset(resolvedAssetId)
+      : getAsset(resolvedAssetId)
     : parsed.data.content
       ? { id: "ad_hoc_asset", ...parsed.data.content }
       : null;
@@ -56,10 +59,10 @@ export async function POST(request: Request) {
       action: "geo.variant",
       entityType: "ChannelVariant",
       outcome: "failure",
-      metadata: { reason: "missing_content", contentAssetId: parsed.data.contentAssetId ?? null },
+      metadata: { reason: "missing_content", contentAssetId: resolvedAssetId ?? null },
     });
     return NextResponse.json(
-      { error: "Provide contentAssetId for an existing asset or an inline content object." },
+      { error: "Provide contentAssetId or assetId for an existing asset, or an inline content object." },
       { status: 400 },
     );
   }
@@ -71,7 +74,7 @@ export async function POST(request: Request) {
   });
 
   const savedVariants =
-    isDatabaseConfigured() && parsed.data.contentAssetId
+    isDatabaseConfigured() && resolvedAssetId
       ? await saveChannelVariants(variants)
       : (addVariants(variants), variants);
 
@@ -86,8 +89,8 @@ export async function POST(request: Request) {
   await recordAuditEvent({
     request,
     action: "geo.variant",
-    entityType: parsed.data.contentAssetId ? "ContentAsset" : "ChannelVariant",
-    entityId: parsed.data.contentAssetId ?? savedVariants[0]?.id,
+    entityType: resolvedAssetId ? "ContentAsset" : "ChannelVariant",
+    entityId: resolvedAssetId ?? savedVariants[0]?.id,
     outcome: "success",
     metadata: {
       variantCount: savedVariants.length,
