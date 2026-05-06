@@ -8,14 +8,19 @@ datasource db {
 }
 
 model TrendTopic {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   keyword    String
   platform   String
   score      Int
-  region     String   @default("CN")
+  region     String    @default("CN")
   sourceType String
-  status     String   @default("pending")
+  status     String    @default("pending")
   capturedAt DateTime
   expiresAt  DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
+
+  @@unique([keyword, platform])
+  @@index([status])
+  @@index([platform])
+  @@index([capturedAt])
 }
