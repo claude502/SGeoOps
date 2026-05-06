@@ -60,6 +60,7 @@ services:
       - TRIGGER_API_KEY=${TRIGGER_WORKER_API_KEY:-}
       - TRIGGER_PROJECT_REF=proj_geo_ops
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - GEO_OPS_INTERNAL_URL=http://geo-ops:3000
 
 volumes:
   postgres-data:
