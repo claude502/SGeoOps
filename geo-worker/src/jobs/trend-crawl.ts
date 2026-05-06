@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { cronTrigger } from "@trigger.dev/sdk";
+import { cronTrigger, type JobIO } from "@trigger.dev/sdk";
 
 import { fetchWeiboTrending } from "../clients/firecrawl";
 import { fetchGoogleTrends } from "../clients/google-trends";
@@ -12,10 +12,13 @@ client.defineJob({
   name: "热搜抓取（每15分钟）",
   version: "1.0.0",
   trigger: cronTrigger({ cron: "*/15 * * * *" }),
-  run: async (_payload: unknown, io) => {
+  run: async (_payload: unknown, io: JobIO) => {
     await io.logger.info("Trend crawl started");
 
-    const [google, weibo] = await Promise.allSettled([fetchGoogleTrends("MY"), fetchWeiboTrending()]);
+    const [google, weibo] = await Promise.allSettled([
+      fetchGoogleTrends("MY"),
+      fetchWeiboTrending(),
+    ]);
 
     const all = [
       ...(google.status === "fulfilled" ? google.value : []),
@@ -23,20 +26,26 @@ client.defineJob({
     ];
 
     if (all.length > 0) {
-      // upsert: update score/capturedAt for known trends, insert new ones.
-      // skipDuplicates would silently drop re-appearing keywords — we want
-      // to refresh the score instead, so we use individual upserts.
       await Promise.allSettled(
-        all.map((result) =>
-          db.trendTopic.upsert({
-            where: { keyword_platform: { keyword: result.keyword, platform: result.platform } },
-            update: {
-              score: result.score,
-              capturedAt: new Date(),
-              // Reset to pending only if previously rejected (approved stays approved)
-              status: "pending",
-            },
-            create: {
+        all.map(async (result) => {
+          const existing = await db.trendTopic.findFirst({
+            where: { keyword: result.keyword, platform: result.platform },
+            select: { id: true },
+          });
+
+          if (existing) {
+            return db.trendTopic.update({
+              where: { id: existing.id },
+              data: {
+                score: result.score,
+                capturedAt: new Date(),
+                status: "pending",
+              },
+            });
+          }
+
+          return db.trendTopic.create({
+            data: {
               keyword: result.keyword,
               platform: result.platform,
               score: result.score,
@@ -45,8 +54,8 @@ client.defineJob({
               capturedAt: new Date(),
               status: "pending",
             },
-          }),
-        ),
+          });
+        }),
       );
     }
 

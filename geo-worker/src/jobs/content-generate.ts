@@ -1,4 +1,4 @@
-import { eventTrigger } from "@trigger.dev/sdk";
+import { eventTrigger, type JobIO } from "@trigger.dev/sdk";
 import { z } from "zod";
 
 import { client } from "../trigger";
@@ -13,7 +13,7 @@ client.defineJob({
     name: "trend.approved",
     schema: z.object({ topicId: z.string(), keyword: z.string(), platform: z.string() }),
   }),
-  run: async (payload, io) => {
+  run: async (payload: unknown, io: JobIO) => {
     const event = payload as { topicId: string; keyword: string; platform: string };
     await io.logger.info("Calling content-generate API", { topicId: event.topicId });
 
