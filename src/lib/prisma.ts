@@ -24,3 +24,9 @@ export function getPrisma() {
 
   return globalForPrisma.__geoOpsPrisma;
 }
+
+export const db = new Proxy({} as PrismaClient, {
+  get(_target, property, receiver) {
+    return Reflect.get(getPrisma(), property, receiver);
+  },
+});
