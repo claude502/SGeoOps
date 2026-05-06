@@ -1,0 +1,66 @@
+services:
+  geo-ops:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=${DATABASE_URL:-postgresql://geo_ops:change-me-use-a-secret@postgres:5432/geo_content_ops?schema=public}
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-geo_content_ops}
+      - POSTGRES_USER=${POSTGRES_USER:-geo_ops}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change-me-use-a-secret}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+  trigger-dev:
+    image: ghcr.io/triggerdotdev/trigger.dev:latest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "3040:3000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://geo_ops:change-me-use-a-secret@postgres:5432/geo_content_ops?schema=public}
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${TRIGGER_SECRET_KEY:-changeme-secret}
+      - LOGIN_ORIGIN=http://localhost:3040
+      - APP_ORIGIN=http://localhost:3040
+
+  geo-worker:
+    build: ./geo-worker
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+      - trigger-dev
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://geo_ops:change-me-use-a-secret@postgres:5432/geo_content_ops?schema=public}
+      - REDIS_URL=redis://redis:6379
+      - TRIGGER_API_URL=http://trigger-dev:3000
+      - TRIGGER_API_KEY=${TRIGGER_WORKER_API_KEY:-}
+      - TRIGGER_PROJECT_REF=proj_geo_ops
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+
+volumes:
+  postgres-data:
+  redis-data:
