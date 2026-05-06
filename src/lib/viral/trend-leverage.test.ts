@@ -12,6 +12,32 @@ describe("isSafeKeyword", () => {
     expect(isSafeKeyword("政变相关词")).toBe(false);
     expect(isSafeKeyword("暴动事件")).toBe(false);
   });
+
+  it("blocks the expanded blacklist coverage set", () => {
+    const blocked = ["暴动现场", "恐袭警告", "群体事件爆发", "选举舞弊证据", "种族冲突"];
+
+    for (const keyword of blocked) {
+      expect(isSafeKeyword(keyword)).toBe(false);
+    }
+  });
+
+  it("allows clean business and compliance keywords", () => {
+    const safe = [
+      "LHDN e-Invoice deadline 2025",
+      "中小企业税务合规",
+      "电子发票系统对比",
+      "Malaysia SME accounting software",
+      "ERP integration guide",
+    ];
+
+    for (const keyword of safe) {
+      expect(isSafeKeyword(keyword)).toBe(true);
+    }
+  });
+
+  it("blocks mixed-script keywords when any blocked term appears", () => {
+    expect(isSafeKeyword("latest 政变 news")).toBe(false);
+  });
 });
 
 describe("buildLeveragePrompt", () => {
