@@ -49,10 +49,14 @@ model ContentAsset {
   publishTarget  String            @default("geo_ops_internal")
   isPublic       Boolean           @default(false)
   publishedPath  String?
+  seoScore       Int?
+  trendTopicId   String?
+  templateId     String?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
   geoFlowLinks   GeoFlowTaskLink[]
   geoRuns        GeoRun[]
+  trendTopic     TrendTopic?       @relation(fields: [trendTopicId], references: [id])
   variants       ChannelVariant[]
 
   @@index([status])
@@ -97,6 +101,7 @@ model ChannelVariant {
   status         String
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
+  metrics        VariantMetric[]
 
   @@index([contentAssetId])
   @@index([platform])
@@ -154,4 +159,62 @@ model AuditEvent {
   @@index([entityType, entityId])
   @@index([outcome])
   @@index([requestId])
+}
+
+model TrendTopic {
+  id         String         @id @default(cuid())
+  keyword    String
+  platform   String
+  score      Int
+  region     String         @default("CN")
+  sourceType String
+  status     String         @default("pending")
+  capturedAt DateTime
+  expiresAt  DateTime?
+  createdAt  DateTime       @default(now())
+  assets     ContentAsset[]
+
+  @@index([status])
+  @@index([platform])
+  @@index([capturedAt])
+}
+
+model VariantMetric {
+  id               String         @id @default(cuid())
+  channelVariantId String
+  channelVariant   ChannelVariant @relation(fields: [channelVariantId], references: [id], onDelete: Cascade)
+  impressions      Int            @default(0)
+  clicks           Int            @default(0)
+  shares           Int            @default(0)
+  recordedAt       DateTime
+
+  @@index([channelVariantId])
+  @@index([recordedAt])
+}
+
+model SeoAudit {
+  id        String   @id @default(cuid())
+  url       String
+  score     Int
+  issues    Json
+  cwv       Json?
+  auditedAt DateTime
+
+  @@index([url])
+  @@index([auditedAt])
+}
+
+model KeywordRanking {
+  id          String   @id @default(cuid())
+  keyword     String
+  url         String
+  position    Int
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  source      String
+  recordedAt  DateTime
+
+  @@index([keyword])
+  @@index([url])
+  @@index([recordedAt])
 }
