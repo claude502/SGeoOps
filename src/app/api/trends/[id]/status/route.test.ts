@@ -106,9 +106,6 @@ describe("PATCH /api/trends/[id]/status", () => {
     );
 
     expect(response.status).toBe(200);
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/events");
@@ -116,5 +113,27 @@ describe("PATCH /api/trends/[id]/status", () => {
     expect(init.body).toContain("trend.approved");
     expect(init.body).toContain("topic_approve");
     expect(init.body).toContain("LHDN e-Invoice deadline");
+  });
+
+  it("returns 502 and does not approve when event delivery fails", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "topic_broken",
+      keyword: "LHDN e-Invoice deadline",
+      platform: "linkedin",
+    });
+    mockFetch.mockResolvedValue(new Response("boom", { status: 500 }));
+
+    const { PATCH } = await import("./route");
+    const response = await PATCH(
+      new Request("http://localhost/api/trends/topic_broken/status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "approved" }),
+      }),
+      { params: Promise.resolve({ id: "topic_broken" }) },
+    );
+
+    expect(response.status).toBe(502);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });

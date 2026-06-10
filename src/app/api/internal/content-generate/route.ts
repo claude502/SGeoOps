@@ -42,6 +42,37 @@ function pickTemplate(platform: string) {
   );
 }
 
+async function ensureVariantsForAsset(asset: {
+  id: string;
+  title?: string | null;
+  summary?: string | null;
+  body?: string | null;
+  brandEntity?: string | null;
+}) {
+  const existingVariantCount = await db.channelVariant.count({
+    where: { contentAssetId: asset.id },
+  });
+
+  if (existingVariantCount > 0) {
+    return existingVariantCount;
+  }
+
+  const variants = generateChannelVariants({
+    asset: {
+      id: asset.id,
+      title: asset.title ?? "Trend content",
+      summary: asset.summary ?? "",
+      body: asset.body ?? "",
+      brandEntity: asset.brandEntity ?? "Txpuro",
+    },
+    platforms: ["Knowledge Site", "LinkedIn", "WeChat", "Xiaohongshu"],
+    accountPrefix: "trend-engine",
+  });
+
+  await saveChannelVariants(variants);
+  return variants.length;
+}
+
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
   const parsed = schema.safeParse(body);
@@ -71,6 +102,41 @@ export async function POST(request: Request) {
   const project = getTxpuroProject();
   const provider: Provider = "ChatGPT";
   const template = pickTemplate(parsed.data.platform);
+  const publishedPath = `/guides/trend/${trend.id}`;
+  const canonicalUrl = `https://${project.canonicalDomain}${publishedPath}`;
+
+  const existingAsset = await db.contentAsset.findFirst({
+    where: {
+      trendTopicId: parsed.data.topicId,
+      sourceSystem: "trend_engine",
+      templateId: template.id,
+    },
+    select: {
+      id: true,
+      title: true,
+      summary: true,
+      body: true,
+      brandEntity: true,
+      geoScore: true,
+      seoScore: true,
+    },
+  });
+
+  if (existingAsset) {
+    const variantCount = await ensureVariantsForAsset(existingAsset);
+
+    return NextResponse.json(
+      {
+        contentAssetId: existingAsset.id,
+        variantCount,
+        geoScore: existingAsset.geoScore ?? 0,
+        seoScore: existingAsset.seoScore ?? 0,
+        reused: true,
+      },
+      { status: 200 },
+    );
+  }
+
   const leverageBlock = buildLeveragePrompt({
     keyword: parsed.data.keyword,
     productName: project.product,
@@ -107,9 +173,9 @@ export async function POST(request: Request) {
       body: bodyText,
       summary,
       brandEntity: project.brand,
-      sourceUrl: `https://${project.canonicalDomain}/guides`,
+      sourceUrl: canonicalUrl,
       targetKeywords: [parsed.data.keyword, ...project.targetKeywords],
-      canonicalUrl: `https://${project.canonicalDomain}/trend/${trend.id}`,
+      canonicalUrl,
       status: "Ready",
       geoScore: scores.geoScore,
       seoScore: scores.seoScore,
@@ -124,33 +190,25 @@ export async function POST(request: Request) {
       ctaMode: "self_signup",
       publishTarget: "txpuro",
       isPublic: true,
-      publishedPath: `/guides/trend/${trend.id}`,
+      publishedPath,
       trendTopicId: parsed.data.topicId,
       templateId: template.id,
     },
     select: { id: true, title: true, summary: true, body: true, brandEntity: true },
   });
 
-  const variantAsset = {
+  const variantCount = await ensureVariantsForAsset({
     id: asset.id,
     title: asset.title ?? title,
     summary: asset.summary ?? summary,
     body: asset.body ?? bodyText,
     brandEntity: asset.brandEntity ?? project.brand,
-  };
-
-  const variants = generateChannelVariants({
-    asset: variantAsset,
-    platforms: ["Knowledge Site", "LinkedIn", "WeChat", "Xiaohongshu"],
-    accountPrefix: "trend-engine",
   });
-
-  await saveChannelVariants(variants);
 
   return NextResponse.json(
     {
       contentAssetId: asset.id,
-      variantCount: variants.length,
+      variantCount,
       geoScore: scores.geoScore,
       seoScore: scores.seoScore,
     },

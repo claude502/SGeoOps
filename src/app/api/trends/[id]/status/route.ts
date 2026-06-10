@@ -7,11 +7,6 @@ const schema = z.object({
   status: z.enum(["approved", "rejected"]),
 });
 
-/**
- * Fire a `trend.approved` event to Trigger.dev via HTTP so the
- * geo-worker's content-generate job picks it up automatically.
- * Non-blocking: if Trigger.dev is unavailable we log and continue.
- */
 async function emitTrendApproved(topic: {
   id: string;
   keyword: string;
@@ -21,10 +16,15 @@ async function emitTrendApproved(topic: {
   const apiKey = process.env.TRIGGER_WORKER_API_KEY;
   const projectRef = process.env.TRIGGER_PROJECT_REF ?? "proj_geo_ops";
 
-  if (!apiUrl || !apiKey) return; // Trigger.dev not configured — skip silently
+  if (!apiUrl || !apiKey) {
+    return {
+      ok: false,
+      error: "Trigger.dev event delivery is not configured.",
+    };
+  }
 
   try {
-    await fetch(`${apiUrl}/api/v1/${projectRef}/events`, {
+    const response = await fetch(`${apiUrl}/api/v1/${projectRef}/events`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -40,9 +40,23 @@ async function emitTrendApproved(topic: {
       }),
       signal: AbortSignal.timeout(3000),
     });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "(no body)");
+      return {
+        ok: false,
+        error: `Trigger.dev returned ${response.status}: ${body}`,
+      };
+    }
+
+    return { ok: true };
   } catch (err) {
-    // Non-fatal: log and continue — content generation can be re-triggered manually
+    const detail = err instanceof Error ? err.message : "Unknown event delivery error";
     console.error("[trends/status] Failed to emit trend.approved event:", err);
+    return {
+      ok: false,
+      error: detail,
+    };
   }
 }
 
@@ -62,19 +76,28 @@ export async function PATCH(
     return NextResponse.json({ error: "Trend topic not found" }, { status: 404 });
   }
 
+  if (parsed.data.status === "approved") {
+    const delivery = await emitTrendApproved({
+      id: existingTopic.id,
+      keyword: existingTopic.keyword,
+      platform: existingTopic.platform,
+    });
+
+    if (!delivery.ok) {
+      return NextResponse.json(
+        {
+          error: "Failed to queue trend approval event.",
+          detail: delivery.error,
+        },
+        { status: 502 },
+      );
+    }
+  }
+
   const topic = await db.trendTopic.update({
     where: { id },
     data: { status: parsed.data.status },
   });
-
-  // Fire content-generate job when a topic is approved
-  if (parsed.data.status === "approved") {
-    void emitTrendApproved({
-      id: topic.id,
-      keyword: topic.keyword,
-      platform: topic.platform,
-    });
-  }
 
   return NextResponse.json(topic);
 }

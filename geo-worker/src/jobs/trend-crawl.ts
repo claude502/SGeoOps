@@ -39,7 +39,6 @@ client.defineJob({
               data: {
                 score: result.score,
                 capturedAt: new Date(),
-                status: "pending",
               },
             });
           }
