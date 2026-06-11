@@ -12,6 +12,8 @@ Last updated: 2026-05-05
 - [account-documentation.md](./account-documentation.md)
 - [content-source-and-distribution-boundary.md](./content-source-and-distribution-boundary.md)
 - [geo-seo-trend-engine-review.md](./geo-seo-trend-engine-review.md)
+- [database-design-v2.md](./database-design-v2.md)
+- [distribution-api-contract-v1.md](./distribution-api-contract-v1.md)
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
 
 ## 1. 当前远程部署
@@ -89,6 +91,8 @@ Txpuro 当前的最终接入方式不是整站接管，而是：
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
 - [content-source-and-distribution-boundary.md](./content-source-and-distribution-boundary.md)
 - [geo-seo-trend-engine-review.md](./geo-seo-trend-engine-review.md)
+- [database-design-v2.md](./database-design-v2.md)
+- [distribution-api-contract-v1.md](./distribution-api-contract-v1.md)
 
 ## 3. 账号密码保存位置
 

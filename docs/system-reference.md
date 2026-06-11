@@ -369,3 +369,5 @@ APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh
 - [txpuro-geo-strategy.md](./txpuro-geo-strategy.md)
 - [txpuro-main-site-entry-plan.md](./txpuro-main-site-entry-plan.md)
 - [content-source-and-distribution-boundary.md](./content-source-and-distribution-boundary.md)
+- [database-design-v2.md](./database-design-v2.md)
+- [distribution-api-contract-v1.md](./distribution-api-contract-v1.md)
