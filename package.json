@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "geo-worker",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -12,7 +16,10 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "node prisma/seed.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "verify": "npm run prisma:generate && npm run test:unit && npm run typecheck && npm run build"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
