@@ -1,0 +1,1656 @@
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { Client } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+const integrationEnabled = process.env.SGEO_DATABASE_INTEGRATION === "1";
+const databaseUrl =
+  process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
+
+const legacyMigrationPaths = [
+  "prisma/migrations/20260504120000_geoflow_bridge_init/migration.sql",
+  "prisma/migrations/20260504183000_persist_geo_runs_variants/migration.sql",
+  "prisma/migrations/20260504195000_add_audit_events/migration.sql",
+  "prisma/migrations/20260505013000_add_txpuro_public_content_fields/migration.sql",
+  "prisma/migrations/20260506000000_add_content_asset_value_constraints/migration.sql",
+  "prisma/migrations/20260506110557_add_seo_trend_engine/migration.sql",
+  "prisma/migrations/20260507000000_add_trend_topic_unique_keyword_platform/migration.sql",
+  "prisma/migrations/20260611000000_add_export_packages_and_dispatches/migration.sql",
+] as const;
+
+const expandMigrationPath =
+  "prisma/migrations/20260731090000_platform_foundation_expand/migration.sql";
+const backfillMigrationPath =
+  "prisma/migrations/20260731100000_backfill_txpuro_ownership/migration.sql";
+const enforceMigrationPath =
+  "prisma/migrations/20260731110000_enforce_platform_scope/migration.sql";
+
+const legacyTables = [
+  "ContentAsset",
+  "GeoRun",
+  "ChannelVariant",
+  "GeoFlowTaskLink",
+  "GeoFlowSyncRun",
+  "AuditEvent",
+  "TrendTopic",
+  "VariantMetric",
+  "SeoAudit",
+  "KeywordRanking",
+  "ExportPackage",
+  "DistributionDispatch",
+  "EventDelivery",
+] as const;
+
+const fixedOwnership = {
+  workspaceId: "workspace_internal",
+  clientId: "client_wing_heng",
+  brandId: "brand_txpuro",
+  siteId: "site_txpuro_com",
+  zhMarketId: "site_market_txpuro_my_zh_cn",
+  enMarketId: "site_market_txpuro_my_en",
+} as const;
+
+type PgError = Error & { code?: string };
+type UrlSnapshot = Record<string, Array<Record<string, unknown>>>;
+
+let client: Client;
+let pgConnectionString = "";
+let mainSchema = "";
+let beforeContentCount = 0;
+let beforeUrls: UrlSnapshot = {};
+
+function quoteIdentifier(identifier: string): string {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(identifier)) {
+    throw new Error(`Unsafe SQL identifier: ${identifier}`);
+  }
+  return `"${identifier}"`;
+}
+
+function testSchema(label: string): string {
+  return `sgeo_task4_${label}_${process.pid}_${randomUUID()
+    .replaceAll("-", "")
+    .slice(0, 10)}`;
+}
+
+async function applyMigration(
+  target: Client,
+  migrationPath: string,
+): Promise<void> {
+  const sql = await readFile(resolve(migrationPath), "utf8");
+  try {
+    await target.query(sql);
+  } catch (error) {
+    await target.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  }
+}
+
+async function applyLegacyMigrations(target: Client): Promise<void> {
+  for (const migrationPath of legacyMigrationPaths) {
+    await applyMigration(target, migrationPath);
+  }
+}
+
+async function setSearchPath(target: Client, schema: string): Promise<void> {
+  await target.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+}
+
+async function createFreshSchema(
+  target: Client,
+  schema: string,
+): Promise<void> {
+  if (!schema.startsWith("sgeo_task4_")) {
+    throw new Error(`Refusing to recreate unguarded schema ${schema}`);
+  }
+  await target.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
+  await target.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+  await setSearchPath(target, schema);
+}
+
+async function withFreshSchema(
+  label: string,
+  run: (target: Client, schema: string) => Promise<void>,
+): Promise<void> {
+  const schema = testSchema(label);
+  const target = new Client({
+    connectionString: pgConnectionString,
+    application_name: `sgeo-task4-${label}`,
+  });
+  await target.connect();
+  try {
+    await createFreshSchema(target, schema);
+    await run(target, schema);
+  } finally {
+    await target.query("SET search_path TO public");
+    await target.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
+    await target.end();
+  }
+}
+
+async function expectPgError(
+  action: () => Promise<unknown>,
+  codes: string | string[],
+  message: RegExp,
+): Promise<void> {
+  const acceptedCodes = Array.isArray(codes) ? codes : [codes];
+  try {
+    await action();
+    expect.fail("Expected PostgreSQL to reject the statement");
+  } catch (error) {
+    const pgError = error as PgError;
+    expect(acceptedCodes).toContain(pgError.code);
+    expect(pgError.message).toMatch(message);
+  }
+}
+
+async function seedLegacyTxpuroRows(target: Client): Promise<void> {
+  await target.query(`
+    INSERT INTO "TrendTopic" (
+      "id", "keyword", "platform", "score", "region", "sourceType",
+      "status", "capturedAt", "createdAt"
+    ) VALUES (
+      'trend_txpuro', 'Malaysia e-invoice', 'google', 91, 'MY', 'search',
+      'active', '2026-07-30T01:00:00.000Z', '2026-07-30T01:00:00.000Z'
+    );
+
+    INSERT INTO "ContentAsset" (
+      "id", "title", "body", "summary", "brandEntity", "sourceUrl",
+      "targetKeywords", "canonicalUrl", "status", "geoScore", "owner",
+      "sourceSystem", "externalUrl", "publishedAt", "slug", "locale",
+      "assetType", "schemaType", "ctaMode", "publishTarget", "isPublic",
+      "publishedPath", "trendTopicId", "createdAt", "updatedAt"
+    ) VALUES
+    (
+      'asset_txpuro_zh', '电子发票指南', 'zh body', 'zh summary', 'Txpuro',
+      'http://GEO-ORIGIN.WINGHENGTECH.COM:80/guides/zh-CN/e-invoice',
+      ARRAY['电子发票'],
+      'https://WWW.TxPuro.Com:443/guides/zh-CN/e-invoice',
+      'Ready', 88, 'legacy-owner', 'geo_ops',
+      'https://txpuro.com/guides/zh-CN/e-invoice?from=legacy#overview',
+      '2026-07-30T02:00:00.000Z', 'e-invoice-zh', 'zh-CN',
+      'guide-page', 'article', 'self_signup', 'txpuro', true,
+      '/guides/zh-CN/e-invoice', 'trend_txpuro',
+      '2026-07-30T01:00:00.000Z', '2026-07-30T01:00:00.000Z'
+    ),
+    (
+      'asset_txpuro_en', 'E-invoice guide', 'en body', 'en summary', 'Txpuro',
+      'https://geo-origin.winghengtech.com/guides/en/e-invoice',
+      ARRAY['e-invoice'],
+      'http://txpuro.com:80/guides/en/e-invoice',
+      'Ready', 86, 'legacy-owner', 'geo_ops',
+      'https://www.txpuro.com:443/guides/en/e-invoice',
+      '2026-07-30T02:00:00.000Z', 'e-invoice-en', 'en',
+      'guide-page', 'article', 'self_signup', 'txpuro', true,
+      '/guides/en/e-invoice', NULL,
+      '2026-07-30T01:00:00.000Z', '2026-07-30T01:00:00.000Z'
+    );
+
+    INSERT INTO "GeoRun" (
+      "id", "projectId", "contentAssetId", "prompt", "provider", "locale",
+      "competitors", "modelAnswer", "brandMentioned", "citedDomains",
+      "score", "recommendations", "mode", "createdAt"
+    ) VALUES
+    (
+      'geo_run_txpuro_linked', 'txpuro', 'asset_txpuro_zh', 'prompt',
+      'openai', 'zh-CN', ARRAY['competitor'], 'answer', true,
+      ARRAY['txpuro.com'], 90, '[]'::jsonb, 'audit',
+      '2026-07-30T03:00:00.000Z'
+    ),
+    (
+      'geo_run_txpuro_project', 'txpuro', NULL, 'prompt', 'openai', 'en',
+      ARRAY[]::text[], 'answer', true, ARRAY['txpuro.com'], 89,
+      '[]'::jsonb, 'audit', '2026-07-30T03:05:00.000Z'
+    );
+
+    INSERT INTO "ChannelVariant" (
+      "id", "contentAssetId", "platform", "accountId", "copy",
+      "mediaAssets", "status", "createdAt", "updatedAt"
+    ) VALUES (
+      'variant_txpuro', 'asset_txpuro_zh', 'linkedin', 'txpuro-main',
+      'variant copy', ARRAY[]::text[], 'ready',
+      '2026-07-30T04:00:00.000Z', '2026-07-30T04:00:00.000Z'
+    );
+
+    INSERT INTO "GeoFlowTaskLink" (
+      "id", "contentAssetId", "geoFlowTaskId", "geoFlowArticleUrl",
+      "status", "idempotencyKey", "createdAt", "updatedAt"
+    ) VALUES (
+      'geoflow_link_txpuro', 'asset_txpuro_zh', 101,
+      'https://geo-origin.winghengtech.com/guides/zh-CN/e-invoice',
+      'published', 'legacy-geoflow-txpuro',
+      '2026-07-30T05:00:00.000Z', '2026-07-30T05:00:00.000Z'
+    );
+
+    INSERT INTO "GeoFlowSyncRun" (
+      "id", "startedAt", "finishedAt", "successCount", "failureCount"
+    ) VALUES (
+      'sync_txpuro', '2026-07-30T05:00:00.000Z',
+      '2026-07-30T05:05:00.000Z', 1, 0
+    );
+
+    INSERT INTO "AuditEvent" (
+      "id", "actor", "action", "entityType", "entityId", "outcome",
+      "requestId", "metadata", "createdAt"
+    ) VALUES (
+      'audit_txpuro', 'legacy-user', 'publish', 'ContentAsset',
+      'asset_txpuro_zh', 'success', 'request-txpuro',
+      '{"source":"legacy"}'::jsonb, '2026-07-30T06:00:00.000Z'
+    );
+
+    INSERT INTO "VariantMetric" (
+      "id", "channelVariantId", "impressions", "clicks", "shares",
+      "recordedAt"
+    ) VALUES (
+      'metric_txpuro', 'variant_txpuro', 100, 10, 2,
+      '2026-07-30T07:00:00.000Z'
+    );
+
+    INSERT INTO "SeoAudit" (
+      "id", "url", "score", "issues", "cwv", "auditedAt"
+    ) VALUES (
+      'seo_audit_txpuro',
+      'HTTPS://WWW.TXPURO.COM:443/guides/en/technical-audit',
+      93, '[]'::jsonb, '{"lcp":1.2}'::jsonb,
+      '2026-07-30T08:00:00.000Z'
+    );
+
+    INSERT INTO "KeywordRanking" (
+      "id", "keyword", "url", "position", "clicks", "impressions",
+      "source", "recordedAt"
+    ) VALUES (
+      'ranking_txpuro', '电子发票',
+      'http://geo-origin.winghengtech.com:8080/guides/zh-CN/ranking',
+      2, 20, 200, 'search-console', '2026-07-30T09:00:00.000Z'
+    );
+
+    INSERT INTO "ExportPackage" (
+      "id", "contentAssetId", "version", "language", "status",
+      "packageType", "payload", "recommendedPlatforms", "sourceUrl",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'export_txpuro', 'asset_txpuro_zh', 1, 'zh-CN', 'ready',
+      'article', '{"version":1}'::jsonb, ARRAY['linkedin'],
+      'https://geo-origin.winghengtech.com/guides/zh-CN/e-invoice',
+      '2026-07-30T10:00:00.000Z', '2026-07-30T10:00:00.000Z'
+    );
+
+    INSERT INTO "DistributionDispatch" (
+      "id", "exportPackageId", "contentAssetId", "platform", "accountId",
+      "externalPostId", "publishedUrl", "status", "publishedAt",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'dispatch_txpuro', 'export_txpuro', 'asset_txpuro_zh', 'website',
+      'txpuro-main', 'post-101',
+      'https://txpuro.com/guides/zh-CN/e-invoice?dispatch=legacy',
+      'published', '2026-07-30T11:00:00.000Z',
+      '2026-07-30T10:30:00.000Z', '2026-07-30T11:00:00.000Z'
+    );
+
+    INSERT INTO "EventDelivery" (
+      "id", "eventName", "entityType", "entityId", "payload", "target",
+      "status", "attemptCount", "lastAttemptAt", "createdAt"
+    ) VALUES (
+      'delivery_txpuro', 'distribution.published', 'DistributionDispatch',
+      'dispatch_txpuro',
+      '{"url":"https://txpuro.com/guides/zh-CN/e-invoice"}'::jsonb,
+      'webhook', 'sent', 1, '2026-07-30T11:01:00.000Z',
+      '2026-07-30T11:00:00.000Z'
+    );
+  `);
+}
+
+async function snapshotUrls(target: Client): Promise<UrlSnapshot> {
+  const queries: Record<string, string> = {
+    ContentAsset: `
+      SELECT "id", "sourceUrl", "canonicalUrl", "externalUrl", "publishedPath"
+      FROM "ContentAsset" ORDER BY "id"
+    `,
+    GeoFlowTaskLink: `
+      SELECT "id", "geoFlowArticleUrl" FROM "GeoFlowTaskLink" ORDER BY "id"
+    `,
+    SeoAudit: `SELECT "id", "url" FROM "SeoAudit" ORDER BY "id"`,
+    KeywordRanking: `
+      SELECT "id", "url" FROM "KeywordRanking" ORDER BY "id"
+    `,
+    ExportPackage: `
+      SELECT "id", "sourceUrl" FROM "ExportPackage" ORDER BY "id"
+    `,
+    DistributionDispatch: `
+      SELECT "id", "publishedUrl" FROM "DistributionDispatch" ORDER BY "id"
+    `,
+  };
+  const snapshot: UrlSnapshot = {};
+  for (const [name, sql] of Object.entries(queries)) {
+    snapshot[name] = (await target.query(sql)).rows;
+  }
+  return snapshot;
+}
+
+async function seedSecondTenantAndModernRows(target: Client): Promise<void> {
+  await target.query(`
+    INSERT INTO "Client" (
+      "id", "workspaceId", "name", "slug", "createdAt", "updatedAt"
+    ) VALUES (
+      'client_other', 'workspace_internal', 'Other Client', 'other-client',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Brand" (
+      "id", "clientId", "name", "slug", "aliases", "createdAt", "updatedAt"
+    ) VALUES (
+      'brand_other', 'client_other', 'Other Brand', 'other-brand',
+      ARRAY['Other'], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Site" (
+      "id", "brandId", "name", "canonicalHost", "originHosts", "siteType",
+      "hostingMode", "canonicalRules", "allowedPublishPaths",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'site_other_com', 'brand_other', 'Other Site', 'other.example',
+      ARRAY['origin.other.example'], 'content', 'hybrid',
+      '{"https":true,"www":"redirect"}'::jsonb, ARRAY['/guides'],
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "SiteMarket" (
+      "id", "siteId", "country", "locale", "defaultDevice", "timezone",
+      "createdAt", "updatedAt"
+    ) VALUES
+    (
+      'site_market_other_my_zh_cn', 'site_other_com', 'MY', 'zh-CN',
+      'desktop', 'Asia/Kuala_Lumpur', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    ),
+    (
+      'site_market_other_my_en', 'site_other_com', 'MY', 'en',
+      'desktop', 'Asia/Kuala_Lumpur', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO "TrendTopic" (
+      "id", "clientId", "brandId", "siteId", "siteMarketId", "keyword",
+      "platform", "score", "region", "sourceType", "status", "capturedAt"
+    ) VALUES (
+      'trend_other', 'client_other', 'brand_other', 'site_other_com',
+      'site_market_other_my_en', 'Other topic', 'google', 50, 'MY',
+      'test', 'active', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ContentAsset" (
+      "id", "clientId", "brandId", "siteId", "siteMarketId", "title",
+      "body", "summary", "brandEntity", "sourceUrl", "targetKeywords",
+      "canonicalUrl", "status", "owner", "locale", "publishTarget",
+      "trendTopicId", "createdAt", "updatedAt"
+    ) VALUES (
+      'asset_other', 'client_other', 'brand_other', 'site_other_com',
+      'site_market_other_my_en', 'Other asset', 'body', 'summary',
+      'Other Brand', 'https://other.example/guides/en/asset',
+      ARRAY['other'], 'https://other.example/guides/en/asset', 'Ready',
+      'other-owner', 'en', 'geo_ops_internal', 'trend_other',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ChannelVariant" (
+      "id", "clientId", "brandId", "siteId", "siteMarketId",
+      "contentAssetId", "platform", "accountId", "copy", "mediaAssets",
+      "status", "createdAt", "updatedAt"
+    ) VALUES (
+      'variant_other', 'client_other', 'brand_other', 'site_other_com',
+      'site_market_other_my_en', 'asset_other', 'linkedin', 'other',
+      'copy', ARRAY[]::text[], 'ready', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ExportPackage" (
+      "id", "clientId", "brandId", "siteId", "siteMarketId",
+      "contentAssetId", "version", "language", "status", "packageType",
+      "recommendedPlatforms", "sourceUrl", "createdAt", "updatedAt"
+    ) VALUES (
+      'export_other', 'client_other', 'brand_other', 'site_other_com',
+      'site_market_other_my_en', 'asset_other', 1, 'en', 'ready',
+      'article', ARRAY['website'], 'https://other.example/guides/en/asset',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO "AnalysisRun" (
+      "id", "clientId", "brandId", "siteId", "siteMarketId", "kind",
+      "source", "sourceVersion", "adapterVersion", "status", "inputHash",
+      "idempotencyKey", "trigger"
+    ) VALUES
+    (
+      'analysis_txpuro', 'client_wing_heng', 'brand_txpuro',
+      'site_txpuro_com', 'site_market_txpuro_my_en', 'geo',
+      'integration-test', '1', '1', 'succeeded', 'hash-txpuro',
+      'idem-analysis-txpuro', 'manual'
+    ),
+    (
+      'analysis_other', 'client_other', 'brand_other', 'site_other_com',
+      'site_market_other_my_en', 'geo', 'integration-test', '1', '1',
+      'succeeded', 'hash-other', 'idem-analysis-other', 'manual'
+    );
+
+    INSERT INTO "Observation" (
+      "id", "runId", "kind", "subject", "value", "observedAt"
+    ) VALUES
+    (
+      'observation_txpuro', 'analysis_txpuro', 'mention', 'Txpuro',
+      '{"mentioned":true}'::jsonb, CURRENT_TIMESTAMP
+    ),
+    (
+      'observation_other', 'analysis_other', 'mention', 'Other',
+      '{"mentioned":true}'::jsonb, CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO "Recommendation" (
+      "id", "runId", "clientId", "siteId", "title", "detail", "priority",
+      "formulaVersion", "createdAt", "updatedAt"
+    ) VALUES
+    (
+      'recommendation_txpuro', 'analysis_txpuro', 'client_wing_heng',
+      'site_txpuro_com', 'Txpuro recommendation', 'detail', 1, 'v1',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    ),
+    (
+      'recommendation_other', 'analysis_other', 'client_other',
+      'site_other_com', 'Other recommendation', 'detail', 1, 'v1',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO "RecommendationEvidence" (
+      "recommendationId", "observationId"
+    ) VALUES (
+      'recommendation_txpuro', 'observation_txpuro'
+    );
+
+    INSERT INTO "Opportunity" (
+      "id", "clientId", "siteId", "title", "priority", "formulaVersion",
+      "createdAt", "updatedAt"
+    ) VALUES
+    (
+      'opportunity_txpuro', 'client_wing_heng', 'site_txpuro_com',
+      'Txpuro opportunity', 1, 'v1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    ),
+    (
+      'opportunity_other', 'client_other', 'site_other_com',
+      'Other opportunity', 1, 'v1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO "OpportunityRecommendation" (
+      "opportunityId", "recommendationId"
+    ) VALUES (
+      'opportunity_txpuro', 'recommendation_txpuro'
+    );
+  `);
+}
+
+async function insertLegacyMismatch(
+  target: Client,
+  table: (typeof legacyTables)[number],
+): Promise<void> {
+  const uniqueChanges: Partial<Record<(typeof legacyTables)[number], object>> = {
+    GeoFlowTaskLink: { idempotencyKey: "cross-insert-geoflow" },
+    TrendTopic: { keyword: "cross-insert-topic" },
+    ExportPackage: { version: 99 },
+  };
+  const changes = {
+    id: `cross_insert_${table}`,
+    clientId: "client_other",
+    ...uniqueChanges[table],
+  };
+  await target.query(
+    `
+      INSERT INTO ${quoteIdentifier(table)}
+      SELECT (
+        jsonb_populate_record(
+          NULL::${quoteIdentifier(table)},
+          to_jsonb(seed) || $1::jsonb
+        )
+      ).*
+      FROM ${quoteIdentifier(table)} seed
+      WHERE "clientId" = 'client_wing_heng'
+      ORDER BY "id"
+      LIMIT 1
+    `,
+    [JSON.stringify(changes)],
+  );
+}
+
+describe.skipIf(!integrationEnabled).sequential(
+  "Txpuro ownership PostgreSQL migrations",
+  () => {
+    beforeAll(async () => {
+      if (!databaseUrl) {
+        throw new Error(
+          "TEST_DATABASE_URL is required for database integration tests",
+        );
+      }
+
+      const parsedUrl = new URL(databaseUrl);
+      const databaseName = decodeURIComponent(parsedUrl.pathname.slice(1));
+      if (!/^sgeo_task4_test(?:_|$)/.test(databaseName)) {
+        throw new Error(
+          `Refusing database integration tests against unguarded database ${databaseName}`,
+        );
+      }
+      parsedUrl.searchParams.delete("schema");
+      pgConnectionString = parsedUrl.toString();
+
+      client = new Client({
+        connectionString: pgConnectionString,
+        application_name: "sgeo-task4-main",
+      });
+      await client.connect();
+
+      const database = await client.query<{
+        current_database: string;
+        server_version_num: string;
+      }>(`
+        SELECT current_database(), current_setting('server_version_num')
+          AS server_version_num
+      `);
+      expect(database.rows[0]?.current_database).toBe(databaseName);
+      const version = Number(database.rows[0]?.server_version_num);
+      expect(version).toBeGreaterThanOrEqual(160_000);
+      expect(version).toBeLessThan(170_000);
+
+      mainSchema = testSchema("main");
+      await createFreshSchema(client, mainSchema);
+      await applyLegacyMigrations(client);
+      await seedLegacyTxpuroRows(client);
+      beforeContentCount = Number(
+        (await client.query(`SELECT count(*)::int AS count FROM "ContentAsset"`))
+          .rows[0]?.count,
+      );
+      beforeUrls = await snapshotUrls(client);
+    });
+
+    afterAll(async () => {
+      if (!client) return;
+      if (mainSchema.startsWith("sgeo_task4_")) {
+        await client.query("SET search_path TO public");
+        await client.query(
+          `DROP SCHEMA IF EXISTS ${quoteIdentifier(mainSchema)} CASCADE`,
+        );
+      }
+      await client.end();
+    });
+
+    it("backfills fixed Txpuro ownership without changing legacy URLs", async () => {
+      await applyMigration(client, expandMigrationPath);
+      await applyMigration(client, backfillMigrationPath);
+      await applyMigration(client, backfillMigrationPath);
+
+      const workspace = await client.query(`
+        SELECT "id", "name", "slug" FROM "Workspace" ORDER BY "id"
+      `);
+      expect(workspace.rows).toEqual([
+        {
+          id: fixedOwnership.workspaceId,
+          name: "Internal GEO SEO Operations",
+          slug: "internal",
+        },
+      ]);
+
+      const ownershipRoot = await client.query(`
+        SELECT
+          c."id" AS "clientId",
+          b."id" AS "brandId",
+          b."aliases",
+          b."riskCategory",
+          s."id" AS "siteId",
+          s."canonicalHost",
+          s."originHosts",
+          s."siteType",
+          s."hostingMode",
+          s."canonicalRules",
+          s."allowedPublishPaths"
+        FROM "Client" c
+        JOIN "Brand" b ON b."clientId" = c."id"
+        JOIN "Site" s ON s."brandId" = b."id"
+      `);
+      expect(ownershipRoot.rows).toEqual([
+        {
+          clientId: fixedOwnership.clientId,
+          brandId: fixedOwnership.brandId,
+          aliases: ["Txpuro", "智慧电子发票系统 Txpuro"],
+          riskCategory: "standard",
+          siteId: fixedOwnership.siteId,
+          canonicalHost: "txpuro.com",
+          originHosts: ["geo-origin.winghengtech.com"],
+          siteType: "content",
+          hostingMode: "hybrid",
+          canonicalRules: { https: true, www: "redirect" },
+          allowedPublishPaths: ["/guides"],
+        },
+      ]);
+
+      const markets = await client.query(`
+        SELECT "id", "country", "locale", "defaultDevice", "timezone"
+        FROM "SiteMarket"
+        WHERE "siteId" = 'site_txpuro_com'
+        ORDER BY "locale"
+      `);
+      expect(markets.rows).toEqual([
+        {
+          id: fixedOwnership.enMarketId,
+          country: "MY",
+          locale: "en",
+          defaultDevice: "desktop",
+          timezone: "Asia/Kuala_Lumpur",
+        },
+        {
+          id: fixedOwnership.zhMarketId,
+          country: "MY",
+          locale: "zh-CN",
+          defaultDevice: "desktop",
+          timezone: "Asia/Kuala_Lumpur",
+        },
+      ]);
+
+      for (const table of legacyTables) {
+        const orphan = await client.query(
+          `
+            SELECT count(*)::int AS count
+            FROM ${quoteIdentifier(table)}
+            WHERE "clientId" IS NULL
+               OR "brandId" IS NULL
+               OR "siteId" IS NULL
+               OR "clientId" <> $1
+               OR "brandId" <> $2
+               OR "siteId" <> $3
+          `,
+          [
+            fixedOwnership.clientId,
+            fixedOwnership.brandId,
+            fixedOwnership.siteId,
+          ],
+        );
+        expect(orphan.rows[0]?.count, table).toBe(0);
+      }
+
+      const contentMarkets = await client.query(`
+        SELECT "locale", "siteMarketId" FROM "ContentAsset" ORDER BY "locale"
+      `);
+      expect(contentMarkets.rows).toEqual([
+        { locale: "en", siteMarketId: fixedOwnership.enMarketId },
+        { locale: "zh-CN", siteMarketId: fixedOwnership.zhMarketId },
+      ]);
+
+      const inferredMarkets = await client.query(`
+        SELECT 'GeoRun' AS source, "id", "siteMarketId"
+        FROM "GeoRun"
+        UNION ALL
+        SELECT 'SeoAudit', "id", "siteMarketId" FROM "SeoAudit"
+        UNION ALL
+        SELECT 'KeywordRanking', "id", "siteMarketId" FROM "KeywordRanking"
+        ORDER BY source, "id"
+      `);
+      expect(inferredMarkets.rows).toEqual(
+        expect.arrayContaining([
+          {
+            source: "GeoRun",
+            id: "geo_run_txpuro_project",
+            siteMarketId: fixedOwnership.enMarketId,
+          },
+          {
+            source: "SeoAudit",
+            id: "seo_audit_txpuro",
+            siteMarketId: fixedOwnership.enMarketId,
+          },
+          {
+            source: "KeywordRanking",
+            id: "ranking_txpuro",
+            siteMarketId: fixedOwnership.zhMarketId,
+          },
+        ]),
+      );
+
+      const contentCount = Number(
+        (await client.query(`SELECT count(*)::int AS count FROM "ContentAsset"`))
+          .rows[0]?.count,
+      );
+      expect(contentCount).toBe(beforeContentCount);
+      expect(await snapshotUrls(client)).toEqual(beforeUrls);
+
+      const orphanCounts = await client.query(`
+        SELECT
+          (SELECT count(*)::int FROM "ContentAsset"
+            WHERE "clientId" IS NULL OR "brandId" IS NULL OR "siteId" IS NULL)
+            AS "contentAssets",
+          (SELECT count(*)::int FROM "GeoRun"
+            WHERE "clientId" IS NULL OR "brandId" IS NULL OR "siteId" IS NULL)
+            AS "geoRuns",
+          (SELECT count(*)::int FROM "ExportPackage"
+            WHERE "clientId" IS NULL OR "brandId" IS NULL OR "siteId" IS NULL)
+            AS "exports",
+          (SELECT count(*)::int FROM "DistributionDispatch"
+            WHERE "clientId" IS NULL OR "brandId" IS NULL OR "siteId" IS NULL)
+            AS "dispatches"
+      `);
+      expect(orphanCounts.rows[0]).toEqual({
+        contentAssets: 0,
+        geoRuns: 0,
+        exports: 0,
+        dispatches: 0,
+      });
+    });
+
+    it("enforces legacy nullability, foreign keys, triggers, and indexes", async () => {
+      await applyMigration(client, enforceMigrationPath);
+
+      const nullability = await client.query<{
+        table_name: string;
+        column_name: string;
+        is_nullable: string;
+      }>(`
+        SELECT table_name, column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = ANY($1::text[])
+          AND column_name = ANY(ARRAY['clientId', 'brandId', 'siteId'])
+        ORDER BY table_name, column_name
+      `, [legacyTables]);
+      expect(nullability.rows).toHaveLength(legacyTables.length * 3);
+      expect(nullability.rows.every((column) => column.is_nullable === "NO")).toBe(
+        true,
+      );
+
+      const ownershipDefaults = await client.query<{
+        table_name: string;
+        column_name: string;
+        column_default: string;
+      }>(`
+        SELECT table_name, column_name, column_default
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = ANY($1::text[])
+          AND column_name = ANY(ARRAY['clientId', 'brandId', 'siteId'])
+        ORDER BY table_name, column_name
+      `, [legacyTables]);
+      const expectedDefaults: Record<string, string> = {
+        clientId: "'client_wing_heng'::text",
+        brandId: "'brand_txpuro'::text",
+        siteId: "'site_txpuro_com'::text",
+      };
+      expect(ownershipDefaults.rows).toHaveLength(legacyTables.length * 3);
+      for (const column of ownershipDefaults.rows) {
+        expect(column.column_default, `${column.table_name}.${column.column_name}`)
+          .toBe(expectedDefaults[column.column_name]);
+      }
+
+      const foreignKeys = await client.query<{
+        table_name: string;
+        constraint_name: string;
+        definition: string;
+      }>(`
+        SELECT
+          c.conrelid::regclass::text AS table_name,
+          c.conname AS constraint_name,
+          pg_get_constraintdef(c.oid) AS definition
+        FROM pg_constraint c
+        WHERE c.contype = 'f'
+          AND c.conrelid = ANY(
+            SELECT format('%I.%I', current_schema(), table_name)::regclass
+            FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = ANY($1::text[])
+          )
+          AND c.conname ~ '_(clientId|brandId|siteId|siteMarketId)_fkey$'
+      `, [legacyTables]);
+      expect(foreignKeys.rows).toHaveLength(legacyTables.length * 4);
+      expect(
+        foreignKeys.rows.every((foreignKey) =>
+          foreignKey.definition.includes("ON DELETE RESTRICT"),
+        ),
+      ).toBe(true);
+
+      const expectedIndexes = [
+        ...legacyTables.flatMap((table) => [
+          `${table}_clientId_siteId_idx`,
+          `${table}_brandId_idx`,
+          `${table}_siteId_idx`,
+          `${table}_siteMarketId_idx`,
+        ]),
+        "Integration_siteMarketId_idx",
+        "AnalysisRun_brandId_idx",
+        "AnalysisRun_siteMarketId_idx",
+        "Recommendation_runId_idx",
+        "Recommendation_siteId_idx",
+        "RecommendationEvidence_observationId_idx",
+        "Opportunity_siteId_idx",
+        "OpportunityRecommendation_recommendationId_idx",
+        "Competitor_siteMarketId_idx",
+        "Competitor_brandId_name_null_market_key",
+        "Integration_siteId_type_null_market_key",
+      ];
+      const indexes = await client.query<{ indexname: string }>(`
+        SELECT indexname
+        FROM pg_indexes
+        WHERE schemaname = current_schema()
+      `);
+      const actualIndexes = new Set(indexes.rows.map((index) => index.indexname));
+      for (const index of expectedIndexes) {
+        expect(actualIndexes.has(index), index).toBe(true);
+      }
+
+      const triggerDefinitions = await client.query<{
+        trigger_name: string;
+        definition: string;
+      }>(`
+        SELECT
+          t.tgname AS trigger_name,
+          pg_get_triggerdef(t.oid) AS definition
+        FROM pg_trigger t
+        WHERE NOT t.tgisinternal
+          AND t.tgrelid = ANY(
+            SELECT format('%I.%I', current_schema(), table_name)::regclass
+            FROM information_schema.tables
+            WHERE table_schema = current_schema()
+          )
+      `);
+      for (const table of legacyTables) {
+        const trigger = triggerDefinitions.rows.find(
+          (candidate) =>
+            candidate.trigger_name === `ownership_scope_${table}`,
+        );
+        expect(trigger?.definition, table).toContain(
+          "AFTER INSERT OR UPDATE",
+        );
+        expect(trigger?.definition, table).toContain("DEFERRABLE");
+      }
+
+      await client.query(`
+        INSERT INTO "GeoFlowSyncRun" ("id") VALUES ('sync_default_scope')
+      `);
+      const defaultScope = await client.query(`
+        SELECT "clientId", "brandId", "siteId", "siteMarketId"
+        FROM "GeoFlowSyncRun"
+        WHERE "id" = 'sync_default_scope'
+      `);
+      expect(defaultScope.rows[0]).toEqual({
+        clientId: fixedOwnership.clientId,
+        brandId: fixedOwnership.brandId,
+        siteId: fixedOwnership.siteId,
+        siteMarketId: null,
+      });
+      await client.query(`
+        DELETE FROM "GeoFlowSyncRun" WHERE "id" = 'sync_default_scope'
+      `);
+
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "ContentAsset" SET "clientId" = NULL
+            WHERE "id" = 'asset_txpuro_zh'
+          `),
+        "23502",
+        /null value in column "clientId"/i,
+      );
+
+      await client.query("BEGIN");
+      try {
+        await client.query(
+          `SET CONSTRAINTS "ownership_scope_ContentAsset" DEFERRED`,
+        );
+        await expectPgError(
+          () =>
+            client.query(`
+              UPDATE "ContentAsset" SET "brandId" = 'brand_missing'
+              WHERE "id" = 'asset_txpuro_zh'
+            `),
+          "23503",
+          /ContentAsset_brandId_fkey/,
+        );
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    });
+
+    it("rejects cross-tenant inserts and updates for every legacy table", async () => {
+      await seedSecondTenantAndModernRows(client);
+
+      const legacyUniqueChanges: Partial<
+        Record<(typeof legacyTables)[number], string>
+      > = {
+        GeoFlowTaskLink: "idempotencyKey",
+        TrendTopic: "keyword",
+        ExportPackage: "version",
+      };
+
+      for (const table of legacyTables) {
+        await expectPgError(
+          () => insertLegacyMismatch(client, table),
+          "23514",
+          new RegExp(`tenant ownership mismatch.*${table}`, "i"),
+        );
+        await expectPgError(
+          () =>
+            client.query(
+              `
+                UPDATE ${quoteIdentifier(table)}
+                SET "clientId" = 'client_other'
+                WHERE "id" = (
+                  SELECT "id" FROM ${quoteIdentifier(table)}
+                  WHERE "id" NOT LIKE 'cross_insert_%'
+                    AND "clientId" = 'client_wing_heng'
+                  ORDER BY "id" LIMIT 1
+                )
+              `,
+            ),
+          "23514",
+          new RegExp(`tenant ownership mismatch.*${table}`, "i"),
+        );
+        expect(legacyUniqueChanges[table] ?? "id").toBeTruthy();
+      }
+    });
+
+    it("rejects cross-tenant references along legacy parent chains", async () => {
+      const relationshipTriggers = await client.query<{ tgname: string }>(`
+        SELECT tgname
+        FROM pg_trigger
+        WHERE tgrelid = '"ContentAsset"'::regclass
+          AND NOT tgisinternal
+      `);
+      expect(relationshipTriggers.rows.map((trigger) => trigger.tgname)).toContain(
+        "ownership_zz_relationship_ContentAsset",
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            SELECT "assert_legacy_reference_scope"(
+              'client_wing_heng',
+              'brand_txpuro',
+              'site_txpuro_com',
+              'site_market_txpuro_my_en',
+              'TrendTopic',
+              'trend_other',
+              'ContentAsset diagnostic'
+            )
+          `),
+        "23514",
+        /referenced ownership mismatch.*ContentAsset.*TrendTopic/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "ContentAsset" (
+              "id", "clientId", "brandId", "siteId", "siteMarketId",
+              "title", "body", "summary", "brandEntity", "sourceUrl",
+              "targetKeywords", "canonicalUrl", "status", "owner", "locale",
+              "publishTarget", "trendTopicId", "createdAt", "updatedAt"
+            ) VALUES (
+              'asset_cross_topic', 'client_wing_heng', 'brand_txpuro',
+              'site_txpuro_com', 'site_market_txpuro_my_en', 'Cross topic',
+              'body', 'summary', 'Txpuro',
+              'https://txpuro.com/guides/en/cross-topic', ARRAY['cross'],
+              'https://txpuro.com/guides/en/cross-topic', 'Ready', 'test',
+              'en', 'txpuro', 'trend_other', CURRENT_TIMESTAMP,
+              CURRENT_TIMESTAMP
+            )
+          `),
+        "23514",
+        /referenced ownership mismatch.*ContentAsset.*TrendTopic/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "ContentAsset" SET "trendTopicId" = 'trend_other'
+            WHERE "id" = 'asset_txpuro_en'
+          `),
+        "23514",
+        /referenced ownership mismatch.*ContentAsset.*TrendTopic/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "GeoRun"
+            SELECT (
+              jsonb_populate_record(
+                NULL::"GeoRun",
+                to_jsonb(seed) || '{"id":"geo_run_cross","contentAssetId":"asset_other"}'::jsonb
+              )
+            ).*
+            FROM "GeoRun" seed
+            WHERE "id" = 'geo_run_txpuro_linked'
+          `),
+        "23514",
+        /referenced ownership mismatch.*GeoRun.*ContentAsset/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "GeoRun" SET "contentAssetId" = 'asset_other'
+            WHERE "id" = 'geo_run_txpuro_linked'
+          `),
+        "23514",
+        /referenced ownership mismatch.*GeoRun.*ContentAsset/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "ChannelVariant"
+            SELECT (
+              jsonb_populate_record(
+                NULL::"ChannelVariant",
+                to_jsonb(seed) || '{"id":"variant_cross","contentAssetId":"asset_other"}'::jsonb
+              )
+            ).*
+            FROM "ChannelVariant" seed
+            WHERE "id" = 'variant_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*ChannelVariant.*ContentAsset/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "ChannelVariant" SET "contentAssetId" = 'asset_other'
+            WHERE "id" = 'variant_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*ChannelVariant.*ContentAsset/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "GeoFlowTaskLink"
+            SELECT (
+              jsonb_populate_record(
+                NULL::"GeoFlowTaskLink",
+                to_jsonb(seed) || jsonb_build_object(
+                  'id', 'geoflow_cross',
+                  'contentAssetId', 'asset_other',
+                  'idempotencyKey', 'geoflow-cross-parent'
+                )
+              )
+            ).*
+            FROM "GeoFlowTaskLink" seed
+            WHERE "id" = 'geoflow_link_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*GeoFlowTaskLink.*ContentAsset/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "GeoFlowTaskLink" SET "contentAssetId" = 'asset_other'
+            WHERE "id" = 'geoflow_link_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*GeoFlowTaskLink.*ContentAsset/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "VariantMetric"
+            SELECT (
+              jsonb_populate_record(
+                NULL::"VariantMetric",
+                to_jsonb(seed) || '{"id":"metric_cross","channelVariantId":"variant_other"}'::jsonb
+              )
+            ).*
+            FROM "VariantMetric" seed
+            WHERE "id" = 'metric_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*VariantMetric.*ChannelVariant/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "VariantMetric" SET "channelVariantId" = 'variant_other'
+            WHERE "id" = 'metric_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*VariantMetric.*ChannelVariant/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "ExportPackage"
+            SELECT (
+              jsonb_populate_record(
+                NULL::"ExportPackage",
+                to_jsonb(seed) || jsonb_build_object(
+                  'id', 'export_cross',
+                  'contentAssetId', 'asset_other',
+                  'version', 99
+                )
+              )
+            ).*
+            FROM "ExportPackage" seed
+            WHERE "id" = 'export_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*ExportPackage.*ContentAsset/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "ExportPackage"
+            SET "contentAssetId" = 'asset_other', "version" = 99
+            WHERE "id" = 'export_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*ExportPackage.*ContentAsset/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "DistributionDispatch"
+            SELECT (
+              jsonb_populate_record(
+                NULL::"DistributionDispatch",
+                to_jsonb(seed) || jsonb_build_object(
+                  'id', 'dispatch_cross',
+                  'exportPackageId', 'export_other'
+                )
+              )
+            ).*
+            FROM "DistributionDispatch" seed
+            WHERE "id" = 'dispatch_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*DistributionDispatch.*ExportPackage/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "DistributionDispatch"
+            SET "exportPackageId" = 'export_other'
+            WHERE "id" = 'dispatch_txpuro'
+          `),
+        "23514",
+        /referenced ownership mismatch.*DistributionDispatch.*ExportPackage/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "TrendTopic"
+            SET
+              "clientId" = 'client_wing_heng',
+              "brandId" = 'brand_txpuro',
+              "siteId" = 'site_txpuro_com',
+              "siteMarketId" = 'site_market_txpuro_my_en'
+            WHERE "id" = 'trend_other'
+          `),
+        "23514",
+        /referenced ownership mismatch.*ContentAsset.*TrendTopic/i,
+      );
+    });
+
+    it("rejects inconsistent ownership across modern platform models", async () => {
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "AnalysisRun" (
+              "id", "clientId", "brandId", "siteId", "siteMarketId", "kind",
+              "source", "sourceVersion", "adapterVersion", "status",
+              "inputHash", "idempotencyKey", "trigger"
+            ) VALUES (
+              'analysis_cross', 'client_other', 'brand_txpuro',
+              'site_txpuro_com', 'site_market_txpuro_my_en', 'geo',
+              'test', '1', '1', 'succeeded', 'hash-cross',
+              'idem-analysis-cross', 'manual'
+            )
+          `),
+        "23514",
+        /tenant ownership mismatch.*AnalysisRun/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "AnalysisRun"
+            SET
+              "clientId" = 'client_other',
+              "brandId" = 'brand_other',
+              "siteId" = 'site_other_com',
+              "siteMarketId" = 'site_market_other_my_en'
+            WHERE "id" = 'analysis_txpuro'
+          `),
+        "23514",
+        /run ownership mismatch.*Recommendation/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "AnalysisRun" SET "clientId" = 'client_other'
+            WHERE "id" = 'analysis_txpuro'
+          `),
+        "23514",
+        /tenant ownership mismatch.*AnalysisRun/i,
+      );
+
+      await client.query(`
+        INSERT INTO "Competitor" (
+          "id", "brandId", "siteMarketId", "name", "aliases",
+          "createdAt", "updatedAt"
+        ) VALUES (
+          'competitor_valid', 'brand_txpuro', 'site_market_txpuro_my_en',
+          'Valid competitor', ARRAY[]::text[], CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        )
+      `);
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "Competitor" (
+              "id", "brandId", "siteMarketId", "name", "aliases",
+              "createdAt", "updatedAt"
+            ) VALUES (
+              'competitor_cross', 'brand_txpuro',
+              'site_market_other_my_en', 'Cross competitor',
+              ARRAY[]::text[], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+          `),
+        "23514",
+        /market does not belong to brand.*Competitor/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Competitor"
+            SET "siteMarketId" = 'site_market_other_my_en'
+            WHERE "id" = 'competitor_valid'
+          `),
+        "23514",
+        /market does not belong to brand.*Competitor/i,
+      );
+
+      await client.query(`
+        INSERT INTO "Integration" (
+          "id", "siteId", "siteMarketId", "type", "capabilities",
+          "adapterVersion", "createdAt", "updatedAt"
+        ) VALUES (
+          'integration_valid', 'site_txpuro_com',
+          'site_market_txpuro_my_en', 'valid-adapter', ARRAY['read'], '1',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `);
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "Integration" (
+              "id", "siteId", "siteMarketId", "type", "capabilities",
+              "adapterVersion", "createdAt", "updatedAt"
+            ) VALUES (
+              'integration_cross', 'site_txpuro_com',
+              'site_market_other_my_en', 'cross-adapter', ARRAY['read'], '1',
+              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+          `),
+        "23514",
+        /market does not belong to site.*Integration/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Integration"
+            SET "siteMarketId" = 'site_market_other_my_en'
+            WHERE "id" = 'integration_valid'
+          `),
+        "23514",
+        /market does not belong to site.*Integration/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "Recommendation" (
+              "id", "runId", "clientId", "siteId", "title", "detail",
+              "priority", "formulaVersion", "createdAt", "updatedAt"
+            ) VALUES (
+              'recommendation_cross', 'analysis_txpuro', 'client_other',
+              'site_other_com', 'Cross', 'detail', 1, 'v1',
+              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+          `),
+        "23514",
+        /run ownership mismatch.*Recommendation/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Recommendation"
+            SET
+              "runId" = 'analysis_other',
+              "clientId" = 'client_other',
+              "siteId" = 'site_other_com'
+            WHERE "id" = 'recommendation_txpuro'
+          `),
+        "23514",
+        /(observation ownership mismatch.*RecommendationEvidence|endpoint ownership mismatch.*OpportunityRecommendation)/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Recommendation" SET "clientId" = 'client_other'
+            WHERE "id" = 'recommendation_txpuro'
+          `),
+        "23514",
+        /run ownership mismatch.*Recommendation/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "Opportunity" (
+              "id", "clientId", "siteId", "title", "priority",
+              "formulaVersion", "createdAt", "updatedAt"
+            ) VALUES (
+              'opportunity_cross', 'client_wing_heng', 'site_other_com',
+              'Cross', 1, 'v1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+          `),
+        "23514",
+        /site does not belong to client.*Opportunity/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Opportunity"
+            SET "clientId" = 'client_other', "siteId" = 'site_other_com'
+            WHERE "id" = 'opportunity_txpuro'
+          `),
+        "23514",
+        /endpoint ownership mismatch.*OpportunityRecommendation/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Opportunity" SET "siteId" = 'site_other_com'
+            WHERE "id" = 'opportunity_txpuro'
+          `),
+        "23514",
+        /site does not belong to client.*Opportunity/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "RecommendationEvidence" (
+              "recommendationId", "observationId"
+            ) VALUES (
+              'recommendation_txpuro', 'observation_other'
+            )
+          `),
+        "23514",
+        /observation ownership mismatch.*RecommendationEvidence/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Observation" SET "runId" = 'analysis_other'
+            WHERE "id" = 'observation_txpuro'
+          `),
+        "23514",
+        /observation ownership mismatch.*RecommendationEvidence/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "RecommendationEvidence"
+            SET "observationId" = 'observation_other'
+            WHERE "recommendationId" = 'recommendation_txpuro'
+              AND "observationId" = 'observation_txpuro'
+          `),
+        "23514",
+        /observation ownership mismatch.*RecommendationEvidence/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "OpportunityRecommendation" (
+              "opportunityId", "recommendationId"
+            ) VALUES (
+              'opportunity_txpuro', 'recommendation_other'
+            )
+          `),
+        "23514",
+        /endpoint ownership mismatch.*OpportunityRecommendation/i,
+      );
+
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "Site" SET "brandId" = 'brand_other'
+            WHERE "id" = 'site_txpuro_com'
+          `),
+        "23514",
+        /tenant parent reassignment is not allowed.*Site/i,
+      );
+      await expectPgError(
+        () =>
+          client.query(`
+            UPDATE "OpportunityRecommendation"
+            SET "recommendationId" = 'recommendation_other'
+            WHERE "opportunityId" = 'opportunity_txpuro'
+              AND "recommendationId" = 'recommendation_txpuro'
+          `),
+        "23514",
+        /endpoint ownership mismatch.*OpportunityRecommendation/i,
+      );
+    });
+
+    it("enforces nullable-scope uniqueness including concurrent inserts", async () => {
+      await client.query(`
+        INSERT INTO "Competitor" (
+          "id", "brandId", "siteMarketId", "name", "aliases",
+          "createdAt", "updatedAt"
+        ) VALUES
+        (
+          'competitor_null_1', 'brand_txpuro', NULL, 'Null Scope',
+          ARRAY[]::text[], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'competitor_market_zh', 'brand_txpuro',
+          'site_market_txpuro_my_zh_cn', 'Per Market',
+          ARRAY[]::text[], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'competitor_market_en', 'brand_txpuro',
+          'site_market_txpuro_my_en', 'Per Market',
+          ARRAY[]::text[], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `);
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "Competitor" (
+              "id", "brandId", "siteMarketId", "name", "aliases",
+              "createdAt", "updatedAt"
+            ) VALUES (
+              'competitor_null_2', 'brand_txpuro', NULL, 'Null Scope',
+              ARRAY[]::text[], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+          `),
+        "23505",
+        /Competitor_brandId_name_null_market_key/,
+      );
+
+      await client.query(`
+        INSERT INTO "Integration" (
+          "id", "siteId", "siteMarketId", "type", "capabilities",
+          "adapterVersion", "createdAt", "updatedAt"
+        ) VALUES
+        (
+          'integration_null_1', 'site_txpuro_com', NULL, 'null-scope',
+          ARRAY['read'], '1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'integration_market_zh', 'site_txpuro_com',
+          'site_market_txpuro_my_zh_cn', 'per-market',
+          ARRAY['read'], '1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'integration_market_en', 'site_txpuro_com',
+          'site_market_txpuro_my_en', 'per-market',
+          ARRAY['read'], '1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `);
+      await expectPgError(
+        () =>
+          client.query(`
+            INSERT INTO "Integration" (
+              "id", "siteId", "siteMarketId", "type", "capabilities",
+              "adapterVersion", "createdAt", "updatedAt"
+            ) VALUES (
+              'integration_null_2', 'site_txpuro_com', NULL, 'null-scope',
+              ARRAY['read'], '1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+          `),
+        "23505",
+        /Integration_siteId_type_null_market_key/,
+      );
+
+      const concurrentA = new Client({ connectionString: pgConnectionString });
+      const concurrentB = new Client({ connectionString: pgConnectionString });
+      await Promise.all([concurrentA.connect(), concurrentB.connect()]);
+      try {
+        await Promise.all([
+          setSearchPath(concurrentA, mainSchema),
+          setSearchPath(concurrentB, mainSchema),
+        ]);
+        await concurrentA.query("BEGIN");
+        await concurrentA.query(`
+          INSERT INTO "Competitor" (
+            "id", "brandId", "siteMarketId", "name", "aliases",
+            "createdAt", "updatedAt"
+          ) VALUES (
+            'competitor_concurrent_a', 'brand_txpuro', NULL,
+            'Concurrent Scope', ARRAY[]::text[], CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          )
+        `);
+        const losingInsert = concurrentB.query(`
+          INSERT INTO "Competitor" (
+            "id", "brandId", "siteMarketId", "name", "aliases",
+            "createdAt", "updatedAt"
+          ) VALUES (
+            'competitor_concurrent_b', 'brand_txpuro', NULL,
+            'Concurrent Scope', ARRAY[]::text[], CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          )
+        `);
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+        await concurrentA.query("COMMIT");
+        await expectPgError(
+          () => losingInsert,
+          "23505",
+          /Competitor_brandId_name_null_market_key/,
+        );
+      } finally {
+        await Promise.allSettled([
+          concurrentA.query("ROLLBACK"),
+          concurrentB.query("ROLLBACK"),
+        ]);
+        await Promise.all([concurrentA.end(), concurrentB.end()]);
+      }
+    });
+
+    it("rejects malformed or non-Txpuro URL-only and content rows", async () => {
+      await withFreshSchema("unsafe_content", async (unsafeClient) => {
+        await applyLegacyMigrations(unsafeClient);
+        await unsafeClient.query(`
+          INSERT INTO "ContentAsset" (
+            "id", "title", "body", "summary", "brandEntity", "sourceUrl",
+            "targetKeywords", "canonicalUrl", "status", "owner", "slug",
+            "locale", "assetType", "schemaType", "ctaMode", "publishTarget",
+            "isPublic", "createdAt", "updatedAt"
+          ) VALUES (
+            'asset_aurora', 'Aurora', 'body', 'summary', 'Aurora',
+            'https://aurora.example/guides/demo', ARRAY['aurora'],
+            'https://aurora.example/guides/demo', 'Ready', 'legacy',
+            'aurora', 'en', 'guide-page', 'article', 'self_signup',
+            'geo_ops_internal', false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          );
+        `);
+        await applyMigration(unsafeClient, expandMigrationPath);
+        await expectPgError(
+          () => applyMigration(unsafeClient, backfillMigrationPath),
+          "P0001",
+          /unsafe ContentAsset URL.*asset_aurora/i,
+        );
+        const roots = await unsafeClient.query(`
+          SELECT count(*)::int AS count FROM "Workspace"
+        `);
+        expect(roots.rows[0]?.count).toBe(0);
+      });
+
+      await withFreshSchema("unsafe_seo", async (unsafeClient) => {
+        await applyLegacyMigrations(unsafeClient);
+        await unsafeClient.query(`
+          INSERT INTO "SeoAudit" (
+            "id", "url", "score", "issues", "auditedAt"
+          ) VALUES (
+            'seo_malformed', 'not a url', 1, '[]'::jsonb, CURRENT_TIMESTAMP
+          )
+        `);
+        await applyMigration(unsafeClient, expandMigrationPath);
+        await expectPgError(
+          () => applyMigration(unsafeClient, backfillMigrationPath),
+          "P0001",
+          /unsafe SeoAudit URL.*seo_malformed/i,
+        );
+        const roots = await unsafeClient.query(`
+          SELECT count(*)::int AS count FROM "Workspace"
+        `);
+        expect(roots.rows[0]?.count).toBe(0);
+      });
+
+      await withFreshSchema("unsafe_ranking", async (unsafeClient) => {
+        await applyLegacyMigrations(unsafeClient);
+        await unsafeClient.query(`
+          INSERT INTO "KeywordRanking" (
+            "id", "keyword", "url", "position", "source", "recordedAt"
+          ) VALUES (
+            'ranking_other', 'other', 'https://other.example/guides/en',
+            1, 'test', CURRENT_TIMESTAMP
+          )
+        `);
+        await applyMigration(unsafeClient, expandMigrationPath);
+        await expectPgError(
+          () => applyMigration(unsafeClient, backfillMigrationPath),
+          "P0001",
+          /unsafe KeywordRanking URL.*ranking_other/i,
+        );
+        const roots = await unsafeClient.query(`
+          SELECT count(*)::int AS count FROM "Workspace"
+        `);
+        expect(roots.rows[0]?.count).toBe(0);
+      });
+    });
+
+    it("replays all migrations from an empty PostgreSQL 16 schema", async () => {
+      await withFreshSchema("replay", async (replayClient) => {
+        for (const migrationPath of [
+          ...legacyMigrationPaths,
+          expandMigrationPath,
+          backfillMigrationPath,
+          enforceMigrationPath,
+        ]) {
+          await applyMigration(replayClient, migrationPath);
+        }
+        const replayed = await replayClient.query(`
+          SELECT
+            (SELECT count(*)::int FROM "Workspace") AS workspaces,
+            (SELECT count(*)::int FROM "SiteMarket") AS markets,
+            (
+              SELECT is_nullable
+              FROM information_schema.columns
+              WHERE table_schema = current_schema()
+                AND table_name = 'ContentAsset'
+                AND column_name = 'clientId'
+            ) AS "contentClientNullable"
+        `);
+        expect(replayed.rows[0]).toEqual({
+          workspaces: 1,
+          markets: 2,
+          contentClientNullable: "NO",
+        });
+      });
+    });
+  },
+);

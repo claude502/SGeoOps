@@ -64,9 +64,9 @@ enum RunStatus {
 
 model ContentAsset {
   id                     String                 @id
-  clientId               String?
-  brandId                String?
-  siteId                 String?
+  clientId               String                 @default("client_wing_heng")
+  brandId                String                 @default("brand_txpuro")
+  siteId                 String                 @default("site_txpuro_com")
   siteMarketId           String?
   title                  String
   body                   String
@@ -98,6 +98,10 @@ model ContentAsset {
   templateId             String?
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
+  client                 Client                 @relation("ContentAssetClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand                  Brand                  @relation("ContentAssetBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site                   Site                   @relation("ContentAssetSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket             SiteMarket?            @relation("ContentAssetSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
   distributionDispatches DistributionDispatch[]
   exportPackages         ExportPackage[]
   geoFlowLinks           GeoFlowTaskLink[]
@@ -111,13 +115,17 @@ model ContentAsset {
   @@index([publishTarget, isPublic])
   @@index([locale, slug])
   @@index([sourceSystem, trendTopicId, templateId, locale])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model GeoRun {
   id              String        @id
-  clientId        String?
-  brandId         String?
-  siteId          String?
+  clientId        String        @default("client_wing_heng")
+  brandId         String        @default("brand_txpuro")
+  siteId          String        @default("site_txpuro_com")
   siteMarketId    String?
   projectId       String
   contentAssetId  String?
@@ -133,18 +141,26 @@ model GeoRun {
   recommendations Json
   mode            String
   createdAt       DateTime
+  client          Client        @relation("GeoRunClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand           Brand         @relation("GeoRunBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site            Site          @relation("GeoRunSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket      SiteMarket?   @relation("GeoRunSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([projectId])
   @@index([contentAssetId])
   @@index([provider])
   @@index([createdAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model ChannelVariant {
   id             String          @id
-  clientId       String?
-  brandId        String?
-  siteId         String?
+  clientId       String          @default("client_wing_heng")
+  brandId        String          @default("brand_txpuro")
+  siteId         String          @default("site_txpuro_com")
   siteMarketId   String?
   contentAssetId String
   contentAsset   ContentAsset    @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
@@ -156,19 +172,27 @@ model ChannelVariant {
   status         String
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
+  client         Client          @relation("ChannelVariantClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand          Brand           @relation("ChannelVariantBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site           Site            @relation("ChannelVariantSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket     SiteMarket?     @relation("ChannelVariantSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
   metrics        VariantMetric[]
 
   @@index([contentAssetId])
   @@index([platform])
   @@index([status])
   @@index([scheduledAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model GeoFlowTaskLink {
   id                String            @id @default(cuid())
-  clientId          String?
-  brandId           String?
-  siteId            String?
+  clientId          String            @default("client_wing_heng")
+  brandId           String            @default("brand_txpuro")
+  siteId            String            @default("site_txpuro_com")
   siteMarketId      String?
   contentAssetId    String
   contentAsset      ContentAsset      @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
@@ -183,34 +207,50 @@ model GeoFlowTaskLink {
   taskPayload       Json?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
+  client            Client            @relation("GeoFlowTaskLinkClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand             Brand             @relation("GeoFlowTaskLinkBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site              Site              @relation("GeoFlowTaskLinkSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket        SiteMarket?       @relation("GeoFlowTaskLinkSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([contentAssetId])
   @@index([geoFlowTaskId])
   @@index([geoFlowArticleId])
   @@index([status])
   @@index([lastSyncedAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model GeoFlowSyncRun {
-  id           String    @id @default(cuid())
-  clientId     String?
-  brandId      String?
-  siteId       String?
+  id           String      @id @default(cuid())
+  clientId     String      @default("client_wing_heng")
+  brandId      String      @default("brand_txpuro")
+  siteId       String      @default("site_txpuro_com")
   siteMarketId String?
-  startedAt    DateTime  @default(now())
+  startedAt    DateTime    @default(now())
   finishedAt   DateTime?
-  successCount Int       @default(0)
-  failureCount Int       @default(0)
+  successCount Int         @default(0)
+  failureCount Int         @default(0)
   errorSummary String?
+  client       Client      @relation("GeoFlowSyncRunClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand        Brand       @relation("GeoFlowSyncRunBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site         Site        @relation("GeoFlowSyncRunSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket   SiteMarket? @relation("GeoFlowSyncRunSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([startedAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model AuditEvent {
-  id           String   @id @default(cuid())
-  clientId     String?
-  brandId      String?
-  siteId       String?
+  id           String      @id @default(cuid())
+  clientId     String      @default("client_wing_heng")
+  brandId      String      @default("brand_txpuro")
+  siteId       String      @default("site_txpuro_com")
   siteMarketId String?
   actor        String
   action       String
@@ -219,20 +259,28 @@ model AuditEvent {
   outcome      String
   requestId    String?
   metadata     Json?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime    @default(now())
+  client       Client      @relation("AuditEventClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand        Brand       @relation("AuditEventBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site         Site        @relation("AuditEventSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket   SiteMarket? @relation("AuditEventSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([createdAt])
   @@index([action])
   @@index([entityType, entityId])
   @@index([outcome])
   @@index([requestId])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model TrendTopic {
   id           String         @id @default(cuid())
-  clientId     String?
-  brandId      String?
-  siteId       String?
+  clientId     String         @default("client_wing_heng")
+  brandId      String         @default("brand_txpuro")
+  siteId       String         @default("site_txpuro_com")
   siteMarketId String?
   keyword      String
   platform     String
@@ -243,19 +291,27 @@ model TrendTopic {
   capturedAt   DateTime
   expiresAt    DateTime?
   createdAt    DateTime       @default(now())
+  client       Client         @relation("TrendTopicClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand        Brand          @relation("TrendTopicBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site         Site           @relation("TrendTopicSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket   SiteMarket?    @relation("TrendTopicSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
   assets       ContentAsset[]
 
   @@unique([keyword, platform])
   @@index([status])
   @@index([platform])
   @@index([capturedAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model VariantMetric {
   id               String         @id @default(cuid())
-  clientId         String?
-  brandId          String?
-  siteId           String?
+  clientId         String         @default("client_wing_heng")
+  brandId          String         @default("brand_txpuro")
+  siteId           String         @default("site_txpuro_com")
   siteMarketId     String?
   channelVariantId String
   channelVariant   ChannelVariant @relation(fields: [channelVariantId], references: [id], onDelete: Cascade)
@@ -263,51 +319,75 @@ model VariantMetric {
   clicks           Int            @default(0)
   shares           Int            @default(0)
   recordedAt       DateTime
+  client           Client         @relation("VariantMetricClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand            Brand          @relation("VariantMetricBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site             Site           @relation("VariantMetricSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket       SiteMarket?    @relation("VariantMetricSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([channelVariantId])
   @@index([recordedAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model SeoAudit {
-  id           String   @id @default(cuid())
-  clientId     String?
-  brandId      String?
-  siteId       String?
+  id           String      @id @default(cuid())
+  clientId     String      @default("client_wing_heng")
+  brandId      String      @default("brand_txpuro")
+  siteId       String      @default("site_txpuro_com")
   siteMarketId String?
   url          String
   score        Int
   issues       Json
   cwv          Json?
   auditedAt    DateTime
+  client       Client      @relation("SeoAuditClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand        Brand       @relation("SeoAuditBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site         Site        @relation("SeoAuditSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket   SiteMarket? @relation("SeoAuditSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([url])
   @@index([auditedAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model KeywordRanking {
-  id           String   @id @default(cuid())
-  clientId     String?
-  brandId      String?
-  siteId       String?
+  id           String      @id @default(cuid())
+  clientId     String      @default("client_wing_heng")
+  brandId      String      @default("brand_txpuro")
+  siteId       String      @default("site_txpuro_com")
   siteMarketId String?
   keyword      String
   url          String
   position     Int
-  clicks       Int      @default(0)
-  impressions  Int      @default(0)
+  clicks       Int         @default(0)
+  impressions  Int         @default(0)
   source       String
   recordedAt   DateTime
+  client       Client      @relation("KeywordRankingClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand        Brand       @relation("KeywordRankingBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site         Site        @relation("KeywordRankingSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket   SiteMarket? @relation("KeywordRankingSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([keyword])
   @@index([url])
   @@index([recordedAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model ExportPackage {
   id                     String                 @id @default(cuid())
-  clientId               String?
-  brandId                String?
-  siteId                 String?
+  clientId               String                 @default("client_wing_heng")
+  brandId                String                 @default("brand_txpuro")
+  siteId                 String                 @default("site_txpuro_com")
   siteMarketId           String?
   contentAssetId         String
   contentAsset           ContentAsset           @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
@@ -320,18 +400,26 @@ model ExportPackage {
   sourceUrl              String
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
+  client                 Client                 @relation("ExportPackageClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand                  Brand                  @relation("ExportPackageBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site                   Site                   @relation("ExportPackageSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket             SiteMarket?            @relation("ExportPackageSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
   distributionDispatches DistributionDispatch[]
 
   @@unique([contentAssetId, version, language])
   @@index([contentAssetId])
   @@index([status])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model DistributionDispatch {
   id              String                     @id @default(cuid())
-  clientId        String?
-  brandId         String?
-  siteId          String?
+  clientId        String                     @default("client_wing_heng")
+  brandId         String                     @default("brand_txpuro")
+  siteId          String                     @default("site_txpuro_com")
   siteMarketId    String?
   exportPackageId String
   exportPackage   ExportPackage              @relation(fields: [exportPackageId], references: [id], onDelete: Cascade)
@@ -346,17 +434,25 @@ model DistributionDispatch {
   publishedAt     DateTime?
   createdAt       DateTime                   @default(now())
   updatedAt       DateTime                   @updatedAt
+  client          Client                     @relation("DistributionDispatchClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand           Brand                      @relation("DistributionDispatchBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site            Site                       @relation("DistributionDispatchSite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket      SiteMarket?                @relation("DistributionDispatchSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([exportPackageId])
   @@index([contentAssetId])
   @@index([platform, status])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model EventDelivery {
   id            String              @id @default(cuid())
-  clientId      String?
-  brandId       String?
-  siteId        String?
+  clientId      String              @default("client_wing_heng")
+  brandId       String              @default("brand_txpuro")
+  siteId        String              @default("site_txpuro_com")
   siteMarketId  String?
   eventName     String
   entityType    String
@@ -368,10 +464,18 @@ model EventDelivery {
   lastError     String?
   lastAttemptAt DateTime?
   createdAt     DateTime            @default(now())
+  client        Client              @relation("EventDeliveryClient", fields: [clientId], references: [id], onDelete: Restrict)
+  brand         Brand               @relation("EventDeliveryBrand", fields: [brandId], references: [id], onDelete: Restrict)
+  site          Site                @relation("EventDeliverySite", fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket    SiteMarket?         @relation("EventDeliverySiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
 
   @@index([eventName, status])
   @@index([entityType, entityId])
   @@index([createdAt])
+  @@index([clientId, siteId])
+  @@index([brandId])
+  @@index([siteId])
+  @@index([siteMarketId])
 }
 
 model Workspace {
@@ -457,83 +561,135 @@ model WorkspaceMember {
 }
 
 model Client {
-  id              String           @id @default(cuid())
-  workspaceId     String
-  name            String
-  slug            String
-  active          Boolean          @default(true)
-  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
-  brands          Brand[]
-  analysisRuns    AnalysisRun[]
-  recommendations Recommendation[]
-  opportunities   Opportunity[]
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  id                     String                 @id @default(cuid())
+  workspaceId            String
+  name                   String
+  slug                   String
+  active                 Boolean                @default(true)
+  workspace              Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  brands                 Brand[]
+  analysisRuns           AnalysisRun[]
+  recommendations        Recommendation[]
+  opportunities          Opportunity[]
+  contentAssets          ContentAsset[]         @relation("ContentAssetClient")
+  geoRuns                GeoRun[]               @relation("GeoRunClient")
+  channelVariants        ChannelVariant[]       @relation("ChannelVariantClient")
+  geoFlowTaskLinks       GeoFlowTaskLink[]      @relation("GeoFlowTaskLinkClient")
+  geoFlowSyncRuns        GeoFlowSyncRun[]       @relation("GeoFlowSyncRunClient")
+  auditEvents            AuditEvent[]           @relation("AuditEventClient")
+  trendTopics            TrendTopic[]           @relation("TrendTopicClient")
+  variantMetrics         VariantMetric[]        @relation("VariantMetricClient")
+  seoAudits              SeoAudit[]             @relation("SeoAuditClient")
+  keywordRankings        KeywordRanking[]       @relation("KeywordRankingClient")
+  exportPackages         ExportPackage[]        @relation("ExportPackageClient")
+  distributionDispatches DistributionDispatch[] @relation("DistributionDispatchClient")
+  eventDeliveries        EventDelivery[]        @relation("EventDeliveryClient")
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
   @@unique([workspaceId, slug])
   @@index([workspaceId, active])
 }
 
 model Brand {
-  id           String        @id @default(cuid())
-  clientId     String
-  name         String
-  slug         String
-  aliases      String[]
-  products     Json?
-  industry     String?
-  goals        Json?
-  riskCategory String        @default("standard")
-  client       Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  sites        Site[]
-  competitors  Competitor[]
-  analysisRuns AnalysisRun[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id                     String                 @id @default(cuid())
+  clientId               String
+  name                   String
+  slug                   String
+  aliases                String[]
+  products               Json?
+  industry               String?
+  goals                  Json?
+  riskCategory           String                 @default("standard")
+  client                 Client                 @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  sites                  Site[]
+  competitors            Competitor[]
+  analysisRuns           AnalysisRun[]
+  contentAssets          ContentAsset[]         @relation("ContentAssetBrand")
+  geoRuns                GeoRun[]               @relation("GeoRunBrand")
+  channelVariants        ChannelVariant[]       @relation("ChannelVariantBrand")
+  geoFlowTaskLinks       GeoFlowTaskLink[]      @relation("GeoFlowTaskLinkBrand")
+  geoFlowSyncRuns        GeoFlowSyncRun[]       @relation("GeoFlowSyncRunBrand")
+  auditEvents            AuditEvent[]           @relation("AuditEventBrand")
+  trendTopics            TrendTopic[]           @relation("TrendTopicBrand")
+  variantMetrics         VariantMetric[]        @relation("VariantMetricBrand")
+  seoAudits              SeoAudit[]             @relation("SeoAuditBrand")
+  keywordRankings        KeywordRanking[]       @relation("KeywordRankingBrand")
+  exportPackages         ExportPackage[]        @relation("ExportPackageBrand")
+  distributionDispatches DistributionDispatch[] @relation("DistributionDispatchBrand")
+  eventDeliveries        EventDelivery[]        @relation("EventDeliveryBrand")
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
   @@unique([clientId, slug])
   @@index([clientId])
 }
 
 model Site {
-  id                  String           @id @default(cuid())
-  brandId             String
-  name                String
-  canonicalHost       String           @unique
-  originHosts         String[]
-  siteType            String
-  hostingMode         String
-  canonicalRules      Json
-  allowedPublishPaths String[]
-  ownershipVerifiedAt DateTime?
-  active              Boolean          @default(true)
-  brand               Brand            @relation(fields: [brandId], references: [id], onDelete: Restrict)
-  markets             SiteMarket[]
-  integrations        Integration[]
-  analysisRuns        AnalysisRun[]
-  recommendations     Recommendation[]
-  opportunities       Opportunity[]
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  id                     String                 @id @default(cuid())
+  brandId                String
+  name                   String
+  canonicalHost          String                 @unique
+  originHosts            String[]
+  siteType               String
+  hostingMode            String
+  canonicalRules         Json
+  allowedPublishPaths    String[]
+  ownershipVerifiedAt    DateTime?
+  active                 Boolean                @default(true)
+  brand                  Brand                  @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  markets                SiteMarket[]
+  integrations           Integration[]
+  analysisRuns           AnalysisRun[]
+  recommendations        Recommendation[]
+  opportunities          Opportunity[]
+  contentAssets          ContentAsset[]         @relation("ContentAssetSite")
+  geoRuns                GeoRun[]               @relation("GeoRunSite")
+  channelVariants        ChannelVariant[]       @relation("ChannelVariantSite")
+  geoFlowTaskLinks       GeoFlowTaskLink[]      @relation("GeoFlowTaskLinkSite")
+  geoFlowSyncRuns        GeoFlowSyncRun[]       @relation("GeoFlowSyncRunSite")
+  auditEvents            AuditEvent[]           @relation("AuditEventSite")
+  trendTopics            TrendTopic[]           @relation("TrendTopicSite")
+  variantMetrics         VariantMetric[]        @relation("VariantMetricSite")
+  seoAudits              SeoAudit[]             @relation("SeoAuditSite")
+  keywordRankings        KeywordRanking[]       @relation("KeywordRankingSite")
+  exportPackages         ExportPackage[]        @relation("ExportPackageSite")
+  distributionDispatches DistributionDispatch[] @relation("DistributionDispatchSite")
+  eventDeliveries        EventDelivery[]        @relation("EventDeliverySite")
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
   @@index([brandId, active])
 }
 
 model SiteMarket {
-  id            String        @id @default(cuid())
-  siteId        String
-  country       String
-  locale        String
-  defaultDevice String        @default("desktop")
-  timezone      String
-  settings      Json?
-  site          Site          @relation(fields: [siteId], references: [id], onDelete: Cascade)
-  competitors   Competitor[]
-  keywords      Keyword[]
-  integrations  Integration[]
-  analysisRuns  AnalysisRun[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id                     String                 @id @default(cuid())
+  siteId                 String
+  country                String
+  locale                 String
+  defaultDevice          String                 @default("desktop")
+  timezone               String
+  settings               Json?
+  site                   Site                   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  competitors            Competitor[]
+  keywords               Keyword[]
+  integrations           Integration[]
+  analysisRuns           AnalysisRun[]
+  contentAssets          ContentAsset[]         @relation("ContentAssetSiteMarket")
+  geoRuns                GeoRun[]               @relation("GeoRunSiteMarket")
+  channelVariants        ChannelVariant[]       @relation("ChannelVariantSiteMarket")
+  geoFlowTaskLinks       GeoFlowTaskLink[]      @relation("GeoFlowTaskLinkSiteMarket")
+  geoFlowSyncRuns        GeoFlowSyncRun[]       @relation("GeoFlowSyncRunSiteMarket")
+  auditEvents            AuditEvent[]           @relation("AuditEventSiteMarket")
+  trendTopics            TrendTopic[]           @relation("TrendTopicSiteMarket")
+  variantMetrics         VariantMetric[]        @relation("VariantMetricSiteMarket")
+  seoAudits              SeoAudit[]             @relation("SeoAuditSiteMarket")
+  keywordRankings        KeywordRanking[]       @relation("KeywordRankingSiteMarket")
+  exportPackages         ExportPackage[]        @relation("ExportPackageSiteMarket")
+  distributionDispatches DistributionDispatch[] @relation("DistributionDispatchSiteMarket")
+  eventDeliveries        EventDelivery[]        @relation("EventDeliverySiteMarket")
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
   @@unique([siteId, country, locale])
   @@index([siteId])
@@ -551,8 +707,10 @@ model Competitor {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
+  // SQL-only partial unique: ("brandId", "name") WHERE "siteMarketId" IS NULL.
   @@unique([brandId, siteMarketId, name])
   @@index([brandId, active])
+  @@index([siteMarketId])
 }
 
 model Keyword {
@@ -590,8 +748,10 @@ model Integration {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
+  // SQL-only partial unique: ("siteId", "type") WHERE "siteMarketId" IS NULL.
   @@unique([siteId, siteMarketId, type])
   @@index([siteId, healthState])
+  @@index([siteMarketId])
 }
 
 model AnalysisRun {
@@ -626,6 +786,8 @@ model AnalysisRun {
   @@index([siteId, kind, inputHash])
   @@index([clientId, siteId, createdAt])
   @@index([status, createdAt])
+  @@index([brandId])
+  @@index([siteMarketId])
 }
 
 model RawArtifact {
@@ -701,6 +863,8 @@ model Recommendation {
   updatedAt         DateTime                    @updatedAt
 
   @@index([clientId, siteId, state])
+  @@index([runId])
+  @@index([siteId])
 }
 
 model RecommendationEvidence {
@@ -710,6 +874,7 @@ model RecommendationEvidence {
   observation      Observation    @relation(fields: [observationId], references: [id], onDelete: Restrict)
 
   @@id([recommendationId, observationId])
+  @@index([observationId])
 }
 
 model Opportunity {
@@ -727,6 +892,7 @@ model Opportunity {
   updatedAt       DateTime                    @updatedAt
 
   @@index([clientId, siteId, state])
+  @@index([siteId])
 }
 
 model OpportunityRecommendation {
@@ -736,6 +902,7 @@ model OpportunityRecommendation {
   recommendation   Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Restrict)
 
   @@id([opportunityId, recommendationId])
+  @@index([recommendationId])
 }
 
 model OutboxEvent {
