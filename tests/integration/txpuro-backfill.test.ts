@@ -134,14 +134,15 @@ async function expectPgError(
   message: RegExp,
 ): Promise<void> {
   const acceptedCodes = Array.isArray(codes) ? codes : [codes];
+  let caught: PgError | undefined;
   try {
     await action();
-    expect.fail("Expected PostgreSQL to reject the statement");
   } catch (error) {
-    const pgError = error as PgError;
-    expect(acceptedCodes).toContain(pgError.code);
-    expect(pgError.message).toMatch(message);
+    caught = error as PgError;
   }
+  expect(caught, "Expected PostgreSQL to reject the statement").toBeDefined();
+  expect(acceptedCodes).toContain(caught?.code);
+  expect(caught?.message).toMatch(message);
 }
 
 async function seedLegacyTxpuroRows(target: Client): Promise<void> {
@@ -303,9 +304,12 @@ async function seedLegacyTxpuroRows(target: Client): Promise<void> {
 async function snapshotUrls(target: Client): Promise<UrlSnapshot> {
   const queries: Record<string, string> = {
     ContentAsset: `
-      SELECT "id", "sourceUrl", "canonicalUrl", "externalUrl", "publishedPath"
+      SELECT
+        "id", "sourceUrl", "canonicalUrl", "externalUrl", "publishedPath",
+        "slug", "locale", "publishTarget"
       FROM "ContentAsset" ORDER BY "id"
     `,
+    GeoRun: `SELECT "id", "locale" FROM "GeoRun" ORDER BY "id"`,
     GeoFlowTaskLink: `
       SELECT "id", "geoFlowArticleUrl" FROM "GeoFlowTaskLink" ORDER BY "id"
     `,
@@ -314,10 +318,14 @@ async function snapshotUrls(target: Client): Promise<UrlSnapshot> {
       SELECT "id", "url" FROM "KeywordRanking" ORDER BY "id"
     `,
     ExportPackage: `
-      SELECT "id", "sourceUrl" FROM "ExportPackage" ORDER BY "id"
+      SELECT "id", "sourceUrl", "language"
+      FROM "ExportPackage" ORDER BY "id"
     `,
     DistributionDispatch: `
       SELECT "id", "publishedUrl" FROM "DistributionDispatch" ORDER BY "id"
+    `,
+    EventDelivery: `
+      SELECT "id", "payload" FROM "EventDelivery" ORDER BY "id"
     `,
   };
   const snapshot: UrlSnapshot = {};
@@ -325,6 +333,174 @@ async function snapshotUrls(target: Client): Promise<UrlSnapshot> {
     snapshot[name] = (await target.query(sql)).rows;
   }
   return snapshot;
+}
+
+async function prepareExpandedLegacyFixture(target: Client): Promise<void> {
+  await applyLegacyMigrations(target);
+  await seedLegacyTxpuroRows(target);
+  await applyMigration(target, expandMigrationPath);
+}
+
+async function seedLegacyContentProbe(
+  target: Client,
+  input: {
+    id: string;
+    brandEntity: string;
+    sourceUrl: string;
+    canonicalUrl: string;
+    locale?: "en" | "zh-CN";
+  },
+): Promise<void> {
+  const locale = input.locale ?? "en";
+  await target.query(
+    `
+      INSERT INTO "ContentAsset" (
+        "id", "title", "body", "summary", "brandEntity", "sourceUrl",
+        "targetKeywords", "canonicalUrl", "status", "owner", "slug",
+        "locale", "assetType", "schemaType", "ctaMode", "publishTarget",
+        "isPublic", "createdAt", "updatedAt"
+      ) VALUES (
+        $1, 'Txpuro probe', 'body', 'summary', $2, $3,
+        ARRAY['txpuro'], $4, 'Ready', 'legacy', $1, $5,
+        'guide-page', 'article', 'self_signup', 'geo_ops_internal',
+        false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+    `,
+    [
+      input.id,
+      input.brandEntity,
+      input.sourceUrl,
+      input.canonicalUrl,
+      locale,
+    ],
+  );
+}
+
+async function seedOtherOwnershipRoot(target: Client): Promise<void> {
+  await target.query(`
+    INSERT INTO "Workspace" (
+      "id", "name", "slug", "createdAt", "updatedAt"
+    ) VALUES (
+      'workspace_other', 'Other Workspace', 'other-workspace',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Client" (
+      "id", "workspaceId", "name", "slug", "createdAt", "updatedAt"
+    ) VALUES (
+      'client_other', 'workspace_other', 'Other Client', 'other-client',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Brand" (
+      "id", "clientId", "name", "slug", "aliases", "createdAt", "updatedAt"
+    ) VALUES (
+      'brand_other', 'client_other', 'Other Brand', 'other-brand',
+      ARRAY['Other'], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Site" (
+      "id", "brandId", "name", "canonicalHost", "originHosts", "siteType",
+      "hostingMode", "canonicalRules", "allowedPublishPaths",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'site_other_com', 'brand_other', 'Other Site', 'other.example',
+      ARRAY['origin.other.example'], 'content', 'hybrid',
+      '{"https":true,"www":"redirect"}'::jsonb, ARRAY['/guides'],
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "SiteMarket" (
+      "id", "siteId", "country", "locale", "defaultDevice", "timezone",
+      "settings", "createdAt", "updatedAt"
+    ) VALUES (
+      'site_market_other_my_en', 'site_other_com', 'MY', 'en', 'desktop',
+      'Asia/Kuala_Lumpur',
+      '{"searchEngine":"google.com.my","device":"desktop"}'::jsonb,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+  `);
+}
+
+type FixedRootConflict =
+  | "inactive_client"
+  | "inactive_site"
+  | "wrong_site_name"
+  | "wrong_market_settings";
+
+async function seedConflictingFixedRoot(
+  target: Client,
+  conflict: FixedRootConflict,
+): Promise<void> {
+  const clientActive = conflict !== "inactive_client";
+  const siteActive = conflict !== "inactive_site";
+  const siteName = conflict === "wrong_site_name" ? "Txpuro.com" : "Txpuro";
+  const zhSettings =
+    conflict === "wrong_market_settings"
+      ? { searchEngine: "google.com", device: "mobile" }
+      : { searchEngine: "google.com.my", device: "desktop" };
+
+  await target.query(`
+    INSERT INTO "Workspace" (
+      "id", "name", "slug", "createdAt", "updatedAt"
+    ) VALUES (
+      'workspace_internal', 'Internal GEO SEO Operations', 'internal',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    )
+  `);
+  await target.query(
+    `
+      INSERT INTO "Client" (
+        "id", "workspaceId", "name", "slug", "active",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        'client_wing_heng', 'workspace_internal', 'Wing Heng Technology',
+        'wing-heng', $1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+    `,
+    [clientActive],
+  );
+  await target.query(`
+      INSERT INTO "Brand" (
+        "id", "clientId", "name", "slug", "aliases", "riskCategory",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        'brand_txpuro', 'client_wing_heng', 'Txpuro', 'txpuro',
+        ARRAY['Txpuro', '智慧电子发票系统 Txpuro'], 'standard',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+  `);
+  await target.query(
+    `
+      INSERT INTO "Site" (
+        "id", "brandId", "name", "canonicalHost", "originHosts", "siteType",
+        "hostingMode", "canonicalRules", "allowedPublishPaths", "active",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        'site_txpuro_com', 'brand_txpuro', $1, 'txpuro.com',
+        ARRAY['geo-origin.winghengtech.com'], 'content', 'hybrid',
+        '{"https":true,"www":"redirect"}'::jsonb, ARRAY['/guides'], $2,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+    `,
+    [siteName, siteActive],
+  );
+  await target.query(
+    `
+      INSERT INTO "SiteMarket" (
+        "id", "siteId", "country", "locale", "defaultDevice", "timezone",
+        "settings", "createdAt", "updatedAt"
+      ) VALUES
+      (
+        'site_market_txpuro_my_zh_cn', 'site_txpuro_com', 'MY', 'zh-CN',
+        'desktop', 'Asia/Kuala_Lumpur', $1::jsonb,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'site_market_txpuro_my_en', 'site_txpuro_com', 'MY', 'en',
+        'desktop', 'Asia/Kuala_Lumpur',
+        '{"searchEngine":"google.com.my","device":"desktop"}'::jsonb,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+    `,
+    [JSON.stringify(zhSettings)],
+  );
 }
 
 async function seedSecondTenantAndModernRows(target: Client): Promise<void> {
@@ -570,6 +746,15 @@ describe.skipIf(!integrationEnabled).sequential(
 
     it("backfills fixed Txpuro ownership without changing legacy URLs", async () => {
       await applyMigration(client, expandMigrationPath);
+      await client.query(`
+        UPDATE "GeoFlowSyncRun"
+        SET "siteMarketId" = 'site_market_txpuro_my_en'
+        WHERE "id" = 'sync_txpuro';
+
+        UPDATE "ChannelVariant"
+        SET "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+        WHERE "id" = 'variant_txpuro';
+      `);
       await applyMigration(client, backfillMigrationPath);
       await applyMigration(client, backfillMigrationPath);
 
@@ -590,7 +775,10 @@ describe.skipIf(!integrationEnabled).sequential(
           b."id" AS "brandId",
           b."aliases",
           b."riskCategory",
+          c."active" AS "clientActive",
           s."id" AS "siteId",
+          s."name" AS "siteName",
+          s."active" AS "siteActive",
           s."canonicalHost",
           s."originHosts",
           s."siteType",
@@ -607,7 +795,10 @@ describe.skipIf(!integrationEnabled).sequential(
           brandId: fixedOwnership.brandId,
           aliases: ["Txpuro", "智慧电子发票系统 Txpuro"],
           riskCategory: "standard",
+          clientActive: true,
           siteId: fixedOwnership.siteId,
+          siteName: "Txpuro",
+          siteActive: true,
           canonicalHost: "txpuro.com",
           originHosts: ["geo-origin.winghengtech.com"],
           siteType: "content",
@@ -618,7 +809,9 @@ describe.skipIf(!integrationEnabled).sequential(
       ]);
 
       const markets = await client.query(`
-        SELECT "id", "country", "locale", "defaultDevice", "timezone"
+        SELECT
+          "id", "siteId", "country", "locale", "defaultDevice", "timezone",
+          "settings"
         FROM "SiteMarket"
         WHERE "siteId" = 'site_txpuro_com'
         ORDER BY "locale"
@@ -626,17 +819,21 @@ describe.skipIf(!integrationEnabled).sequential(
       expect(markets.rows).toEqual([
         {
           id: fixedOwnership.enMarketId,
+          siteId: fixedOwnership.siteId,
           country: "MY",
           locale: "en",
           defaultDevice: "desktop",
           timezone: "Asia/Kuala_Lumpur",
+          settings: { searchEngine: "google.com.my", device: "desktop" },
         },
         {
           id: fixedOwnership.zhMarketId,
+          siteId: fixedOwnership.siteId,
           country: "MY",
           locale: "zh-CN",
           defaultDevice: "desktop",
           timezone: "Asia/Kuala_Lumpur",
+          settings: { searchEngine: "google.com.my", device: "desktop" },
         },
       ]);
 
@@ -667,6 +864,29 @@ describe.skipIf(!integrationEnabled).sequential(
       expect(contentMarkets.rows).toEqual([
         { locale: "en", siteMarketId: fixedOwnership.enMarketId },
         { locale: "zh-CN", siteMarketId: fixedOwnership.zhMarketId },
+      ]);
+
+      const preservedMarketSignals = await client.query(`
+        SELECT 'ChannelVariant' AS source, "id", "siteMarketId"
+        FROM "ChannelVariant"
+        WHERE "id" = 'variant_txpuro'
+        UNION ALL
+        SELECT 'GeoFlowSyncRun', "id", "siteMarketId"
+        FROM "GeoFlowSyncRun"
+        WHERE "id" = 'sync_txpuro'
+        ORDER BY source
+      `);
+      expect(preservedMarketSignals.rows).toEqual([
+        {
+          source: "ChannelVariant",
+          id: "variant_txpuro",
+          siteMarketId: fixedOwnership.zhMarketId,
+        },
+        {
+          source: "GeoFlowSyncRun",
+          id: "sync_txpuro",
+          siteMarketId: fixedOwnership.enMarketId,
+        },
       ]);
 
       const inferredMarkets = await client.query(`
@@ -1550,6 +1770,314 @@ describe.skipIf(!integrationEnabled).sequential(
       }
     });
 
+    it("rejects invalid existing market signals without overwriting them", async () => {
+      await withFreshSchema("market_missing_site_level", async (marketClient) => {
+        await prepareExpandedLegacyFixture(marketClient);
+        await marketClient.query(`
+          UPDATE "GeoFlowSyncRun"
+          SET "siteMarketId" = 'site_market_missing'
+          WHERE "id" = 'sync_txpuro'
+        `);
+
+        await expectPgError(
+          () => applyMigration(marketClient, backfillMigrationPath),
+          "P0001",
+          /market ownership signal.*GeoFlowSyncRun.*sync_txpuro/i,
+        );
+        const fixedRoot = await marketClient.query(`
+          SELECT count(*)::int AS count
+          FROM "Workspace" WHERE "id" = 'workspace_internal'
+        `);
+        expect(fixedRoot.rows[0]?.count).toBe(0);
+      });
+
+      await withFreshSchema("market_other_descendant", async (marketClient) => {
+        await prepareExpandedLegacyFixture(marketClient);
+        await seedOtherOwnershipRoot(marketClient);
+        await marketClient.query(`
+          UPDATE "ChannelVariant"
+          SET "siteMarketId" = 'site_market_other_my_en'
+          WHERE "id" = 'variant_txpuro'
+        `);
+
+        await expectPgError(
+          () => applyMigration(marketClient, backfillMigrationPath),
+          "P0001",
+          /market ownership signal.*ChannelVariant.*variant_txpuro/i,
+        );
+        const fixedRoot = await marketClient.query(`
+          SELECT count(*)::int AS count
+          FROM "Workspace" WHERE "id" = 'workspace_internal'
+        `);
+        expect(fixedRoot.rows[0]?.count).toBe(0);
+      });
+
+      await withFreshSchema("market_tuple_mismatch", async (marketClient) => {
+        await prepareExpandedLegacyFixture(marketClient);
+        await seedOtherOwnershipRoot(marketClient);
+        await marketClient.query(`
+          UPDATE "GeoFlowSyncRun"
+          SET
+            "clientId" = 'client_other',
+            "brandId" = 'brand_other',
+            "siteId" = 'site_other_com',
+            "siteMarketId" = 'site_market_txpuro_my_en'
+          WHERE "id" = 'sync_txpuro'
+        `);
+
+        await expectPgError(
+          () => applyMigration(marketClient, backfillMigrationPath),
+          "P0001",
+          /ownership chain.*GeoFlowSyncRun.*sync_txpuro/i,
+        );
+        const fixedRoot = await marketClient.query(`
+          SELECT count(*)::int AS count
+          FROM "Workspace" WHERE "id" = 'workspace_internal'
+        `);
+        expect(fixedRoot.rows[0]?.count).toBe(0);
+      });
+
+      await withFreshSchema("market_inherited_root_mismatch", async (marketClient) => {
+        await prepareExpandedLegacyFixture(marketClient);
+        await seedOtherOwnershipRoot(marketClient);
+        await marketClient.query(`
+          UPDATE "ContentAsset"
+          SET
+            "clientId" = 'client_other',
+            "brandId" = 'brand_other',
+            "siteId" = 'site_other_com',
+            "siteMarketId" = 'site_market_other_my_en'
+          WHERE "id" = 'asset_txpuro_zh';
+
+          UPDATE "ChannelVariant"
+          SET "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+          WHERE "id" = 'variant_txpuro';
+        `);
+
+        await expectPgError(
+          () => applyMigration(marketClient, backfillMigrationPath),
+          "P0001",
+          /ownership chain after backfill.*ChannelVariant.*variant_txpuro/i,
+        );
+        const fixedRoot = await marketClient.query(`
+          SELECT count(*)::int AS count
+          FROM "Workspace" WHERE "id" = 'workspace_internal'
+        `);
+        expect(fixedRoot.rows[0]?.count).toBe(0);
+      });
+    });
+
+    it("accepts normalized Txpuro brand aliases and valid URL port boundaries", async () => {
+      await withFreshSchema("safe_signals", async (safeClient) => {
+        await applyLegacyMigrations(safeClient);
+        await seedLegacyContentProbe(safeClient, {
+          id: "asset_alias_short",
+          brandEntity: "  TXPURO  ",
+          sourceUrl: "http://geo-origin.winghengtech.com:1/guides/en/short",
+          canonicalUrl: "https://www.txpuro.com:443/guides/en/short",
+        });
+        await seedLegacyContentProbe(safeClient, {
+          id: "asset_alias_english",
+          brandEntity: " Txpuro   E-Invoice   System ",
+          sourceUrl:
+            "https://geo-origin.winghengtech.com:65535/guides/en/english",
+          canonicalUrl: "https://txpuro.com/guides/en/english",
+        });
+        await seedLegacyContentProbe(safeClient, {
+          id: "asset_alias_chinese",
+          brandEntity: " 智慧电子发票系统   Txpuro ",
+          sourceUrl:
+            "https://geo-origin.winghengtech.com/guides/zh-CN/chinese",
+          canonicalUrl: "http://txpuro.com:1/guides/zh-CN/chinese",
+          locale: "zh-CN",
+        });
+        await safeClient.query(`
+          INSERT INTO "SeoAudit" (
+            "id", "url", "score", "issues", "auditedAt"
+          ) VALUES (
+            'seo_port_65535',
+            'https://txpuro.com:65535/guides/en/technical-audit',
+            1, '[]'::jsonb, CURRENT_TIMESTAMP
+          );
+          INSERT INTO "KeywordRanking" (
+            "id", "keyword", "url", "position", "source", "recordedAt"
+          ) VALUES (
+            'ranking_port_443', 'txpuro',
+            'http://geo-origin.winghengtech.com:443/guides/en/ranking',
+            1, 'test', CURRENT_TIMESTAMP
+          );
+        `);
+        const beforeSignals = await snapshotUrls(safeClient);
+
+        await applyMigration(safeClient, expandMigrationPath);
+        await applyMigration(safeClient, backfillMigrationPath);
+
+        const owned = await safeClient.query(`
+          SELECT "id", "brandEntity", "clientId", "brandId", "siteId"
+          FROM "ContentAsset" ORDER BY "id"
+        `);
+        expect(owned.rows).toEqual([
+          {
+            id: "asset_alias_chinese",
+            brandEntity: " 智慧电子发票系统   Txpuro ",
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+          },
+          {
+            id: "asset_alias_english",
+            brandEntity: " Txpuro   E-Invoice   System ",
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+          },
+          {
+            id: "asset_alias_short",
+            brandEntity: "  TXPURO  ",
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+          },
+        ]);
+        expect(await snapshotUrls(safeClient)).toEqual(beforeSignals);
+      });
+    });
+
+    it("rejects a contradictory explicit brand signal with Txpuro URLs", async () => {
+      await withFreshSchema("unsafe_brand", async (unsafeClient) => {
+        await applyLegacyMigrations(unsafeClient);
+        await seedLegacyContentProbe(unsafeClient, {
+          id: "asset_aurora_txpuro_urls",
+          brandEntity: "Aurora",
+          sourceUrl:
+            "https://geo-origin.winghengtech.com/guides/en/aurora-signal",
+          canonicalUrl: "https://txpuro.com/guides/en/aurora-signal",
+        });
+        await applyMigration(unsafeClient, expandMigrationPath);
+
+        await expectPgError(
+          () => applyMigration(unsafeClient, backfillMigrationPath),
+          "P0001",
+          /unsafe ContentAsset brand signal.*asset_aurora_txpuro_urls/i,
+        );
+        const roots = await unsafeClient.query(`
+          SELECT count(*)::int AS count FROM "Workspace"
+        `);
+        expect(roots.rows[0]?.count).toBe(0);
+      });
+    });
+
+    it("rejects zero and out-of-range URL ports in every safety source", async () => {
+      const cases: Array<
+        | {
+            label: string;
+            source: "content";
+            port: number;
+            field: "canonicalUrl" | "sourceUrl";
+          }
+        | {
+            label: string;
+            source: "seo" | "ranking";
+            port: number;
+          }
+      > = [
+        {
+          label: "content_canonical_99999",
+          source: "content",
+          port: 99999,
+          field: "canonicalUrl",
+        },
+        {
+          label: "content_source_0",
+          source: "content",
+          port: 0,
+          field: "sourceUrl",
+        },
+        { label: "seo_65536", source: "seo", port: 65536 },
+        { label: "ranking_99999", source: "ranking", port: 99999 },
+      ];
+
+      for (const unsafeCase of cases) {
+        await withFreshSchema(unsafeCase.label, async (unsafeClient) => {
+          await applyLegacyMigrations(unsafeClient);
+          if (unsafeCase.source === "content") {
+            const unsafeUrl = `https://txpuro.com:${unsafeCase.port}/guides/en/port`;
+            await seedLegacyContentProbe(unsafeClient, {
+              id: `asset_${unsafeCase.label}`,
+              brandEntity: "Txpuro",
+              sourceUrl:
+                unsafeCase.field === "sourceUrl"
+                  ? unsafeUrl
+                  : "https://geo-origin.winghengtech.com/guides/en/port",
+              canonicalUrl:
+                unsafeCase.field === "canonicalUrl"
+                  ? unsafeUrl
+                  : "https://txpuro.com/guides/en/port",
+            });
+          } else if (unsafeCase.source === "seo") {
+            await unsafeClient.query(
+              `
+                INSERT INTO "SeoAudit" (
+                  "id", "url", "score", "issues", "auditedAt"
+                ) VALUES (
+                  'seo_invalid_port', $1, 1, '[]'::jsonb, CURRENT_TIMESTAMP
+                )
+              `,
+              [`https://txpuro.com:${unsafeCase.port}/guides/en/audit`],
+            );
+          } else {
+            await unsafeClient.query(
+              `
+                INSERT INTO "KeywordRanking" (
+                  "id", "keyword", "url", "position", "source", "recordedAt"
+                ) VALUES (
+                  'ranking_invalid_port', 'txpuro', $1, 1, 'test',
+                  CURRENT_TIMESTAMP
+                )
+              `,
+              [`https://txpuro.com:${unsafeCase.port}/guides/en/ranking`],
+            );
+          }
+
+          await applyMigration(unsafeClient, expandMigrationPath);
+          await expectPgError(
+            () => applyMigration(unsafeClient, backfillMigrationPath),
+            "P0001",
+            /unsafe Txpuro URL/i,
+          );
+          const roots = await unsafeClient.query(`
+            SELECT count(*)::int AS count FROM "Workspace"
+          `);
+          expect(roots.rows[0]?.count, unsafeCase.label).toBe(0);
+        });
+      }
+    });
+
+    it.each<FixedRootConflict>([
+      "inactive_client",
+      "inactive_site",
+      "wrong_site_name",
+      "wrong_market_settings",
+    ])("rejects conflicting fixed ownership data: %s", async (conflict) => {
+      await withFreshSchema(`fixed_${conflict}`, async (conflictClient) => {
+        await applyLegacyMigrations(conflictClient);
+        await applyMigration(conflictClient, expandMigrationPath);
+        await seedConflictingFixedRoot(conflictClient, conflict);
+
+        await expectPgError(
+          () => applyMigration(conflictClient, backfillMigrationPath),
+          "P0001",
+          /fixed ownership conflict/i,
+        );
+        const preserved = await conflictClient.query(`
+          SELECT
+            (SELECT count(*)::int FROM "Workspace") AS workspaces,
+            (SELECT count(*)::int FROM "SiteMarket") AS markets
+        `);
+        expect(preserved.rows[0]).toEqual({ workspaces: 1, markets: 2 });
+      });
+    });
+
     it("rejects malformed or non-Txpuro URL-only and content rows", async () => {
       await withFreshSchema("unsafe_content", async (unsafeClient) => {
         await applyLegacyMigrations(unsafeClient);
@@ -1560,7 +2088,7 @@ describe.skipIf(!integrationEnabled).sequential(
             "locale", "assetType", "schemaType", "ctaMode", "publishTarget",
             "isPublic", "createdAt", "updatedAt"
           ) VALUES (
-            'asset_aurora', 'Aurora', 'body', 'summary', 'Aurora',
+            'asset_aurora', 'Aurora', 'body', 'summary', 'Txpuro',
             'https://aurora.example/guides/demo', ARRAY['aurora'],
             'https://aurora.example/guides/demo', 'Ready', 'legacy',
             'aurora', 'en', 'guide-page', 'article', 'self_signup',

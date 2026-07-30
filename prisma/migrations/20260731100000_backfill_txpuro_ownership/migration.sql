@@ -48,7 +48,7 @@ INSERT INTO "Site" (
 ) VALUES (
   'site_txpuro_com',
   'brand_txpuro',
-  'Txpuro.com',
+  'Txpuro',
   'txpuro.com',
   ARRAY['geo-origin.winghengtech.com'],
   'content',
@@ -109,6 +109,7 @@ BEGIN
       AND "workspaceId" = 'workspace_internal'
       AND "name" = 'Wing Heng Technology'
       AND "slug" = 'wing-heng'
+      AND "active" IS TRUE
   ) THEN
     RAISE EXCEPTION
       'fixed ownership conflict: client_wing_heng does not match Txpuro backfill';
@@ -122,6 +123,9 @@ BEGIN
       AND "name" = 'Txpuro'
       AND "slug" = 'txpuro'
       AND "aliases" = ARRAY['Txpuro', '智慧电子发票系统 Txpuro']
+      AND "products" IS NULL
+      AND "industry" IS NULL
+      AND "goals" IS NULL
       AND "riskCategory" = 'standard'
   ) THEN
     RAISE EXCEPTION
@@ -133,12 +137,15 @@ BEGIN
     FROM "Site"
     WHERE "id" = 'site_txpuro_com'
       AND "brandId" = 'brand_txpuro'
+      AND "name" = 'Txpuro'
       AND "canonicalHost" = 'txpuro.com'
       AND "originHosts" = ARRAY['geo-origin.winghengtech.com']
       AND "siteType" = 'content'
       AND "hostingMode" = 'hybrid'
       AND "canonicalRules" = '{"https":true,"www":"redirect"}'::jsonb
       AND "allowedPublishPaths" = ARRAY['/guides']
+      AND "ownershipVerifiedAt" IS NULL
+      AND "active" IS TRUE
   ) THEN
     RAISE EXCEPTION
       'fixed ownership conflict: site_txpuro_com does not match Txpuro backfill';
@@ -154,6 +161,8 @@ BEGIN
       AND "locale" = 'zh-CN'
       AND "defaultDevice" = 'desktop'
       AND "timezone" = 'Asia/Kuala_Lumpur'
+      AND "settings" =
+        '{"searchEngine":"google.com.my","device":"desktop"}'::jsonb
     ) OR (
       "id" = 'site_market_txpuro_my_en'
       AND "siteId" = 'site_txpuro_com'
@@ -161,6 +170,8 @@ BEGIN
       AND "locale" = 'en'
       AND "defaultDevice" = 'desktop'
       AND "timezone" = 'Asia/Kuala_Lumpur'
+      AND "settings" =
+        '{"searchEngine":"google.com.my","device":"desktop"}'::jsonb
     )
   ) <> 2 THEN
     RAISE EXCEPTION
@@ -169,8 +180,9 @@ BEGIN
 END
 $$;
 
--- An expanded legacy row must be wholly unowned or already have a complete
--- root tuple. Never overwrite a partially assigned tenant tuple.
+-- An expanded legacy row must be wholly unowned or already have a complete,
+-- internally consistent root tuple. A market is an ownership signal too:
+-- unowned rows may only carry one of the two fixed Txpuro markets.
 DO $$
 DECLARE
   candidate record;
@@ -194,13 +206,57 @@ BEGIN
         'partial ownership tuple in % row %', table_name, candidate."id";
     END IF;
     candidate := NULL;
+
+    EXECUTE format(
+      'SELECT "id" FROM %I
+       WHERE num_nonnulls("clientId", "brandId", "siteId") = 0
+         AND "siteMarketId" IS NOT NULL
+         AND "siteMarketId" NOT IN (
+           ''site_market_txpuro_my_zh_cn'',
+           ''site_market_txpuro_my_en''
+         )
+       ORDER BY "id" LIMIT 1',
+      table_name
+    ) INTO candidate;
+    IF candidate."id" IS NOT NULL THEN
+      RAISE EXCEPTION
+        'invalid market ownership signal in % row %',
+        table_name, candidate."id";
+    END IF;
+    candidate := NULL;
+
+    EXECUTE format(
+      'SELECT owned."id"
+       FROM %I owned
+       LEFT JOIN "Brand" brand ON brand."id" = owned."brandId"
+       LEFT JOIN "Site" site ON site."id" = owned."siteId"
+       LEFT JOIN "SiteMarket" market ON market."id" = owned."siteMarketId"
+       WHERE num_nonnulls(
+         owned."clientId", owned."brandId", owned."siteId"
+       ) = 3
+         AND (
+           brand."clientId" IS DISTINCT FROM owned."clientId"
+           OR site."brandId" IS DISTINCT FROM owned."brandId"
+           OR (
+             owned."siteMarketId" IS NOT NULL
+             AND market."siteId" IS DISTINCT FROM owned."siteId"
+           )
+         )
+       ORDER BY owned."id" LIMIT 1',
+      table_name
+    ) INTO candidate;
+    IF candidate."id" IS NOT NULL THEN
+      RAISE EXCEPTION
+        'ownership chain mismatch in % row %',
+        table_name, candidate."id";
+    END IF;
+    candidate := NULL;
   END LOOP;
 END
 $$;
 
--- Content is the root of most legacy relationships. Validate both required
--- URL signals without rewriting them. Validation is case-insensitive and
--- accepts only http/https, optional canonical www, and numeric ports.
+-- Content is the root of most legacy relationships. An explicit brand signal
+-- must normalize to one of the accepted Txpuro names before URL inference.
 DO $$
 DECLARE
   unsafe_id text;
@@ -210,9 +266,110 @@ BEGIN
   FROM "ContentAsset"
   WHERE "clientId" IS NULL
     AND (
-      "canonicalUrl" !~* '^https?://((www\.)?txpuro\.com|geo-origin\.winghengtech\.com)(:[0-9]{1,5})?([/?#]|$)'
-      OR "sourceUrl" !~* '^https?://((www\.)?txpuro\.com|geo-origin\.winghengtech\.com)(:[0-9]{1,5})?([/?#]|$)'
-      OR "publishTarget" NOT IN ('txpuro', 'geo_ops_internal')
+      regexp_replace(lower(btrim("brandEntity")), '\s+', ' ', 'g') <> ''
+      AND regexp_replace(
+        lower(btrim("brandEntity")), '\s+', ' ', 'g'
+      ) NOT IN (
+        'txpuro',
+        'txpuro e-invoice system',
+        '智慧电子发票系统 txpuro'
+      )
+    )
+  ORDER BY "id"
+  LIMIT 1;
+
+  IF unsafe_id IS NOT NULL THEN
+    RAISE EXCEPTION
+      'unsafe ContentAsset brand signal for id %; Txpuro backfill stopped',
+      unsafe_id;
+  END IF;
+END
+$$;
+
+-- Parse every URL ownership signal through one expression. Authority matching
+-- is case-insensitive; explicit ports are accepted only in PostgreSQL's valid
+-- TCP range. No URL text is normalized or rewritten.
+DO $$
+DECLARE
+  unsafe record;
+BEGIN
+  WITH url_candidates AS (
+    SELECT
+      'ContentAsset'::text AS source_table,
+      "id" AS row_id,
+      'canonicalUrl'::text AS source_column,
+      "canonicalUrl" AS candidate_url
+    FROM "ContentAsset"
+    WHERE "clientId" IS NULL
+    UNION ALL
+    SELECT 'ContentAsset', "id", 'sourceUrl', "sourceUrl"
+    FROM "ContentAsset"
+    WHERE "clientId" IS NULL
+    UNION ALL
+    SELECT 'SeoAudit', "id", 'url', "url"
+    FROM "SeoAudit"
+    WHERE "clientId" IS NULL
+    UNION ALL
+    SELECT 'KeywordRanking', "id", 'url', "url"
+    FROM "KeywordRanking"
+    WHERE "clientId" IS NULL
+  ),
+  parsed AS (
+    SELECT
+      source_table,
+      row_id,
+      source_column,
+      candidate_url,
+      substring(
+        lower(candidate_url) FROM '^https?://([^/?#]+)'
+      ) AS authority
+    FROM url_candidates
+  ),
+  authority_parts AS (
+    SELECT
+      source_table,
+      row_id,
+      source_column,
+      candidate_url,
+      authority,
+      CASE
+        WHEN authority ~ ':[0-9]+$'
+        THEN substring(authority FROM ':([0-9]+)$')
+        ELSE NULL
+      END AS port_text
+    FROM parsed
+  )
+  SELECT source_table, row_id, source_column, candidate_url
+  INTO unsafe
+  FROM authority_parts
+  WHERE authority IS NULL
+    OR authority !~
+      '^((www\.)?txpuro\.com|geo-origin\.winghengtech\.com)(:[0-9]+)?$'
+    OR CASE
+      WHEN port_text IS NULL THEN false
+      ELSE port_text::numeric NOT BETWEEN 1 AND 65535
+    END
+  ORDER BY source_table, row_id, source_column
+  LIMIT 1;
+
+  IF unsafe.row_id IS NOT NULL THEN
+    RAISE EXCEPTION
+      'unsafe Txpuro URL: unsafe % URL in % for id %; backfill stopped',
+      unsafe.source_table, unsafe.source_column, unsafe.row_id;
+  END IF;
+END
+$$;
+
+DO $$
+DECLARE
+  unsafe_id text;
+BEGIN
+  SELECT "id"
+  INTO unsafe_id
+  FROM "ContentAsset"
+  WHERE "clientId" IS NULL
+    AND (
+      "publishTarget" NOT IN ('txpuro', 'geo_ops_internal')
       OR "locale" NOT IN ('zh-CN', 'en')
     )
   ORDER BY "id"
@@ -220,7 +377,7 @@ BEGIN
 
   IF unsafe_id IS NOT NULL THEN
     RAISE EXCEPTION
-      'unsafe ContentAsset URL or scope signal for id %; Txpuro backfill stopped',
+      'unsafe ContentAsset scope signal for id %; Txpuro backfill stopped',
       unsafe_id;
   END IF;
 END
@@ -231,10 +388,13 @@ SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
   "siteId" = 'site_txpuro_com',
-  "siteMarketId" = CASE "locale"
-    WHEN 'en' THEN 'site_market_txpuro_my_en'
-    WHEN 'zh-CN' THEN 'site_market_txpuro_my_zh_cn'
-  END
+  "siteMarketId" = COALESCE(
+    "siteMarketId",
+    CASE "locale"
+      WHEN 'en' THEN 'site_market_txpuro_my_en'
+      WHEN 'zh-CN' THEN 'site_market_txpuro_my_zh_cn'
+    END
+  )
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
@@ -245,7 +405,7 @@ SET
   "clientId" = parent."clientId",
   "brandId" = parent."brandId",
   "siteId" = parent."siteId",
-  "siteMarketId" = parent."siteMarketId"
+  "siteMarketId" = COALESCE(child."siteMarketId", parent."siteMarketId")
 FROM "ContentAsset" parent
 WHERE child."contentAssetId" = parent."id"
   AND child."clientId" IS NULL
@@ -279,11 +439,14 @@ SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
   "siteId" = 'site_txpuro_com',
-  "siteMarketId" = CASE "locale"
-    WHEN 'en' THEN 'site_market_txpuro_my_en'
-    WHEN 'zh-CN' THEN 'site_market_txpuro_my_zh_cn'
-    ELSE NULL
-  END
+  "siteMarketId" = COALESCE(
+    "siteMarketId",
+    CASE "locale"
+      WHEN 'en' THEN 'site_market_txpuro_my_en'
+      WHEN 'zh-CN' THEN 'site_market_txpuro_my_zh_cn'
+      ELSE NULL
+    END
+  )
 WHERE "contentAssetId" IS NULL
   AND "clientId" IS NULL
   AND "brandId" IS NULL
@@ -297,7 +460,7 @@ SET
   "clientId" = parent."clientId",
   "brandId" = parent."brandId",
   "siteId" = parent."siteId",
-  "siteMarketId" = parent."siteMarketId"
+  "siteMarketId" = COALESCE(child."siteMarketId", parent."siteMarketId")
 FROM "ContentAsset" parent
 WHERE child."contentAssetId" = parent."id"
   AND child."clientId" IS NULL
@@ -309,7 +472,7 @@ SET
   "clientId" = parent."clientId",
   "brandId" = parent."brandId",
   "siteId" = parent."siteId",
-  "siteMarketId" = parent."siteMarketId"
+  "siteMarketId" = COALESCE(child."siteMarketId", parent."siteMarketId")
 FROM "ContentAsset" parent
 WHERE child."contentAssetId" = parent."id"
   AND child."clientId" IS NULL
@@ -336,7 +499,7 @@ SET
   "clientId" = scope."clientId",
   "brandId" = scope."brandId",
   "siteId" = scope."siteId",
-  "siteMarketId" = scope."siteMarketId"
+  "siteMarketId" = COALESCE(topic."siteMarketId", scope."siteMarketId")
 FROM topic_scope scope
 WHERE topic."id" = scope."trendTopicId"
   AND topic."clientId" IS NULL
@@ -348,8 +511,7 @@ UPDATE "TrendTopic"
 SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
-  "siteId" = 'site_txpuro_com',
-  "siteMarketId" = NULL
+  "siteId" = 'site_txpuro_com'
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
@@ -359,7 +521,7 @@ SET
   "clientId" = variant."clientId",
   "brandId" = variant."brandId",
   "siteId" = variant."siteId",
-  "siteMarketId" = variant."siteMarketId"
+  "siteMarketId" = COALESCE(metric."siteMarketId", variant."siteMarketId")
 FROM "ChannelVariant" variant
 WHERE metric."channelVariantId" = variant."id"
   AND metric."clientId" IS NULL
@@ -371,7 +533,7 @@ SET
   "clientId" = asset."clientId",
   "brandId" = asset."brandId",
   "siteId" = asset."siteId",
-  "siteMarketId" = asset."siteMarketId"
+  "siteMarketId" = COALESCE(package."siteMarketId", asset."siteMarketId")
 FROM "ContentAsset" asset
 WHERE package."contentAssetId" = asset."id"
   AND package."clientId" IS NULL
@@ -383,7 +545,7 @@ SET
   "clientId" = asset."clientId",
   "brandId" = asset."brandId",
   "siteId" = asset."siteId",
-  "siteMarketId" = asset."siteMarketId"
+  "siteMarketId" = COALESCE(dispatch."siteMarketId", asset."siteMarketId")
 FROM "ContentAsset" asset
 WHERE dispatch."contentAssetId" = asset."id"
   AND dispatch."clientId" IS NULL
@@ -418,75 +580,40 @@ BEGIN
 END
 $$;
 
--- URL-only rows have no trustworthy relationship path. Normalize host
--- semantics during validation (case, optional www, and port) but preserve the
--- original text byte-for-byte.
-DO $$
-DECLARE
-  unsafe_id text;
-BEGIN
-  SELECT "id"
-  INTO unsafe_id
-  FROM "SeoAudit"
-  WHERE "clientId" IS NULL
-    AND "url" !~* '^https?://((www\.)?txpuro\.com|geo-origin\.winghengtech\.com)(:[0-9]{1,5})?([/?#]|$)'
-  ORDER BY "id"
-  LIMIT 1;
-
-  IF unsafe_id IS NOT NULL THEN
-    RAISE EXCEPTION
-      'unsafe SeoAudit URL for id %; Txpuro backfill stopped', unsafe_id;
-  END IF;
-END
-$$;
-
 UPDATE "SeoAudit"
 SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
   "siteId" = 'site_txpuro_com',
-  "siteMarketId" = CASE
-    WHEN "url" ~* '^https?://[^/?#]+/(guides/)?en(/|[?#]|$)'
-      THEN 'site_market_txpuro_my_en'
-    WHEN "url" ~* '^https?://[^/?#]+/(guides/)?zh(-cn)?(/|[?#]|$)'
-      THEN 'site_market_txpuro_my_zh_cn'
-    ELSE NULL
-  END
+  "siteMarketId" = COALESCE(
+    "siteMarketId",
+    CASE
+      WHEN "url" ~* '^https?://[^/?#]+/(guides/)?en(/|[?#]|$)'
+        THEN 'site_market_txpuro_my_en'
+      WHEN "url" ~* '^https?://[^/?#]+/(guides/)?zh(-cn)?(/|[?#]|$)'
+        THEN 'site_market_txpuro_my_zh_cn'
+      ELSE NULL
+    END
+  )
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
-
-DO $$
-DECLARE
-  unsafe_id text;
-BEGIN
-  SELECT "id"
-  INTO unsafe_id
-  FROM "KeywordRanking"
-  WHERE "clientId" IS NULL
-    AND "url" !~* '^https?://((www\.)?txpuro\.com|geo-origin\.winghengtech\.com)(:[0-9]{1,5})?([/?#]|$)'
-  ORDER BY "id"
-  LIMIT 1;
-
-  IF unsafe_id IS NOT NULL THEN
-    RAISE EXCEPTION
-      'unsafe KeywordRanking URL for id %; Txpuro backfill stopped', unsafe_id;
-  END IF;
-END
-$$;
 
 UPDATE "KeywordRanking"
 SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
   "siteId" = 'site_txpuro_com',
-  "siteMarketId" = CASE
-    WHEN "url" ~* '^https?://[^/?#]+/(guides/)?en(/|[?#]|$)'
-      THEN 'site_market_txpuro_my_en'
-    WHEN "url" ~* '^https?://[^/?#]+/(guides/)?zh(-cn)?(/|[?#]|$)'
-      THEN 'site_market_txpuro_my_zh_cn'
-    ELSE NULL
-  END
+  "siteMarketId" = COALESCE(
+    "siteMarketId",
+    CASE
+      WHEN "url" ~* '^https?://[^/?#]+/(guides/)?en(/|[?#]|$)'
+        THEN 'site_market_txpuro_my_en'
+      WHEN "url" ~* '^https?://[^/?#]+/(guides/)?zh(-cn)?(/|[?#]|$)'
+        THEN 'site_market_txpuro_my_zh_cn'
+      ELSE NULL
+    END
+  )
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
@@ -495,8 +622,7 @@ UPDATE "GeoFlowSyncRun"
 SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
-  "siteId" = 'site_txpuro_com',
-  "siteMarketId" = NULL
+  "siteId" = 'site_txpuro_com'
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
@@ -546,7 +672,7 @@ SET
   "clientId" = scope."clientId",
   "brandId" = scope."brandId",
   "siteId" = scope."siteId",
-  "siteMarketId" = scope."siteMarketId"
+  "siteMarketId" = COALESCE(audit."siteMarketId", scope."siteMarketId")
 FROM entity_scope scope
 WHERE lower(audit."entityType") = scope.entity_type
   AND audit."entityId" = scope."id"
@@ -558,8 +684,7 @@ UPDATE "AuditEvent"
 SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
-  "siteId" = 'site_txpuro_com',
-  "siteMarketId" = NULL
+  "siteId" = 'site_txpuro_com'
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
@@ -606,7 +731,7 @@ SET
   "clientId" = scope."clientId",
   "brandId" = scope."brandId",
   "siteId" = scope."siteId",
-  "siteMarketId" = scope."siteMarketId"
+  "siteMarketId" = COALESCE(delivery."siteMarketId", scope."siteMarketId")
 FROM entity_scope scope
 WHERE lower(delivery."entityType") = scope.entity_type
   AND delivery."entityId" = scope."id"
@@ -618,8 +743,7 @@ UPDATE "EventDelivery"
 SET
   "clientId" = 'client_wing_heng',
   "brandId" = 'brand_txpuro',
-  "siteId" = 'site_txpuro_com',
-  "siteMarketId" = NULL
+  "siteId" = 'site_txpuro_com'
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
@@ -628,6 +752,7 @@ WHERE "clientId" IS NULL
 DO $$
 DECLARE
   orphan_id text;
+  chain_mismatch_id text;
   table_name text;
 BEGIN
   FOREACH table_name IN ARRAY ARRAY[
@@ -648,6 +773,28 @@ BEGIN
         'ownership backfill orphan in % row %', table_name, orphan_id;
     END IF;
     orphan_id := NULL;
+
+    EXECUTE format(
+      'SELECT owned."id"
+       FROM %I owned
+       LEFT JOIN "Brand" brand ON brand."id" = owned."brandId"
+       LEFT JOIN "Site" site ON site."id" = owned."siteId"
+       LEFT JOIN "SiteMarket" market ON market."id" = owned."siteMarketId"
+       WHERE brand."clientId" IS DISTINCT FROM owned."clientId"
+          OR site."brandId" IS DISTINCT FROM owned."brandId"
+          OR (
+            owned."siteMarketId" IS NOT NULL
+            AND market."siteId" IS DISTINCT FROM owned."siteId"
+          )
+       ORDER BY owned."id" LIMIT 1',
+      table_name
+    ) INTO chain_mismatch_id;
+    IF chain_mismatch_id IS NOT NULL THEN
+      RAISE EXCEPTION
+        'ownership chain after backfill mismatch in % row %',
+        table_name, chain_mismatch_id;
+    END IF;
+    chain_mismatch_id := NULL;
   END LOOP;
 END
 $$;
