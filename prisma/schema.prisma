@@ -45,44 +45,65 @@ enum EventDeliveryStatus {
   abandoned
 }
 
+enum MemberRole {
+  Admin
+  Operator
+  Reviewer
+  Viewer
+}
+
+enum RunStatus {
+  queued
+  running
+  succeeded
+  partial
+  retrying
+  failed
+  cancelled
+}
+
 model ContentAsset {
-  id             String            @id
-  title          String
-  body           String
-  summary        String
-  brandEntity    String
-  sourceUrl      String
-  targetKeywords String[]
-  canonicalUrl   String
-  status         ContentStatus     @default(Draft)
-  geoScore       Int               @default(0)
-  owner          String
-  sourceSystem   String            @default("geo_ops")
-  externalUrl    String?
-  publishedAt    DateTime?
-  slug           String?
-  locale         String            @default("zh-CN")
-  assetType      String            @default("guide-page")
-  audience       String?
-  seoTitle       String?
-  metaDescription String?
-  faqs           Json?
-  schemaType     String            @default("article")
-  ctaMode        String            @default("self_signup")
-  publishTarget  String            @default("geo_ops_internal")
-  isPublic       Boolean           @default(false)
-  publishedPath  String?
-  seoScore       Int?
-  trendTopicId   String?
-  templateId     String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  id                     String                 @id
+  clientId               String?
+  brandId                String?
+  siteId                 String?
+  siteMarketId           String?
+  title                  String
+  body                   String
+  summary                String
+  brandEntity            String
+  sourceUrl              String
+  targetKeywords         String[]
+  canonicalUrl           String
+  status                 ContentStatus          @default(Draft)
+  geoScore               Int                    @default(0)
+  owner                  String
+  sourceSystem           String                 @default("geo_ops")
+  externalUrl            String?
+  publishedAt            DateTime?
+  slug                   String?
+  locale                 String                 @default("zh-CN")
+  assetType              String                 @default("guide-page")
+  audience               String?
+  seoTitle               String?
+  metaDescription        String?
+  faqs                   Json?
+  schemaType             String                 @default("article")
+  ctaMode                String                 @default("self_signup")
+  publishTarget          String                 @default("geo_ops_internal")
+  isPublic               Boolean                @default(false)
+  publishedPath          String?
+  seoScore               Int?
+  trendTopicId           String?
+  templateId             String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
   distributionDispatches DistributionDispatch[]
-  exportPackages ExportPackage[]
-  geoFlowLinks   GeoFlowTaskLink[]
-  geoRuns        GeoRun[]
-  trendTopic     TrendTopic?       @relation(fields: [trendTopicId], references: [id])
-  variants       ChannelVariant[]
+  exportPackages         ExportPackage[]
+  geoFlowLinks           GeoFlowTaskLink[]
+  geoRuns                GeoRun[]
+  trendTopic             TrendTopic?            @relation(fields: [trendTopicId], references: [id])
+  variants               ChannelVariant[]
 
   @@index([status])
   @@index([sourceSystem])
@@ -94,6 +115,10 @@ model ContentAsset {
 
 model GeoRun {
   id              String        @id
+  clientId        String?
+  brandId         String?
+  siteId          String?
+  siteMarketId    String?
   projectId       String
   contentAssetId  String?
   contentAsset    ContentAsset? @relation(fields: [contentAssetId], references: [id], onDelete: SetNull)
@@ -116,17 +141,21 @@ model GeoRun {
 }
 
 model ChannelVariant {
-  id             String       @id
+  id             String          @id
+  clientId       String?
+  brandId        String?
+  siteId         String?
+  siteMarketId   String?
   contentAssetId String
-  contentAsset   ContentAsset @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
+  contentAsset   ContentAsset    @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
   platform       String
   accountId      String
   copy           String
   mediaAssets    String[]
   scheduledAt    DateTime?
   status         String
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
   metrics        VariantMetric[]
 
   @@index([contentAssetId])
@@ -137,6 +166,10 @@ model ChannelVariant {
 
 model GeoFlowTaskLink {
   id                String            @id @default(cuid())
+  clientId          String?
+  brandId           String?
+  siteId            String?
+  siteMarketId      String?
   contentAssetId    String
   contentAsset      ContentAsset      @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
   geoFlowTaskId     Int?
@@ -160,6 +193,10 @@ model GeoFlowTaskLink {
 
 model GeoFlowSyncRun {
   id           String    @id @default(cuid())
+  clientId     String?
+  brandId      String?
+  siteId       String?
+  siteMarketId String?
   startedAt    DateTime  @default(now())
   finishedAt   DateTime?
   successCount Int       @default(0)
@@ -170,15 +207,19 @@ model GeoFlowSyncRun {
 }
 
 model AuditEvent {
-  id         String   @id @default(cuid())
-  actor      String
-  action     String
-  entityType String
-  entityId   String?
-  outcome    String
-  requestId  String?
-  metadata   Json?
-  createdAt  DateTime @default(now())
+  id           String   @id @default(cuid())
+  clientId     String?
+  brandId      String?
+  siteId       String?
+  siteMarketId String?
+  actor        String
+  action       String
+  entityType   String
+  entityId     String?
+  outcome      String
+  requestId    String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
 
   @@index([createdAt])
   @@index([action])
@@ -188,17 +229,21 @@ model AuditEvent {
 }
 
 model TrendTopic {
-  id         String         @id @default(cuid())
-  keyword    String
-  platform   String
-  score      Int
-  region     String         @default("CN")
-  sourceType String
-  status     String         @default("pending")
-  capturedAt DateTime
-  expiresAt  DateTime?
-  createdAt  DateTime       @default(now())
-  assets     ContentAsset[]
+  id           String         @id @default(cuid())
+  clientId     String?
+  brandId      String?
+  siteId       String?
+  siteMarketId String?
+  keyword      String
+  platform     String
+  score        Int
+  region       String         @default("CN")
+  sourceType   String
+  status       String         @default("pending")
+  capturedAt   DateTime
+  expiresAt    DateTime?
+  createdAt    DateTime       @default(now())
+  assets       ContentAsset[]
 
   @@unique([keyword, platform])
   @@index([status])
@@ -208,6 +253,10 @@ model TrendTopic {
 
 model VariantMetric {
   id               String         @id @default(cuid())
+  clientId         String?
+  brandId          String?
+  siteId           String?
+  siteMarketId     String?
   channelVariantId String
   channelVariant   ChannelVariant @relation(fields: [channelVariantId], references: [id], onDelete: Cascade)
   impressions      Int            @default(0)
@@ -220,26 +269,34 @@ model VariantMetric {
 }
 
 model SeoAudit {
-  id        String   @id @default(cuid())
-  url       String
-  score     Int
-  issues    Json
-  cwv       Json?
-  auditedAt DateTime
+  id           String   @id @default(cuid())
+  clientId     String?
+  brandId      String?
+  siteId       String?
+  siteMarketId String?
+  url          String
+  score        Int
+  issues       Json
+  cwv          Json?
+  auditedAt    DateTime
 
   @@index([url])
   @@index([auditedAt])
 }
 
 model KeywordRanking {
-  id          String   @id @default(cuid())
-  keyword     String
-  url         String
-  position    Int
-  clicks      Int      @default(0)
-  impressions Int      @default(0)
-  source      String
-  recordedAt  DateTime
+  id           String   @id @default(cuid())
+  clientId     String?
+  brandId      String?
+  siteId       String?
+  siteMarketId String?
+  keyword      String
+  url          String
+  position     Int
+  clicks       Int      @default(0)
+  impressions  Int      @default(0)
+  source       String
+  recordedAt   DateTime
 
   @@index([keyword])
   @@index([url])
@@ -247,40 +304,48 @@ model KeywordRanking {
 }
 
 model ExportPackage {
-  id                   String              @id @default(cuid())
-  contentAssetId       String
-  contentAsset         ContentAsset        @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
-  version              Int                 @default(1)
-  language             String              @default("zh-CN")
-  status               ExportPackageStatus @default(ready)
-  packageType          String
-  payload              Json?
-  recommendedPlatforms String[]
-  sourceUrl            String
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
+  id                     String                 @id @default(cuid())
+  clientId               String?
+  brandId                String?
+  siteId                 String?
+  siteMarketId           String?
+  contentAssetId         String
+  contentAsset           ContentAsset           @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
+  version                Int                    @default(1)
+  language               String                 @default("zh-CN")
+  status                 ExportPackageStatus    @default(ready)
+  packageType            String
+  payload                Json?
+  recommendedPlatforms   String[]
+  sourceUrl              String
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
   distributionDispatches DistributionDispatch[]
 
+  @@unique([contentAssetId, version, language])
   @@index([contentAssetId])
   @@index([status])
-  @@unique([contentAssetId, version, language])
 }
 
 model DistributionDispatch {
-  id             String                     @id @default(cuid())
+  id              String                     @id @default(cuid())
+  clientId        String?
+  brandId         String?
+  siteId          String?
+  siteMarketId    String?
   exportPackageId String
-  exportPackage  ExportPackage              @relation(fields: [exportPackageId], references: [id], onDelete: Cascade)
-  contentAssetId String
-  contentAsset   ContentAsset               @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
-  platform       String
-  accountId      String
-  externalPostId String?
-  publishedUrl   String?
-  status         DistributionDispatchStatus @default(accepted)
-  errorMessage   String?
-  publishedAt    DateTime?
-  createdAt      DateTime                   @default(now())
-  updatedAt      DateTime                   @updatedAt
+  exportPackage   ExportPackage              @relation(fields: [exportPackageId], references: [id], onDelete: Cascade)
+  contentAssetId  String
+  contentAsset    ContentAsset               @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
+  platform        String
+  accountId       String
+  externalPostId  String?
+  publishedUrl    String?
+  status          DistributionDispatchStatus @default(accepted)
+  errorMessage    String?
+  publishedAt     DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
 
   @@index([exportPackageId])
   @@index([contentAssetId])
@@ -289,6 +354,10 @@ model DistributionDispatch {
 
 model EventDelivery {
   id            String              @id @default(cuid())
+  clientId      String?
+  brandId       String?
+  siteId        String?
+  siteMarketId  String?
   eventName     String
   entityType    String
   entityId      String
@@ -303,4 +372,394 @@ model EventDelivery {
   @@index([eventName, status])
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+model Workspace {
+  id        String            @id @default(cuid())
+  name      String
+  slug      String            @unique
+  clients   Client[]
+  members   WorkspaceMember[]
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+}
+
+model User {
+  id            String            @id
+  name          String
+  email         String            @unique
+  emailVerified Boolean           @default(false)
+  image         String?
+  sessions      Session[]
+  accounts      Account[]
+  memberships   WorkspaceMember[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+model WorkspaceMember {
+  id          String     @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        MemberRole
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([workspaceId, userId])
+  @@index([userId, role])
+}
+
+model Client {
+  id              String           @id @default(cuid())
+  workspaceId     String
+  name            String
+  slug            String
+  active          Boolean          @default(true)
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  brands          Brand[]
+  analysisRuns    AnalysisRun[]
+  recommendations Recommendation[]
+  opportunities   Opportunity[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId, active])
+}
+
+model Brand {
+  id           String        @id @default(cuid())
+  clientId     String
+  name         String
+  slug         String
+  aliases      String[]
+  products     Json?
+  industry     String?
+  goals        Json?
+  riskCategory String        @default("standard")
+  client       Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  sites        Site[]
+  competitors  Competitor[]
+  analysisRuns AnalysisRun[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@unique([clientId, slug])
+  @@index([clientId])
+}
+
+model Site {
+  id                  String           @id @default(cuid())
+  brandId             String
+  name                String
+  canonicalHost       String           @unique
+  originHosts         String[]
+  siteType            String
+  hostingMode         String
+  canonicalRules      Json
+  allowedPublishPaths String[]
+  ownershipVerifiedAt DateTime?
+  active              Boolean          @default(true)
+  brand               Brand            @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  markets             SiteMarket[]
+  integrations        Integration[]
+  analysisRuns        AnalysisRun[]
+  recommendations     Recommendation[]
+  opportunities       Opportunity[]
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([brandId, active])
+}
+
+model SiteMarket {
+  id            String        @id @default(cuid())
+  siteId        String
+  country       String
+  locale        String
+  defaultDevice String        @default("desktop")
+  timezone      String
+  settings      Json?
+  site          Site          @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  competitors   Competitor[]
+  keywords      Keyword[]
+  integrations  Integration[]
+  analysisRuns  AnalysisRun[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([siteId, country, locale])
+  @@index([siteId])
+}
+
+model Competitor {
+  id           String      @id @default(cuid())
+  brandId      String
+  siteMarketId String?
+  name         String
+  aliases      String[]
+  active       Boolean     @default(true)
+  brand        Brand       @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  siteMarket   SiteMarket? @relation(fields: [siteMarketId], references: [id], onDelete: Cascade)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([brandId, siteMarketId, name])
+  @@index([brandId, active])
+}
+
+model Keyword {
+  id           String     @id @default(cuid())
+  siteMarketId String
+  text         String
+  targetUrl    String?
+  country      String
+  device       String
+  location     String     @default("*")
+  priority     Int        @default(3)
+  schedule     String
+  active       Boolean    @default(true)
+  siteMarket   SiteMarket @relation(fields: [siteMarketId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([siteMarketId, text, country, device, location])
+  @@index([siteMarketId, active])
+}
+
+model Integration {
+  id             String      @id @default(cuid())
+  siteId         String
+  siteMarketId   String?
+  type           String
+  endpoint       String?
+  capabilities   String[]
+  adapterVersion String
+  secretRef      String?
+  healthState    String      @default("unknown")
+  lastCheckedAt  DateTime?
+  site           Site        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  siteMarket     SiteMarket? @relation(fields: [siteMarketId], references: [id], onDelete: Cascade)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([siteId, siteMarketId, type])
+  @@index([siteId, healthState])
+}
+
+model AnalysisRun {
+  id              String           @id
+  clientId        String
+  brandId         String
+  siteId          String
+  siteMarketId    String?
+  kind            String
+  source          String
+  sourceVersion   String
+  adapterVersion  String
+  status          RunStatus
+  inputHash       String
+  idempotencyKey  String           @unique
+  trigger         String
+  attemptCount    Int              @default(0)
+  errorCode       String?
+  errorSummary    String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime         @default(now())
+  artifacts       RawArtifact[]
+  observations    Observation[]
+  metrics         MetricSnapshot[]
+  recommendations Recommendation[]
+  client          Client           @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  brand           Brand            @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  site            Site             @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  siteMarket      SiteMarket?      @relation(fields: [siteMarketId], references: [id], onDelete: Restrict)
+
+  @@index([siteId, kind, inputHash])
+  @@index([clientId, siteId, createdAt])
+  @@index([status, createdAt])
+}
+
+model RawArtifact {
+  id            String      @id @default(cuid())
+  runId         String
+  uri           String      @unique
+  mediaType     String
+  checksum      String
+  byteSize      Int
+  sourceVersion String
+  retentionAt   DateTime
+  redacted      Boolean     @default(false)
+  run           AnalysisRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+  createdAt     DateTime    @default(now())
+
+  @@index([runId])
+  @@index([retentionAt])
+}
+
+model Observation {
+  id                     String                   @id @default(cuid())
+  runId                  String
+  kind                   String
+  subject                String
+  value                  Json
+  surface                String?
+  provider               String?
+  model                  String?
+  promptVersion          Int?
+  country                String?
+  locale                 String?
+  observedAt             DateTime
+  run                    AnalysisRun              @relation(fields: [runId], references: [id], onDelete: Restrict)
+  recommendationEvidence RecommendationEvidence[]
+
+  @@index([runId, kind])
+  @@index([kind, observedAt])
+}
+
+model MetricSnapshot {
+  id             String      @id @default(cuid())
+  runId          String
+  name           String
+  value          Decimal     @db.Decimal(18, 6)
+  dimensions     Json
+  formulaVersion String
+  calculatedAt   DateTime    @default(now())
+  run            AnalysisRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@index([runId, name])
+}
+
+model Recommendation {
+  id                String                      @id @default(cuid())
+  runId             String
+  clientId          String
+  siteId            String
+  title             String
+  detail            String
+  priority          Decimal                     @db.Decimal(10, 4)
+  formulaVersion    String
+  state             String                      @default("open")
+  ownerId           String?
+  dueAt             DateTime?
+  resolution        String?
+  verificationRunId String?
+  run               AnalysisRun                 @relation(fields: [runId], references: [id], onDelete: Restrict)
+  client            Client                      @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  site              Site                        @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  evidence          RecommendationEvidence[]
+  opportunities     OpportunityRecommendation[]
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  @@index([clientId, siteId, state])
+}
+
+model RecommendationEvidence {
+  recommendationId String
+  observationId    String
+  recommendation   Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  observation      Observation    @relation(fields: [observationId], references: [id], onDelete: Restrict)
+
+  @@id([recommendationId, observationId])
+}
+
+model Opportunity {
+  id              String                      @id @default(cuid())
+  clientId        String
+  siteId          String
+  title           String
+  state           String                      @default("open")
+  priority        Decimal                     @db.Decimal(10, 4)
+  formulaVersion  String
+  client          Client                      @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  site            Site                        @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  recommendations OpportunityRecommendation[]
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+
+  @@index([clientId, siteId, state])
+}
+
+model OpportunityRecommendation {
+  opportunityId    String
+  recommendationId String
+  opportunity      Opportunity    @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  recommendation   Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Restrict)
+
+  @@id([opportunityId, recommendationId])
+}
+
+model OutboxEvent {
+  id            String    @id @default(cuid())
+  aggregateType String
+  aggregateId   String
+  eventType     String
+  payload       Json
+  status        String    @default("pending")
+  attemptCount  Int       @default(0)
+  availableAt   DateTime  @default(now())
+  sentAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([status, availableAt])
+}
+
+model InboxEvent {
+  id          String   @id @default(cuid())
+  source      String
+  externalId  String
+  eventType   String
+  payloadHash String
+  processedAt DateTime @default(now())
+
+  @@unique([source, externalId])
 }
