@@ -74,6 +74,20 @@ describe("analysisEnvelopeSchema", () => {
     }).success).toBe(false);
   });
 
+  it("accepts a deeply nested JSON observation value", () => {
+    expect(analysisEnvelopeSchema.safeParse({
+      ...validEnvelope,
+      observations: [{
+        ...validEnvelope.observations[0],
+        value: {
+          nested: {
+            array: [1, "two", true, null, { deeper: ["value"] }],
+          },
+        },
+      }],
+    }).success).toBe(true);
+  });
+
   it.each([
     ["a short digest", "sha256:4f89b3c2d0e17a65"],
     ["non-hex characters", `sha256:${"g".repeat(64)}`],
@@ -101,6 +115,59 @@ describe("analysisEnvelopeSchema", () => {
     expect(analysisEnvelopeSchema.safeParse({
       ...validEnvelope,
       finishedAt,
+    }).success).toBe(true);
+  });
+
+  it.each([
+    [
+      "a lower fractional second",
+      "2026-07-31T01:00:00.0002Z",
+      "2026-07-31T01:00:00.0001Z",
+    ],
+    [
+      "no fractional second after a positive fraction",
+      "2026-07-31T01:00:00.0001Z",
+      "2026-07-31T01:00:00Z",
+    ],
+  ])("rejects %s", (_label, startedAt, finishedAt) => {
+    expect(analysisEnvelopeSchema.safeParse({
+      ...validEnvelope,
+      startedAt,
+      finishedAt,
+    }).success).toBe(false);
+  });
+
+  it.each([
+    [
+      "a higher fractional second",
+      "2026-07-31T01:00:00.0001Z",
+      "2026-07-31T01:00:00.0002Z",
+    ],
+    [
+      "a positive fraction after no fractional second",
+      "2026-07-31T01:00:00Z",
+      "2026-07-31T01:00:00.0001Z",
+    ],
+  ])("accepts %s", (_label, startedAt, finishedAt) => {
+    expect(analysisEnvelopeSchema.safeParse({
+      ...validEnvelope,
+      startedAt,
+      finishedAt,
+    }).success).toBe(true);
+  });
+
+  it("accepts a null finished time", () => {
+    expect(analysisEnvelopeSchema.safeParse({
+      ...validEnvelope,
+      finishedAt: null,
+    }).success).toBe(true);
+  });
+
+  it("accepts equivalent UTC times when the finished time omits seconds", () => {
+    expect(analysisEnvelopeSchema.safeParse({
+      ...validEnvelope,
+      startedAt: "2026-07-31T01:00:00Z",
+      finishedAt: "2026-07-31T01:00Z",
     }).success).toBe(true);
   });
 });

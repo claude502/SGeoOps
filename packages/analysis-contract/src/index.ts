@@ -1,5 +1,25 @@
 import { z } from "zod";
 
+function compareUtcIsoDatetimes(left: string, right: string): number {
+  const [leftBody, leftFraction = ""] = left.slice(0, -1).split(".");
+  const [rightBody, rightFraction = ""] = right.slice(0, -1).split(".");
+  const leftWholeSecond = leftBody.length === 16 ? `${leftBody}:00` : leftBody;
+  const rightWholeSecond = rightBody.length === 16 ? `${rightBody}:00` : rightBody;
+
+  if (leftWholeSecond !== rightWholeSecond) {
+    return leftWholeSecond < rightWholeSecond ? -1 : 1;
+  }
+
+  const precision = Math.max(leftFraction.length, rightFraction.length);
+  const normalizedLeftFraction = leftFraction.padEnd(precision, "0");
+  const normalizedRightFraction = rightFraction.padEnd(precision, "0");
+
+  if (normalizedLeftFraction === normalizedRightFraction) {
+    return 0;
+  }
+  return normalizedLeftFraction < normalizedRightFraction ? -1 : 1;
+}
+
 export const analysisStatusSchema = z.enum([
   "queued", "running", "succeeded", "partial",
   "retrying", "failed", "cancelled",
@@ -41,7 +61,10 @@ export const analysisEnvelopeSchema = z.object({
   if (value.status === "failed" && value.error === null) {
     context.addIssue({ code: "custom", path: ["error"], message: "failed envelopes require an error" });
   }
-  if (value.finishedAt !== null && Date.parse(value.finishedAt) < Date.parse(value.startedAt)) {
+  if (
+    value.finishedAt !== null &&
+    compareUtcIsoDatetimes(value.finishedAt, value.startedAt) < 0
+  ) {
     context.addIssue({
       code: "custom",
       path: ["finishedAt"],
