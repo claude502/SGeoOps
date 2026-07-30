@@ -33,6 +33,13 @@ const validEnvelope = {
   error: null,
 };
 
+const topLevelUnsafeValue = JSON.parse(
+  '{"__proto__":{"polluted":true},"safe":1}',
+) as Record<string, unknown>;
+const nestedUnsafeValue = JSON.parse(
+  '{"nested":{"__proto__":{"polluted":true},"safe":1}}',
+) as Record<string, unknown>;
+
 describe("analysisEnvelopeSchema", () => {
   it("exports the public status and surface types", () => {
     expectTypeOf<AnalysisStatus>().toEqualTypeOf<
@@ -86,6 +93,60 @@ describe("analysisEnvelopeSchema", () => {
         },
       }],
     }).success).toBe(true);
+  });
+
+  it.each([
+    [
+      "top-level",
+      topLevelUnsafeValue,
+      ["observations", 0, "value", "__proto__"],
+    ],
+    [
+      "nested",
+      nestedUnsafeValue,
+      ["observations", 0, "value", "nested", "__proto__"],
+    ],
+  ])("rejects a %s own __proto__ key", (_label, value, path) => {
+    const result = analysisEnvelopeSchema.safeParse({
+      ...validEnvelope,
+      observations: [{
+        ...validEnvelope.observations[0],
+        value,
+      }],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(expect.objectContaining({
+        code: "custom",
+        path,
+        message: "observation values must not contain __proto__ keys",
+      }));
+    }
+  });
+
+  it("rejects circular observation values without overflowing the call stack", () => {
+    const circularValue: Record<string, unknown> = {};
+    circularValue.self = circularValue;
+    let result: ReturnType<typeof analysisEnvelopeSchema.safeParse> | undefined;
+
+    expect(() => {
+      result = analysisEnvelopeSchema.safeParse({
+        ...validEnvelope,
+        observations: [{
+          ...validEnvelope.observations[0],
+          value: circularValue,
+        }],
+      });
+    }).not.toThrow();
+    expect(result?.success).toBe(false);
+    if (result && !result.success) {
+      expect(result.error.issues).toContainEqual(expect.objectContaining({
+        code: "custom",
+        path: ["observations", 0, "value", "self"],
+        message: "observation values must not be circular",
+      }));
+    }
   });
 
   it.each([
@@ -169,5 +230,35 @@ describe("analysisEnvelopeSchema", () => {
       startedAt: "2026-07-31T01:00:00Z",
       finishedAt: "2026-07-31T01:00Z",
     }).success).toBe(true);
+  });
+
+  it.each([
+    [
+      "startedAt",
+      "not-a-date",
+      "2026-07-31T01:00:00Z",
+    ],
+    [
+      "finishedAt",
+      "2026-07-31T01:00:00Z",
+      "!",
+    ],
+  ])("does not add an ordering issue when %s is invalid", (field, startedAt, finishedAt) => {
+    const result = analysisEnvelopeSchema.safeParse({
+      ...validEnvelope,
+      startedAt,
+      finishedAt,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(expect.objectContaining({
+        code: "invalid_format",
+        path: [field],
+      }));
+      expect(result.error.issues).not.toContainEqual(expect.objectContaining({
+        message: "finishedAt must not precede startedAt",
+      }));
+    }
   });
 });

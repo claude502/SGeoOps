@@ -20,6 +20,64 @@ function compareUtcIsoDatetimes(left: string, right: string): number {
   return normalizedLeftFraction < normalizedRightFraction ? -1 : 1;
 }
 
+const observationValueSchema = z.unknown().superRefine((value, context) => {
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+
+  type Frame = {
+    value: object;
+    path: Array<string | number>;
+    exiting: boolean;
+  };
+
+  const activeObjects = new WeakSet<object>();
+  const stack: Frame[] = [{ value, path: [], exiting: false }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.exiting) {
+      activeObjects.delete(frame.value);
+      continue;
+    }
+    if (activeObjects.has(frame.value)) {
+      context.addIssue({
+        code: "custom",
+        path: frame.path,
+        message: "observation values must not be circular",
+      });
+      continue;
+    }
+
+    activeObjects.add(frame.value);
+    stack.push({ ...frame, exiting: true });
+
+    const keys = Object.keys(frame.value);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index];
+      const pathSegment = Array.isArray(frame.value) && /^\d+$/.test(key)
+        ? Number(key)
+        : key;
+      const path = [...frame.path, pathSegment];
+
+      if (key === "__proto__") {
+        context.addIssue({
+          code: "custom",
+          path,
+          message: "observation values must not contain __proto__ keys",
+        });
+        continue;
+      }
+
+      const child = (frame.value as Record<string, unknown>)[key];
+      if (typeof child === "object" && child !== null) {
+        stack.push({ value: child, path, exiting: false });
+      }
+    }
+  }
+}).pipe(z.record(z.string(), z.json()));
+const utcDatetimeSchema = z.string().datetime();
+
 export const analysisStatusSchema = z.enum([
   "queued", "running", "succeeded", "partial",
   "retrying", "failed", "cancelled",
@@ -28,8 +86,8 @@ export const observationSurfaceSchema = z.enum(["api", "consumer_ui", "manual"])
 export const normalizedObservationSchema = z.object({
   kind: z.string().min(1),
   subject: z.string().min(1),
-  value: z.record(z.string(), z.json()),
-  observedAt: z.string().datetime(),
+  value: observationValueSchema,
+  observedAt: utcDatetimeSchema,
   surface: observationSurfaceSchema.optional(),
 });
 export const analysisEnvelopeSchema = z.object({
@@ -43,8 +101,8 @@ export const analysisEnvelopeSchema = z.object({
   sourceVersion: z.string().min(1),
   adapterVersion: z.string().min(1),
   status: analysisStatusSchema,
-  startedAt: z.string().datetime(),
-  finishedAt: z.string().datetime().nullable(),
+  startedAt: utcDatetimeSchema,
+  finishedAt: utcDatetimeSchema.nullable(),
   rawArtifact: z.object({
     uri: z.string().min(1),
     checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -63,6 +121,8 @@ export const analysisEnvelopeSchema = z.object({
   }
   if (
     value.finishedAt !== null &&
+    utcDatetimeSchema.safeParse(value.startedAt).success &&
+    utcDatetimeSchema.safeParse(value.finishedAt).success &&
     compareUtcIsoDatetimes(value.finishedAt, value.startedAt) < 0
   ) {
     context.addIssue({
