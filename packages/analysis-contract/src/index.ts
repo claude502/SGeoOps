@@ -8,7 +8,7 @@ export const observationSurfaceSchema = z.enum(["api", "consumer_ui", "manual"])
 export const normalizedObservationSchema = z.object({
   kind: z.string().min(1),
   subject: z.string().min(1),
-  value: z.record(z.string(), z.unknown()),
+  value: z.record(z.string(), z.json()),
   observedAt: z.string().datetime(),
   surface: observationSurfaceSchema.optional(),
 });
@@ -27,7 +27,7 @@ export const analysisEnvelopeSchema = z.object({
   finishedAt: z.string().datetime().nullable(),
   rawArtifact: z.object({
     uri: z.string().min(1),
-    checksum: z.string().regex(/^sha256:[a-f0-9]+$/),
+    checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     mediaType: z.string().min(1),
     byteSize: z.number().int().nonnegative(),
   }).nullable(),
@@ -41,6 +41,15 @@ export const analysisEnvelopeSchema = z.object({
   if (value.status === "failed" && value.error === null) {
     context.addIssue({ code: "custom", path: ["error"], message: "failed envelopes require an error" });
   }
+  if (value.finishedAt !== null && Date.parse(value.finishedAt) < Date.parse(value.startedAt)) {
+    context.addIssue({
+      code: "custom",
+      path: ["finishedAt"],
+      message: "finishedAt must not precede startedAt",
+    });
+  }
 });
+export type AnalysisStatus = z.infer<typeof analysisStatusSchema>;
+export type ObservationSurface = z.infer<typeof observationSurfaceSchema>;
 export type AnalysisEnvelope = z.infer<typeof analysisEnvelopeSchema>;
 export type NormalizedObservation = z.infer<typeof normalizedObservationSchema>;
