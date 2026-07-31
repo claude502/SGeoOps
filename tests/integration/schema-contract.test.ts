@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
@@ -24,6 +25,30 @@ function modelBlock(schema: string, model: string): string {
 }
 
 describe("platform Prisma schema", () => {
+  it("keeps the applied enforce migration immutable and contracts defaults later", async () => {
+    const enforceMigration = await readFile(
+      "prisma/migrations/20260731110000_enforce_platform_scope/migration.sql",
+      "utf8",
+    );
+    const contractMigration = await readFile(
+      "prisma/migrations/20260731120000_remove_legacy_ownership_defaults/migration.sql",
+      "utf8",
+    ).catch(() => "");
+
+    expect(createHash("sha256").update(enforceMigration).digest("hex")).toBe(
+      "6ddd77ee631ba35cd0cc2c85b1527dc1b1190bf23a0dd1d6256c7a6e2e689b2c",
+    );
+    expect(contractMigration).toContain('ALTER COLUMN "clientId" DROP DEFAULT');
+    expect(contractMigration).toContain('ALTER COLUMN "brandId" DROP DEFAULT');
+    expect(contractMigration).toContain('ALTER COLUMN "siteId" DROP DEFAULT');
+    expect(contractMigration).toContain(
+      'DROP CONSTRAINT IF EXISTS "TrendTopic_keyword_platform_key"',
+    );
+    expect(contractMigration).toContain(
+      'CREATE UNIQUE INDEX "TrendTopic_clientId_keyword_platform_key"',
+    );
+  });
+
   it("contains ownership, evidence, auth, and event models", async () => {
     const schema = await readFile("prisma/schema.prisma", "utf8");
 

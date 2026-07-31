@@ -6,6 +6,16 @@ const mocks = vi.hoisted(() => ({
   updateTrendStatus: vi.fn(),
 }));
 
+const TestAuthorizationError = vi.hoisted(
+  () =>
+    class TestAuthorizationError extends Error {
+      constructor(readonly code: "UNAUTHENTICATED" | "ROLE_FORBIDDEN") {
+        super(code);
+        this.name = "AuthorizationError";
+      }
+    },
+);
+
 const scope = {
   actorId: "reviewer_a",
   workspaceId: "workspace_internal",
@@ -14,7 +24,7 @@ const scope = {
 };
 
 vi.mock("@/lib/authorization", () => ({
-  AuthorizationError: class AuthorizationError extends Error {},
+  AuthorizationError: TestAuthorizationError,
   requireAccessScope: mocks.requireAccessScope,
   requireRole: mocks.requireRole,
 }));
@@ -42,6 +52,11 @@ describe("PATCH /api/trends/[id]/status", () => {
     vi.resetModules();
     vi.clearAllMocks();
     mocks.requireAccessScope.mockResolvedValue(scope);
+    mocks.requireRole.mockImplementation((receivedScope, allowedRoles) => {
+      if (!allowedRoles.includes(receivedScope.role)) {
+        throw new TestAuthorizationError("ROLE_FORBIDDEN");
+      }
+    });
   });
 
   it("returns 400 for an invalid status", async () => {
@@ -96,12 +111,35 @@ describe("PATCH /api/trends/[id]/status", () => {
       });
 
       expect(response.status).toBe(200);
+      expect(mocks.requireRole).toHaveBeenCalledWith(scope, [
+        "Admin",
+        "Reviewer",
+      ]);
       expect(mocks.updateTrendStatus).toHaveBeenCalledWith(
         scope,
         "topic_a",
         status,
         request,
       );
+    },
+  );
+
+  it.each(["Operator", "Viewer"] as const)(
+    "returns 403 for the %s role",
+    async (role) => {
+      mocks.requireAccessScope.mockResolvedValue({ ...scope, role });
+      const { PATCH } = await import("./route");
+      const response = await PATCH(
+        new Request("http://localhost/api/trends/topic_a/status", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "approved" }),
+        }),
+        { params: Promise.resolve({ id: "topic_a" }) },
+      );
+
+      expect(response.status).toBe(403);
+      expect(mocks.updateTrendStatus).not.toHaveBeenCalled();
     },
   );
 

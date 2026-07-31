@@ -16,9 +16,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const scopeA = {
-  actorId: "operator_a",
+  actorId: "reviewer_a",
   workspaceId: "workspace_internal",
-  role: "Operator" as const,
+  role: "Reviewer" as const,
   clientIds: ["client_a"],
 };
 
@@ -43,7 +43,7 @@ const assetA = {
   createdAt: new Date("2026-07-31T00:00:00.000Z"),
   updatedAt: new Date("2026-07-31T00:00:00.000Z"),
   status: "Ready" as const,
-  owner: "Operator A",
+  owner: "Reviewer A",
   sourceSystem: "geo_ops",
   externalUrl: null,
   publishedAt: null,

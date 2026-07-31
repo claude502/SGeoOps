@@ -15,7 +15,7 @@ export async function PATCH(
 ) {
   try {
     const scope = await requireAccessScope(request);
-    requireRole(scope, ["Admin", "Operator", "Reviewer"]);
+    requireRole(scope, ["Admin", "Reviewer"]);
     const { id } = await params;
     const parsed = schema.safeParse(
       await request.json().catch(() => null),

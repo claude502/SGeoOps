@@ -24,6 +24,8 @@ const backfillMigrationPath =
   "prisma/migrations/20260731100000_backfill_txpuro_ownership/migration.sql";
 const enforceMigrationPath =
   "prisma/migrations/20260731110000_enforce_platform_scope/migration.sql";
+const contractMigrationPath =
+  "prisma/migrations/20260731120000_remove_legacy_ownership_defaults/migration.sql";
 
 const legacyTables = [
   "ContentAsset",
@@ -520,9 +522,29 @@ async function prepareBackfilledFreshSchema(target: Client): Promise<void> {
   await applyMigration(target, backfillMigrationPath);
 }
 
-async function prepareEnforcedFreshSchema(target: Client): Promise<void> {
+async function prepareBaseEnforcedFreshSchema(target: Client): Promise<void> {
   await prepareBackfilledFreshSchema(target);
   await applyMigration(target, enforceMigrationPath);
+}
+
+async function prepareEnforcedFreshSchema(target: Client): Promise<void> {
+  await prepareBaseEnforcedFreshSchema(target);
+  await applyMigration(target, contractMigrationPath);
+}
+
+async function ownershipDefaultCount(target: Client): Promise<number> {
+  const result = await target.query<{ count: number }>(
+    `
+      SELECT count(*)::int AS count
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = ANY($1::text[])
+        AND column_name = ANY(ARRAY['clientId', 'brandId', 'siteId'])
+        AND column_default IS NOT NULL
+    `,
+    [legacyTables],
+  );
+  return result.rows[0]?.count ?? 0;
 }
 
 async function openSchemaClient(
@@ -1202,6 +1224,7 @@ describe.skipIf(!integrationEnabled).sequential(
 
     it("enforces legacy nullability, foreign keys, triggers, and indexes", async () => {
       await applyMigration(client, enforceMigrationPath);
+      await applyMigration(client, contractMigrationPath);
 
       const nullability = await client.query<{
         table_name: string;
@@ -3777,6 +3800,27 @@ describe.skipIf(!integrationEnabled).sequential(
       });
     });
 
+    it("upgrades an applied base migration before removing ownership defaults", async () => {
+      await withFreshSchema("contract_upgrade", async (target) => {
+        await prepareBaseEnforcedFreshSchema(target);
+        expect(await ownershipDefaultCount(target)).toBe(39);
+
+        await applyMigration(target, contractMigrationPath);
+        expect(await ownershipDefaultCount(target)).toBe(0);
+
+        await expect(
+          target.query(`
+            INSERT INTO "TrendTopic" (
+              "keyword", "platform", "score", "sourceType", "capturedAt"
+            ) VALUES (
+              'upgrade requires ownership', 'manual', 50, 'manual',
+              CURRENT_TIMESTAMP
+            )
+          `),
+        ).rejects.toMatchObject({ code: "23502" });
+      });
+    });
+
     it("replays all migrations from an empty PostgreSQL 16 schema", async () => {
       await withFreshSchema("replay", async (replayClient) => {
         for (const migrationPath of [
@@ -3784,6 +3828,7 @@ describe.skipIf(!integrationEnabled).sequential(
           expandMigrationPath,
           backfillMigrationPath,
           enforceMigrationPath,
+          contractMigrationPath,
         ]) {
           await applyMigration(replayClient, migrationPath);
         }
@@ -3797,12 +3842,21 @@ describe.skipIf(!integrationEnabled).sequential(
               WHERE table_schema = current_schema()
                 AND table_name = 'ContentAsset'
                 AND column_name = 'clientId'
-            ) AS "contentClientNullable"
-        `);
+            ) AS "contentClientNullable",
+            (
+              SELECT count(*)::int
+              FROM information_schema.columns
+              WHERE table_schema = current_schema()
+                AND table_name = ANY($1::text[])
+                AND column_name = ANY(ARRAY['clientId', 'brandId', 'siteId'])
+                AND column_default IS NOT NULL
+            ) AS "ownershipDefaults"
+        `, [legacyTables]);
         expect(replayed.rows[0]).toEqual({
           workspaces: 1,
           markets: 2,
           contentClientNullable: "NO",
+          ownershipDefaults: 0,
         });
       });
     });

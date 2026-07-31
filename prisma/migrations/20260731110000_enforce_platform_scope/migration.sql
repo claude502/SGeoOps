@@ -14,8 +14,8 @@ BEGIN
     'DistributionDispatch', 'EventDelivery'
   ]
   LOOP
-    -- Task 9 contracts ownership by requiring every writer to supply the
-    -- complete tuple. The fixed Txpuro rows remain backfilled data only.
+    -- Task 9 must remove these compatibility defaults from both PostgreSQL
+    -- and Prisma in the same migration. Task 4 intentionally keeps them.
     EXECUTE format(
       'SELECT "id" FROM %I
        WHERE "clientId" IS NULL OR "brandId" IS NULL OR "siteId" IS NULL
@@ -35,22 +35,15 @@ BEGIN
          ALTER COLUMN "clientId" SET NOT NULL,
          ALTER COLUMN "brandId" SET NOT NULL,
          ALTER COLUMN "siteId" SET NOT NULL,
-         ALTER COLUMN "clientId" DROP DEFAULT,
-         ALTER COLUMN "brandId" DROP DEFAULT,
-         ALTER COLUMN "siteId" DROP DEFAULT',
+         ALTER COLUMN "clientId" SET DEFAULT ''client_wing_heng'',
+         ALTER COLUMN "brandId" SET DEFAULT ''brand_txpuro'',
+         ALTER COLUMN "siteId" SET DEFAULT ''site_txpuro_com''',
       table_name
     );
     orphan_id := NULL;
   END LOOP;
 END
 $$;
-
--- Trend keys are tenant data. The pre-platform global key would make one
--- client able to conflict with another client's otherwise-valid topic.
-ALTER TABLE "TrendTopic"
-  DROP CONSTRAINT IF EXISTS "TrendTopic_keyword_platform_key";
-CREATE UNIQUE INDEX "TrendTopic_clientId_keyword_platform_key"
-  ON "TrendTopic"("clientId", "keyword", "platform");
 
 -- Individual FKs protect row lifecycle. Restrict is deliberate: deleting a
 -- platform root must never silently delete or detach legacy business data.
