@@ -702,39 +702,51 @@ export class PrismaBusinessRepository {
         };
       }
 
-      for (const run of input.runs) {
-        const data = {
-          projectId: run.projectId,
+      const uniqueRuns = Array.from(
+        new Map(input.runs.map((run) => [run.id, run])).values(),
+      );
+      const runIds = uniqueRuns.map(({ id }) => id);
+      const existingRuns = await tx.geoRun.findMany({
+        where: { id: { in: runIds }, ...legacyScopeWhere(scope) },
+        select: { id: true },
+      });
+      const existingIds = new Set(existingRuns.map(({ id }) => id));
+      const newRuns = uniqueRuns.filter(({ id }) => !existingIds.has(id));
+      const inserted = newRuns.length
+        ? await tx.geoRun.createMany({
+            data: newRuns.map((run) => ({
+              ...ownership,
+              id: run.id,
+              projectId: run.projectId,
+              contentAssetId: input.contentAssetId ?? null,
+              prompt: run.prompt,
+              provider: run.provider,
+              locale: run.locale,
+              competitors: run.competitors,
+              modelAnswer: run.modelAnswer,
+              brandMentioned: run.brandMentioned,
+              citedDomains: run.citedDomains,
+              score: run.score,
+              recommendations: json(run.recommendations),
+              createdAt: new Date(run.createdAt),
+              mode: run.mode,
+            })),
+            skipDuplicates: true,
+          })
+        : { count: 0 };
+      const ownedRuns = await tx.geoRun.findMany({
+        where: { id: { in: runIds }, ...legacyScopeWhere(scope) },
+        select: { id: true },
+      });
+      if (ownedRuns.length !== runIds.length) {
+        throw new ScopedBusinessError("RESOURCE_CONFLICT");
+      }
+
+      if (inserted.count === 0) {
+        return input.runs.map((run) => ({
+          ...run,
           contentAssetId: input.contentAssetId ?? null,
-          prompt: run.prompt,
-          provider: run.provider,
-          locale: run.locale,
-          competitors: run.competitors,
-          modelAnswer: run.modelAnswer,
-          brandMentioned: run.brandMentioned,
-          citedDomains: run.citedDomains,
-          score: run.score,
-          recommendations: json(run.recommendations),
-          createdAt: new Date(run.createdAt),
-          mode: run.mode,
-        };
-        const existing = await tx.geoRun.findFirst({
-          where: { id: run.id, ...legacyScopeWhere(scope) },
-          select: { id: true },
-        });
-        if (existing) {
-          const updated = await tx.geoRun.updateMany({
-            where: { id: run.id, ...legacyScopeWhere(scope) },
-            data,
-          });
-          if (updated.count !== 1) {
-            throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
-          }
-        } else {
-          await tx.geoRun.create({
-            data: { ...ownership, ...data, id: run.id },
-          });
-        }
+        }));
       }
 
       if (input.contentAssetId) {
@@ -757,7 +769,7 @@ export class PrismaBusinessRepository {
         }
       }
 
-      const aggregateId =
+      const auditEntityId =
         input.contentAssetId ?? input.runs[0]?.id ?? ownership.siteId;
       await writeRequiredEvents(
         tx,
@@ -766,20 +778,20 @@ export class PrismaBusinessRepository {
         {
           action: "geo.audit",
           entityType: input.contentAssetId ? "ContentAsset" : "GeoRun",
-          entityId: aggregateId,
+          entityId: auditEntityId,
           metadata: {
             contentAssetId: input.contentAssetId ?? null,
-            runCount: input.runs.length,
+            runCount: inserted.count,
           },
         },
         {
           aggregateType: input.contentAssetId ? "ContentAsset" : "Site",
-          aggregateId,
+          aggregateId: input.contentAssetId ?? ownership.siteId,
           eventType: "geo.audit.completed",
           payload: {
             contentAssetId: input.contentAssetId ?? null,
             siteId: ownership.siteId,
-            geoRunIds: input.runs.map((run) => run.id),
+            geoRunIds: newRuns.map((run) => run.id),
           },
         },
       );
@@ -972,6 +984,7 @@ export class PrismaBusinessRepository {
     return this.database.trendTopic.findFirst({
       where: {
         id: topicId,
+        status: "approved",
         client: { workspaceId: "workspace_internal" },
       },
       include: {
@@ -1001,86 +1014,90 @@ export class PrismaBusinessRepository {
         await tx.trendTopic.findFirst({
           where: {
             id: input.trendId,
+            status: "approved",
             ...input.ownership,
             client: { workspaceId: "workspace_internal" },
           },
         }),
       );
-      const existing = await tx.contentAsset.findFirst({
+      const claimed = await tx.contentAsset.createMany({
+        data: [
+          {
+            ...input.ownership,
+            id: input.asset.id,
+            title: input.asset.title,
+            body: input.asset.body,
+            summary: input.asset.summary,
+            brandEntity: input.asset.brandEntity,
+            sourceUrl: input.asset.sourceUrl,
+            targetKeywords: input.asset.targetKeywords,
+            canonicalUrl: input.asset.canonicalUrl,
+            status: input.asset.status,
+            geoScore: input.asset.geoScore,
+            seoScore: input.asset.seoScore,
+            owner: input.asset.owner,
+            sourceSystem: "trend_engine",
+            slug: input.asset.slug ?? null,
+            locale: input.asset.locale,
+            assetType: input.asset.assetType,
+            seoTitle: input.asset.seoTitle,
+            metaDescription: input.asset.metaDescription,
+            faqs: json(input.asset.faqs),
+            schemaType: input.asset.schemaType,
+            ctaMode: input.asset.ctaMode,
+            publishTarget: input.asset.publishTarget,
+            isPublic: input.asset.isPublic,
+            publishedPath: input.asset.publishedPath,
+            trendTopicId: trend.id,
+            templateId: input.templateId,
+          },
+        ],
+        skipDuplicates: true,
+      });
+      const created = await tx.contentAsset.findUnique({
         where: {
-          trendTopicId: trend.id,
-          sourceSystem: "trend_engine",
-          templateId: input.templateId,
-          ...input.ownership,
-          client: { workspaceId: "workspace_internal" },
+          clientId_sourceSystem_trendTopicId_templateId: {
+            clientId: input.ownership.clientId,
+            sourceSystem: "trend_engine",
+            trendTopicId: trend.id,
+            templateId: input.templateId,
+          },
         },
         select: contentAssetSelect,
       });
+      if (!created) {
+        throw new ScopedBusinessError("RESOURCE_CONFLICT");
+      }
 
-      if (existing) {
+      if (claimed.count === 0) {
         const variantCount = await tx.channelVariant.count({
           where: {
-            contentAssetId: existing.id,
+            contentAssetId: created.id,
             ...input.ownership,
             client: { workspaceId: "workspace_internal" },
           },
         });
         return {
-          asset: mapContentAsset(existing),
+          asset: mapContentAsset(created),
           variantCount,
           reused: true,
-          seoScore: existing.seoScore ?? 0,
+          seoScore: created.seoScore ?? 0,
         };
       }
 
-      const created = await tx.contentAsset.create({
-        data: {
+      await tx.channelVariant.createMany({
+        data: input.variants.map((variant) => ({
           ...input.ownership,
-          id: input.asset.id,
-          title: input.asset.title,
-          body: input.asset.body,
-          summary: input.asset.summary,
-          brandEntity: input.asset.brandEntity,
-          sourceUrl: input.asset.sourceUrl,
-          targetKeywords: input.asset.targetKeywords,
-          canonicalUrl: input.asset.canonicalUrl,
-          status: input.asset.status,
-          geoScore: input.asset.geoScore,
-          seoScore: input.asset.seoScore,
-          owner: input.asset.owner,
-          sourceSystem: "trend_engine",
-          slug: input.asset.slug ?? null,
-          locale: input.asset.locale,
-          assetType: input.asset.assetType,
-          seoTitle: input.asset.seoTitle,
-          metaDescription: input.asset.metaDescription,
-          faqs: json(input.asset.faqs),
-          schemaType: input.asset.schemaType,
-          ctaMode: input.asset.ctaMode,
-          publishTarget: input.asset.publishTarget,
-          isPublic: input.asset.isPublic,
-          publishedPath: input.asset.publishedPath,
-          trendTopicId: trend.id,
-          templateId: input.templateId,
-        },
-        select: contentAssetSelect,
+          id: variant.id,
+          contentAssetId: created.id,
+          platform: variant.platform,
+          accountId: variant.accountId,
+          copy: variant.copy,
+          mediaAssets: variant.mediaAssets,
+          scheduledAt: toDate(variant.scheduledAt),
+          status: variant.status,
+        })),
       });
-
-      for (const variant of input.variants) {
-        await tx.channelVariant.create({
-          data: {
-            ...input.ownership,
-            id: variant.id,
-            contentAssetId: created.id,
-            platform: variant.platform,
-            accountId: variant.accountId,
-            copy: variant.copy,
-            mediaAssets: variant.mediaAssets,
-            scheduledAt: toDate(variant.scheduledAt),
-            status: variant.status,
-          },
-        });
-      }
 
       await writeRequiredEvents(
         tx,

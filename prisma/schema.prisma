@@ -115,6 +115,7 @@ model ContentAsset {
   @@index([publishTarget, isPublic])
   @@index([locale, slug])
   @@index([sourceSystem, trendTopicId, templateId, locale])
+  @@unique([clientId, sourceSystem, trendTopicId, templateId])
   @@index([clientId, siteId])
   @@index([brandId])
   @@index([siteId])

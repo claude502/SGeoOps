@@ -11,7 +11,9 @@ import type { GeoFlowConfig } from "@/lib/geoflow/config";
 import type {
   GeoFlowBridgeRepository,
   GeoFlowTaskLinkRecord,
+  ListSyncableLinksOptions,
 } from "@/lib/geoflow/repository";
+import { toPublicGeoFlowLink } from "@/lib/geoflow/repository";
 
 export interface GeoFlowApi {
   getCatalog(): Promise<unknown>;
@@ -41,7 +43,13 @@ export interface SyncGeoFlowResult {
   failureCount: number;
   links: GeoFlowTaskLinkView[];
   errors: string[];
+  hasMore: boolean;
+  nextCursor: string | null;
 }
+
+const GEOFLOW_CREATE_FAILED = "GEOFLOW_CREATE_FAILED";
+const GEOFLOW_ENQUEUE_FAILED = "GEOFLOW_ENQUEUE_FAILED";
+const GEOFLOW_READ_FAILED = "GEOFLOW_READ_FAILED";
 
 function deterministicKey(parts: string[]) {
   const digest = createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 24);
@@ -152,8 +160,12 @@ export class GeoFlowBridgeService {
     const { asset, brief } = input;
     const idempotencyKey = deterministicKey([asset.id, titleFor(asset, brief)]);
     const existing = await this.repository.findLinkByIdempotencyKey(idempotencyKey);
-    if (existing?.geoFlowTaskId) {
-      return { link: existing, reused: true };
+    if (
+      existing?.geoFlowTaskId &&
+      existing.geoFlowJobId &&
+      existing.status !== "failed"
+    ) {
+      return { link: toPublicGeoFlowLink(existing), reused: true };
     }
 
     const taskPayload = buildGeoFlowTaskPayload(asset, this.config, brief);
@@ -167,15 +179,26 @@ export class GeoFlowBridgeService {
         taskPayload,
       }));
 
-    try {
-      const task = await this.client.createTask(taskPayload, idempotencyKey);
-      const taskId = extractTaskId(task);
+    let taskId = link.geoFlowTaskId;
+    if (!taskId) {
+      try {
+        const task = await this.client.createTask(taskPayload, idempotencyKey);
+        taskId = extractTaskId(task);
+      } catch (error) {
+        await this.repository.updateLink(link.id, {
+          status: "failed",
+          lastError: GEOFLOW_CREATE_FAILED,
+        });
+        throw error;
+      }
       link = await this.repository.updateLink(link.id, {
         geoFlowTaskId: taskId,
         status: "queued",
         lastError: null,
       });
+    }
 
+    try {
       const enqueue = await this.client.enqueueTask(
         taskId,
         buildEnqueuePayload(asset, brief),
@@ -189,40 +212,40 @@ export class GeoFlowBridgeService {
         lastError: null,
       });
 
-      return { link, reused: false };
+      return { link: toPublicGeoFlowLink(link), reused: false };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "GEOFlow task creation failed.";
-      link = await this.repository.updateLink(link.id, {
+      await this.repository.updateLink(link.id, {
         status: "failed",
-        lastError: message,
+        lastError: GEOFLOW_ENQUEUE_FAILED,
       });
       throw error;
     }
   }
 
-  async sync(): Promise<SyncGeoFlowResult> {
+  async sync(options?: ListSyncableLinksOptions): Promise<SyncGeoFlowResult> {
+    const page = await this.repository.listSyncableLinks(options);
     const syncRun = await this.repository.createSyncRun();
-    const links = await this.repository.listSyncableLinks();
     const updated: GeoFlowTaskLinkView[] = [];
     const errors: string[] = [];
     let successCount = 0;
     let failureCount = 0;
 
-    for (const link of links) {
+    for (const link of page.links) {
       try {
         const next = await this.syncLink(link);
         updated.push(next);
         successCount += 1;
       } catch (error) {
         failureCount += 1;
-        const message = error instanceof Error ? error.message : "Unknown sync failure";
-        errors.push(`${link.contentAssetId}: ${message}`);
+        errors.push(`${link.contentAssetId}: ${GEOFLOW_READ_FAILED}`);
         updated.push(
-          await this.repository.updateLink(link.id, {
-            status: "failed",
-            lastSyncedAt: new Date(),
-            lastError: message,
-          }),
+          toPublicGeoFlowLink(
+            await this.repository.updateLink(link.id, {
+              status: "failed",
+              lastSyncedAt: new Date(),
+              lastError: GEOFLOW_READ_FAILED,
+            }),
+          ),
         );
       }
     }
@@ -239,15 +262,19 @@ export class GeoFlowBridgeService {
       failureCount,
       links: updated,
       errors,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
     };
   }
 
   private async syncLink(link: GeoFlowTaskLinkRecord) {
     if (!link.geoFlowTaskId) {
-      return this.repository.updateLink(link.id, {
-        status: "queued",
-        lastSyncedAt: new Date(),
-      });
+      return toPublicGeoFlowLink(
+        await this.repository.updateLink(link.id, {
+          status: "queued",
+          lastSyncedAt: new Date(),
+        }),
+      );
     }
 
     const [jobsPayload, articlesPayload] = await Promise.all([
@@ -260,31 +287,30 @@ export class GeoFlowBridgeService {
 
     if (published) {
       const url = articleUrl(published, this.config.publicBaseUrl);
-      if (url) {
-        await this.repository.updateContentAssetPublication(link.contentAssetId, {
-          externalUrl: url,
-          canonicalUrl: url,
-          publishedAt: published.published_at || new Date(),
-        });
+      if (!url) {
+        throw new Error(GEOFLOW_READ_FAILED);
       }
-
-      return this.repository.updateLink(link.id, {
+      return toPublicGeoFlowLink(await this.repository.commitPublishedLink(link.id, {
         geoFlowJobId: job?.id ?? link.geoFlowJobId,
         geoFlowArticleId: Number(published.id),
         geoFlowArticleUrl: url,
-        status: "published",
-        lastSyncedAt: new Date(),
-        lastError: null,
-      });
+        publishedAt: published.published_at || new Date(),
+      }));
     }
 
     const jobArticleId = job?.task_run_summary?.article_id;
-    return this.repository.updateLink(link.id, {
-      geoFlowJobId: job?.id ?? link.geoFlowJobId,
-      geoFlowArticleId: Number.isFinite(jobArticleId) ? Number(jobArticleId) : link.geoFlowArticleId,
-      status: normalizeJobStatus(job?.status),
-      lastSyncedAt: new Date(),
-      lastError: job?.task_run_summary?.error_message ?? null,
-    });
+    return toPublicGeoFlowLink(
+      await this.repository.updateLink(link.id, {
+        geoFlowJobId: job?.id ?? link.geoFlowJobId,
+        geoFlowArticleId: Number.isFinite(jobArticleId)
+          ? Number(jobArticleId)
+          : link.geoFlowArticleId,
+        status: normalizeJobStatus(job?.status),
+        lastSyncedAt: new Date(),
+        lastError: job?.task_run_summary?.error_message
+          ? GEOFLOW_READ_FAILED
+          : null,
+      }),
+    );
   }
 }

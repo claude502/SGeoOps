@@ -3,6 +3,7 @@ import { GeoFlowBridgeService, type GeoFlowApi } from "@/lib/geoflow/bridge-serv
 import { GeoFlowClient, GeoFlowHttpError } from "@/lib/geoflow/client";
 import { readGeoFlowConfig, type GeoFlowConfig } from "@/lib/geoflow/config";
 import { InMemoryGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import { safeGeoFlowErrorSummary } from "@/lib/geoflow/repository";
 import { integrationErrorResponse } from "@/lib/geoflow/server";
 import { seedAssets } from "@/lib/sample-data";
 
@@ -183,7 +184,66 @@ describe("GeoFlowBridgeService", () => {
     expect(links).toHaveLength(1);
     expect(links[0].geoFlowTaskId).toBe(101);
     expect(links[0].status).toBe("failed");
-    expect(links[0].lastError).toBe("enqueue failed");
+    expect(links[0].lastError).toBe("GEOFLOW_ENQUEUE_FAILED");
+    expect(links[0]).not.toHaveProperty("taskPayload");
+  });
+
+  it("concurrently retries a failed enqueue with the same key without recreating the task", async () => {
+    const repository = new InMemoryGeoFlowBridgeRepository();
+    let enqueueAttempt = 0;
+    const api = mockApi({
+      createTask: vi.fn(async () => ({ id: 101 })),
+      enqueueTask: vi.fn(async (_taskId, _payload, idempotencyKey) => {
+        enqueueAttempt += 1;
+        if (enqueueAttempt === 1) {
+          throw new Error("authorization=Bearer top-secret");
+        }
+        return { task_id: 101, job_id: 202, status: "pending", idempotencyKey };
+      }),
+    });
+    const service = new GeoFlowBridgeService(repository, api, config);
+
+    await expect(service.sendToGeoFlow({ asset: seedAssets[0] })).rejects.toThrow();
+    const recovered = await Promise.all([
+      service.sendToGeoFlow({ asset: seedAssets[0] }),
+      service.sendToGeoFlow({ asset: seedAssets[0] }),
+    ]);
+
+    expect(recovered[0]).toMatchObject({
+      reused: false,
+      link: { geoFlowTaskId: 101, geoFlowJobId: 202, status: "generating" },
+    });
+    expect(recovered[1]).toMatchObject({
+      reused: false,
+      link: { geoFlowTaskId: 101, geoFlowJobId: 202, status: "generating" },
+    });
+    expect(api.createTask).toHaveBeenCalledTimes(1);
+    expect(api.enqueueTask).toHaveBeenCalledTimes(3);
+    const enqueueKeys = (api.enqueueTask as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[2]);
+    expect(new Set(enqueueKeys).size).toBe(1);
+    expect(enqueueKeys[0]).toMatch(/_enqueue$/);
+  });
+
+  it("re-enqueues a failed link even when it retains a stale job id", async () => {
+    const repository = new InMemoryGeoFlowBridgeRepository();
+    const api = mockApi();
+    const service = new GeoFlowBridgeService(repository, api, config);
+    const first = await service.sendToGeoFlow({ asset: seedAssets[0] });
+    await repository.updateLink(first.link.id, {
+      status: "failed",
+      lastError: "GEOFLOW_READ_FAILED",
+    });
+
+    const recovered = await service.sendToGeoFlow({ asset: seedAssets[0] });
+
+    expect(recovered.reused).toBe(false);
+    expect(recovered.link).toMatchObject({ status: "generating", geoFlowJobId: 202 });
+    expect(api.createTask).toHaveBeenCalledTimes(1);
+    expect(api.enqueueTask).toHaveBeenCalledTimes(2);
+    expect(
+      (api.enqueueTask as ReturnType<typeof vi.fn>).mock.calls[0]?.[2],
+    ).toBe((api.enqueueTask as ReturnType<typeof vi.fn>).mock.calls[1]?.[2]);
   });
 
   it("syncs a published GEOFlow article back onto the content asset link", async () => {
@@ -205,5 +265,61 @@ describe("GeoFlowBridgeService", () => {
     expect(result.failureCount).toBe(0);
     expect(result.links[0].status).toBe("published");
     expect(result.links[0].geoFlowArticleUrl).toBe("https://content.example/articles/aurora-guide");
+  });
+
+  it("returns stable read errors without retaining upstream credentials", async () => {
+    const repository = new InMemoryGeoFlowBridgeRepository();
+    const api = mockApi({
+      listTaskJobs: vi.fn(async () => {
+        throw new Error("authorization=Bearer top-secret full upstream body");
+      }),
+    });
+    const service = new GeoFlowBridgeService(repository, api, config);
+    await service.sendToGeoFlow({ asset: seedAssets[0] });
+
+    const result = await service.sync();
+
+    expect(result.errors).toEqual([
+      `${seedAssets[0].id}: GEOFLOW_READ_FAILED`,
+    ]);
+    expect(result.links[0].lastError).toBe("GEOFLOW_READ_FAILED");
+    expect(JSON.stringify(result)).not.toContain("top-secret");
+  });
+
+  it("processes one bounded sync page and returns a continuation cursor", async () => {
+    const repository = new InMemoryGeoFlowBridgeRepository();
+    for (let index = 0; index < 30; index += 1) {
+      const link = await repository.createLink({
+        contentAssetId: `asset_${index.toString().padStart(2, "0")}`,
+        idempotencyKey: `idem_${index.toString().padStart(2, "0")}`,
+        status: "queued",
+        taskPayload: {},
+      });
+      await repository.updateLink(link.id, { geoFlowTaskId: index + 1 });
+    }
+    const api = mockApi();
+    const service = new GeoFlowBridgeService(repository, api, config);
+
+    const first = await service.sync({ limit: 25 });
+    const second = await service.sync({ cursor: first.nextCursor ?? undefined, limit: 25 });
+
+    expect(first.links).toHaveLength(25);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextCursor).toBeTruthy();
+    expect(second.links).toHaveLength(5);
+    expect(second.hasMore).toBe(false);
+    expect(second.nextCursor).toBeNull();
+    expect(api.listTaskJobs).toHaveBeenCalledTimes(30);
+  });
+});
+
+describe("safeGeoFlowErrorSummary", () => {
+  it("redacts a Bearer credential including the token after the scheme", () => {
+    const sanitized = safeGeoFlowErrorSummary(
+      "authorization=Bearer top-secret response body",
+    );
+
+    expect(sanitized).not.toContain("top-secret");
+    expect(sanitized).toBe("authorization=[redacted] response body");
   });
 });

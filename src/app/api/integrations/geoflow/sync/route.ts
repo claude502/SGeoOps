@@ -10,6 +10,8 @@ export const dynamic = "force-dynamic";
 
 const schema = z.object({
   siteId: z.string().min(1),
+  cursor: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(25).optional(),
 });
 
 export async function POST(request: Request) {
@@ -35,7 +37,7 @@ export async function POST(request: Request) {
         request,
         ownership,
       ),
-    ).sync();
+    ).sync({ cursor: parsed.data.cursor, limit: parsed.data.limit });
     return NextResponse.json(result);
   } catch (error) {
     const response = integrationErrorResponse(error);

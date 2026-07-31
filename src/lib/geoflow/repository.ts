@@ -29,6 +29,24 @@ export interface UpdateGeoFlowTaskLinkInput {
   lastError?: string | null;
 }
 
+export interface PublishGeoFlowTaskLinkInput {
+  geoFlowJobId: number | null;
+  geoFlowArticleId: number;
+  geoFlowArticleUrl: string;
+  publishedAt: string | Date;
+}
+
+export interface ListSyncableLinksOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface SyncableGeoFlowLinkPage {
+  links: GeoFlowTaskLinkRecord[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 export interface ListContentAssetsOptions {
   take?: number;
   cursor?: string;
@@ -43,12 +61,12 @@ export interface GeoFlowBridgeRepository {
   findLinkByIdempotencyKey(idempotencyKey: string): Promise<GeoFlowTaskLinkRecord | null>;
   createLink(input: CreateGeoFlowTaskLinkInput): Promise<GeoFlowTaskLinkRecord>;
   updateLink(id: string, input: UpdateGeoFlowTaskLinkInput): Promise<GeoFlowTaskLinkRecord>;
-  listSyncableLinks(): Promise<GeoFlowTaskLinkRecord[]>;
+  listSyncableLinks(options?: ListSyncableLinksOptions): Promise<SyncableGeoFlowLinkPage>;
   listLinks(): Promise<GeoFlowTaskLinkView[]>;
-  updateContentAssetPublication(
-    contentAssetId: string,
-    publication: { externalUrl: string; canonicalUrl: string; publishedAt: string | Date },
-  ): Promise<void>;
+  commitPublishedLink(
+    id: string,
+    input: PublishGeoFlowTaskLinkInput,
+  ): Promise<GeoFlowTaskLinkRecord>;
   createSyncRun(): Promise<{ id: string }>;
   finishSyncRun(
     id: string,
@@ -72,7 +90,29 @@ function toIso(value: Date | string | null | undefined) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function mapLink(link: {
+const publicLinkSelect = {
+  id: true,
+  contentAssetId: true,
+  geoFlowTaskId: true,
+  geoFlowJobId: true,
+  geoFlowArticleId: true,
+  geoFlowArticleUrl: true,
+  status: true,
+  lastSyncedAt: true,
+  lastError: true,
+  idempotencyKey: true,
+} satisfies Prisma.GeoFlowTaskLinkSelect;
+
+const privateLinkSelect = {
+  ...publicLinkSelect,
+  clientId: true,
+  brandId: true,
+  siteId: true,
+  siteMarketId: true,
+  taskPayload: true,
+} satisfies Prisma.GeoFlowTaskLinkSelect;
+
+function mapPublicLink(link: {
   id: string;
   contentAssetId: string;
   geoFlowTaskId: number | null;
@@ -83,8 +123,7 @@ function mapLink(link: {
   lastSyncedAt: Date | string | null;
   lastError: string | null;
   idempotencyKey: string;
-  taskPayload?: unknown;
-}): GeoFlowTaskLinkRecord {
+}): GeoFlowTaskLinkView {
   return {
     id: link.id,
     contentAssetId: link.contentAssetId,
@@ -94,9 +133,51 @@ function mapLink(link: {
     geoFlowArticleUrl: link.geoFlowArticleUrl,
     status: link.status,
     lastSyncedAt: toIso(link.lastSyncedAt),
-    lastError: link.lastError,
+    lastError: stableGeoFlowErrorCode(link.lastError),
     idempotencyKey: link.idempotencyKey,
+  };
+}
+
+function mapPrivateLink(
+  link: Parameters<typeof mapPublicLink>[0] & { taskPayload: unknown },
+): GeoFlowTaskLinkRecord {
+  return {
+    ...mapPublicLink(link),
     taskPayload: link.taskPayload ?? null,
+  };
+}
+
+export function toPublicGeoFlowLink(
+  link: GeoFlowTaskLinkView,
+): GeoFlowTaskLinkView {
+  return mapPublicLink(link);
+}
+
+const geoFlowErrorCodes = new Set([
+  "GEOFLOW_CREATE_FAILED",
+  "GEOFLOW_ENQUEUE_FAILED",
+  "GEOFLOW_READ_FAILED",
+]);
+
+function stableGeoFlowErrorCode(value: string | null | undefined) {
+  if (!value) {
+    return value ?? null;
+  }
+  return geoFlowErrorCodes.has(value) ? value : "GEOFLOW_READ_FAILED";
+}
+
+function syncPageLimit(value: number | undefined) {
+  if (!Number.isFinite(value)) return 25;
+  return Math.min(25, Math.max(1, Math.trunc(value ?? 25)));
+}
+
+function pageLinks(links: GeoFlowTaskLinkRecord[], limit: number) {
+  const hasMore = links.length > limit;
+  const page = links.slice(0, limit);
+  return {
+    links: page,
+    hasMore,
+    nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
   };
 }
 
@@ -279,8 +360,9 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
   async findLinkByIdempotencyKey(idempotencyKey: string) {
     const link = await getPrisma().geoFlowTaskLink.findFirst({
       where: { idempotencyKey, ...this.requireOwnership() },
+      select: privateLinkSelect,
     });
-    return link ? mapLink(link) : null;
+    return link ? mapPrivateLink(link) : null;
   }
 
   async createLink(input: CreateGeoFlowTaskLinkInput) {
@@ -293,8 +375,9 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
         status: input.status,
         taskPayload: input.taskPayload as object,
       },
+      select: privateLinkSelect,
     });
-    return mapLink(link);
+    return mapPrivateLink(link);
   }
 
   async updateLink(id: string, input: UpdateGeoFlowTaskLinkInput) {
@@ -311,7 +394,9 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
           : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.lastSyncedAt !== undefined ? { lastSyncedAt: toDate(input.lastSyncedAt) } : {}),
-        ...(input.lastError !== undefined ? { lastError: input.lastError } : {}),
+        ...(input.lastError !== undefined
+          ? { lastError: stableGeoFlowErrorCode(input.lastError) }
+          : {}),
       },
     });
     if (updated.count !== 1) {
@@ -319,24 +404,38 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
     }
     const link = await prisma.geoFlowTaskLink.findFirst({
       where: { id, ...ownership },
+      select: privateLinkSelect,
     });
     if (!link) {
       throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
     }
-    return mapLink(link);
+    return mapPrivateLink(link);
   }
 
-  async listSyncableLinks() {
+  async listSyncableLinks(options?: ListSyncableLinksOptions) {
     const ownership = this.requireOwnership();
+    const limit = syncPageLimit(options?.limit);
+    if (options?.cursor) {
+      const cursor = await getPrisma().geoFlowTaskLink.findFirst({
+        where: { id: options.cursor, ...ownership },
+        select: { id: true },
+      });
+      if (!cursor) throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
     const links = await getPrisma().geoFlowTaskLink.findMany({
       where: {
         geoFlowTaskId: { not: null },
         status: { not: "published" },
         ...ownership,
       },
-      orderBy: { updatedAt: "desc" },
+      orderBy: { id: "asc" },
+      take: limit + 1,
+      ...(options?.cursor
+        ? { cursor: { id: options.cursor }, skip: 1 }
+        : {}),
+      select: privateLinkSelect,
     });
-    return links.map(mapLink);
+    return pageLinks(links.map(mapPrivateLink), limit);
   }
 
   async listLinks() {
@@ -347,26 +446,46 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
     const links = await getPrisma().geoFlowTaskLink.findMany({
       orderBy: { updatedAt: "desc" },
       take: 100,
+      select: publicLinkSelect,
     });
-    return links.map(mapLink);
+    return links.map(mapPublicLink);
   }
 
-  async updateContentAssetPublication(
-    contentAssetId: string,
-    publication: { externalUrl: string; canonicalUrl: string; publishedAt: string | Date },
+  async commitPublishedLink(
+    id: string,
+    input: PublishGeoFlowTaskLinkInput,
   ) {
-    const updated = await getPrisma().contentAsset.updateMany({
-      where: { id: contentAssetId, ...this.requireOwnership() },
-      data: {
-        externalUrl: publication.externalUrl,
-        canonicalUrl: publication.canonicalUrl,
-        publishedAt: toDate(publication.publishedAt),
-        sourceSystem: "geoflow",
-      },
+    const ownership = this.requireOwnership();
+    return getPrisma().$transaction(async (tx) => {
+      const link = await tx.geoFlowTaskLink.findFirst({
+        where: { id, ...ownership },
+        select: privateLinkSelect,
+      });
+      if (!link) throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      if (link.status === "published") return mapPrivateLink(link);
+      await tx.contentAsset.updateMany({
+        where: { id: link.contentAssetId, ...ownership },
+        data: {
+          externalUrl: input.geoFlowArticleUrl,
+          canonicalUrl: input.geoFlowArticleUrl,
+          publishedAt: toDate(input.publishedAt),
+          sourceSystem: "geoflow",
+        },
+      });
+      const updated = await tx.geoFlowTaskLink.update({
+        where: { id: link.id },
+        data: {
+          geoFlowJobId: input.geoFlowJobId,
+          geoFlowArticleId: input.geoFlowArticleId,
+          geoFlowArticleUrl: input.geoFlowArticleUrl,
+          status: "published",
+          lastSyncedAt: new Date(),
+          lastError: null,
+        },
+        select: privateLinkSelect,
+      });
+      return mapPrivateLink(updated);
     });
-    if (updated.count !== 1) {
-      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
-    }
   }
 
   async createSyncRun() {
@@ -386,7 +505,7 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
         finishedAt: new Date(),
         successCount: result.successCount,
         failureCount: result.failureCount,
-        errorSummary: result.errorSummary ?? null,
+        errorSummary: safeGeoFlowErrorSummary(result.errorSummary),
       },
     });
     if (updated.count !== 1) {
@@ -395,13 +514,14 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
   }
 }
 
-function safeErrorSummary(value: string | null | undefined) {
+export function safeGeoFlowErrorSummary(value: string | null | undefined) {
   if (!value) {
     return value ?? null;
   }
   return value
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
     .replace(
-      /\b(authorization|api[-_ ]?key|token|secret|password)\b\s*[:=]\s*\S+/gi,
+      /\b(authorization|api[-_ ]?key|token|secret|password)\b\s*[:=]\s*(?:Bearer\s+)?[^\s,;]+/gi,
       "$1=[redacted]",
     )
     .replace(/\s+/g, " ")
@@ -521,8 +641,9 @@ export class ScopedPrismaGeoFlowBridgeRepository
   async findLinkByIdempotencyKey(idempotencyKey: string) {
     const link = await this.database.geoFlowTaskLink.findFirst({
       where: { idempotencyKey, ...legacyScopeWhere(this.scope) },
+      select: privateLinkSelect,
     });
-    return link ? mapLink(link) : null;
+    return link ? mapPrivateLink(link) : null;
   }
 
   async createLink(input: CreateGeoFlowTaskLinkInput) {
@@ -550,6 +671,7 @@ export class ScopedPrismaGeoFlowBridgeRepository
           status: input.status,
           taskPayload: input.taskPayload as Prisma.InputJsonValue,
         },
+        select: privateLinkSelect,
       });
       await this.requiredEvents(
         tx,
@@ -560,7 +682,7 @@ export class ScopedPrismaGeoFlowBridgeRepository
         "geoflow.task.created",
         { geoFlowTaskLinkId: link.id, contentAssetId: link.contentAssetId },
       );
-      return mapLink(link);
+      return mapPrivateLink(link);
     });
   }
 
@@ -568,6 +690,7 @@ export class ScopedPrismaGeoFlowBridgeRepository
     return this.database.$transaction(async (tx) => {
       const existing = await tx.geoFlowTaskLink.findFirst({
         where: { id, ...legacyScopeWhere(this.scope) },
+        select: privateLinkSelect,
       });
       if (!existing) {
         throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
@@ -592,7 +715,7 @@ export class ScopedPrismaGeoFlowBridgeRepository
             ? { lastSyncedAt: toDate(input.lastSyncedAt) }
             : {}),
           ...(input.lastError !== undefined
-            ? { lastError: safeErrorSummary(input.lastError) }
+            ? { lastError: stableGeoFlowErrorCode(input.lastError) }
             : {}),
         },
       });
@@ -601,6 +724,7 @@ export class ScopedPrismaGeoFlowBridgeRepository
       }
       const link = await tx.geoFlowTaskLink.findFirst({
         where: { id, ...legacyScopeWhere(this.scope) },
+        select: privateLinkSelect,
       });
       if (!link) {
         throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
@@ -624,23 +748,39 @@ export class ScopedPrismaGeoFlowBridgeRepository
           status: link.status,
         },
       );
-      return mapLink(link);
+      return mapPrivateLink(link);
     });
   }
 
-  async listSyncableLinks() {
+  async listSyncableLinks(options?: ListSyncableLinksOptions) {
+    const limit = syncPageLimit(options?.limit);
+    const scopedWhere = {
+      ...legacyScopeWhere(this.scope),
+      ...(this.syncOwnership
+        ? { siteId: this.syncOwnership.siteId }
+        : {}),
+    };
+    if (options?.cursor) {
+      const cursor = await this.database.geoFlowTaskLink.findFirst({
+        where: { id: options.cursor, ...scopedWhere },
+        select: { id: true },
+      });
+      if (!cursor) throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
     const links = await this.database.geoFlowTaskLink.findMany({
       where: {
         geoFlowTaskId: { not: null },
         status: { not: "published" },
-        ...legacyScopeWhere(this.scope),
-        ...(this.syncOwnership
-          ? { siteId: this.syncOwnership.siteId }
-          : {}),
+        ...scopedWhere,
       },
-      orderBy: { updatedAt: "desc" },
+      orderBy: { id: "asc" },
+      take: limit + 1,
+      ...(options?.cursor
+        ? { cursor: { id: options.cursor }, skip: 1 }
+        : {}),
+      select: privateLinkSelect,
     });
-    return links.map(mapLink);
+    return pageLinks(links.map(mapPrivateLink), limit);
   }
 
   async listLinks() {
@@ -648,21 +788,54 @@ export class ScopedPrismaGeoFlowBridgeRepository
       where: legacyScopeWhere(this.scope),
       orderBy: { updatedAt: "desc" },
       take: 100,
+      select: publicLinkSelect,
     });
-    return links.map(mapLink);
+    return links.map(mapPublicLink);
   }
 
-  async updateContentAssetPublication(
-    contentAssetId: string,
-    publication: {
-      externalUrl: string;
-      canonicalUrl: string;
-      publishedAt: string | Date;
-    },
+  async commitPublishedLink(
+    id: string,
+    input: PublishGeoFlowTaskLinkInput,
   ) {
-    await this.database.$transaction(async (tx) => {
+    return this.database.$transaction(async (tx) => {
+      const existing = await tx.geoFlowTaskLink.findFirst({
+        where: { id, ...legacyScopeWhere(this.scope) },
+        select: privateLinkSelect,
+      });
+      if (!existing) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      if (existing.status === "published") {
+        return mapPrivateLink(existing);
+      }
+      const claimed = await tx.geoFlowTaskLink.updateMany({
+        where: {
+          id,
+          status: { not: "published" },
+          ...legacyScopeWhere(this.scope),
+        },
+        data: {
+          geoFlowJobId: input.geoFlowJobId,
+          geoFlowArticleId: input.geoFlowArticleId,
+          geoFlowArticleUrl: input.geoFlowArticleUrl,
+          status: "published",
+          lastSyncedAt: new Date(),
+          lastError: null,
+        },
+      });
+      if (claimed.count === 0) {
+        const replayed = await tx.geoFlowTaskLink.findFirst({
+          where: { id, ...legacyScopeWhere(this.scope) },
+          select: privateLinkSelect,
+        });
+        if (!replayed) throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+        return mapPrivateLink(replayed);
+      }
       const asset = await tx.contentAsset.findFirst({
-        where: { id: contentAssetId, ...legacyScopeWhere(this.scope) },
+        where: {
+          id: existing.contentAssetId,
+          ...legacyScopeWhere(this.scope),
+        },
         select: {
           id: true,
           clientId: true,
@@ -675,11 +848,14 @@ export class ScopedPrismaGeoFlowBridgeRepository
         throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
       }
       const updated = await tx.contentAsset.updateMany({
-        where: { id: contentAssetId, ...legacyScopeWhere(this.scope) },
+        where: {
+          id: existing.contentAssetId,
+          ...legacyScopeWhere(this.scope),
+        },
         data: {
-          externalUrl: publication.externalUrl,
-          canonicalUrl: publication.canonicalUrl,
-          publishedAt: toDate(publication.publishedAt),
+          externalUrl: input.geoFlowArticleUrl,
+          canonicalUrl: input.geoFlowArticleUrl,
+          publishedAt: toDate(input.publishedAt),
           sourceSystem: "geoflow",
         },
       });
@@ -695,6 +871,25 @@ export class ScopedPrismaGeoFlowBridgeRepository
         "content_asset.published",
         { contentAssetId: asset.id, siteId: asset.siteId },
       );
+      await this.requiredEvents(
+        tx,
+        asset,
+        "geoflow.task.publish",
+        "GeoFlowTaskLink",
+        existing.id,
+        "geoflow.task.published",
+        {
+          geoFlowTaskLinkId: existing.id,
+          contentAssetId: asset.id,
+          siteId: asset.siteId,
+        },
+      );
+      const published = await tx.geoFlowTaskLink.findFirst({
+        where: { id, ...legacyScopeWhere(this.scope) },
+        select: privateLinkSelect,
+      });
+      if (!published) throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      return mapPrivateLink(published);
     });
   }
 
@@ -743,7 +938,7 @@ export class ScopedPrismaGeoFlowBridgeRepository
           finishedAt: new Date(),
           successCount: result.successCount,
           failureCount: result.failureCount,
-          errorSummary: safeErrorSummary(result.errorSummary),
+          errorSummary: safeGeoFlowErrorSummary(result.errorSummary),
         },
       });
       if (updated.count !== 1) {
@@ -832,35 +1027,70 @@ export class InMemoryGeoFlowBridgeRepository implements GeoFlowBridgeRepository 
     if (!current) {
       throw new Error(`Link ${id} not found`);
     }
-    const updated = { ...current, ...input, lastSyncedAt: toIso(input.lastSyncedAt) };
+    const updated = {
+      ...current,
+      ...input,
+      ...(input.lastError !== undefined
+        ? { lastError: stableGeoFlowErrorCode(input.lastError) }
+        : {}),
+      lastSyncedAt: toIso(input.lastSyncedAt),
+    };
     this.links.set(current.idempotencyKey, updated);
     return updated;
   }
 
-  async listSyncableLinks() {
-    return Array.from(this.links.values()).filter(
-      (link) => link.geoFlowTaskId !== null && link.status !== "published",
-    );
+  async listSyncableLinks(options?: ListSyncableLinksOptions) {
+    const limit = syncPageLimit(options?.limit);
+    const allLinks = Array.from(this.links.values())
+      .sort((left, right) => left.id.localeCompare(right.id));
+    if (
+      options?.cursor &&
+      !allLinks.some(({ id }) => id === options.cursor)
+    ) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
+    const links = allLinks
+      .filter(
+        (link) =>
+          link.geoFlowTaskId !== null &&
+          link.status !== "published" &&
+          (!options?.cursor || link.id > options.cursor),
+      );
+    return pageLinks(links.slice(0, limit + 1), limit);
   }
 
   async listLinks() {
-    return Array.from(this.links.values());
+    return Array.from(this.links.values()).map(mapPublicLink);
   }
 
-  async updateContentAssetPublication(
-    contentAssetId: string,
-    publication: { externalUrl: string; canonicalUrl: string; publishedAt: string | Date },
+  async commitPublishedLink(
+    id: string,
+    input: PublishGeoFlowTaskLinkInput,
   ) {
-    const asset = this.assets.get(contentAssetId);
+    const current = Array.from(this.links.values()).find((link) => link.id === id);
+    if (!current) throw new Error(`Link ${id} not found`);
+    if (current.status === "published") return current;
+    const asset = this.assets.get(current.contentAssetId);
     if (asset) {
-      this.assets.set(contentAssetId, {
+      this.assets.set(current.contentAssetId, {
         ...asset,
-        externalUrl: publication.externalUrl,
-        canonicalUrl: publication.canonicalUrl,
-        publishedAt: toIso(publication.publishedAt),
+        externalUrl: input.geoFlowArticleUrl,
+        canonicalUrl: input.geoFlowArticleUrl,
+        publishedAt: toIso(input.publishedAt),
         sourceSystem: "geoflow",
       });
     }
+    const published: GeoFlowTaskLinkRecord = {
+      ...current,
+      geoFlowJobId: input.geoFlowJobId,
+      geoFlowArticleId: input.geoFlowArticleId,
+      geoFlowArticleUrl: input.geoFlowArticleUrl,
+      status: "published",
+      lastSyncedAt: new Date().toISOString(),
+      lastError: null,
+    };
+    this.links.set(current.idempotencyKey, published);
+    return published;
   }
 
   async createSyncRun() {

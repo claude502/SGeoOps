@@ -3,7 +3,10 @@ import { requireAccessScope, requireRole } from "@/lib/authorization";
 import { businessRouteError } from "@/lib/business/http";
 import { GeoFlowClient } from "@/lib/geoflow/client";
 import { readGeoFlowConfig } from "@/lib/geoflow/config";
-import { ScopedPrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import {
+  ScopedPrismaGeoFlowBridgeRepository,
+  toPublicGeoFlowLink,
+} from "@/lib/geoflow/repository";
 import { isDatabaseConfigured } from "@/lib/prisma";
 import type { GeoFlowTaskLinkView } from "@/types/geo";
 
@@ -86,7 +89,7 @@ export async function GET(request: Request) {
         catalogError: catalog.catalogError,
         geoFlowStatusTimeoutMs,
         postizConfigured: Boolean(process.env.POSTIZ_WEBHOOK_URL),
-        links: database.links,
+        links: database.links.map(toPublicGeoFlowLink),
       },
       { status: database.databaseReachable ? 200 : 500 },
     );

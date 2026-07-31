@@ -29,6 +29,8 @@ const enforceMigrationPath =
   "prisma/migrations/20260731110000_enforce_platform_scope/migration.sql";
 const contractMigrationPath =
   "prisma/migrations/20260731120000_remove_legacy_ownership_defaults/migration.sql";
+const generatedContentMigrationPath =
+  "prisma/migrations/20260731130000_generated_content_business_key/migration.sql";
 
 const legacyTables = [
   "ContentAsset",
@@ -533,6 +535,21 @@ async function prepareBaseEnforcedFreshSchema(target: Client): Promise<void> {
 async function prepareEnforcedFreshSchema(target: Client): Promise<void> {
   await prepareBaseEnforcedFreshSchema(target);
   await applyMigration(target, contractMigrationPath);
+  await applyMigration(target, generatedContentMigrationPath);
+}
+
+async function generatedContentUniqueIndexNames(
+  target: Client,
+): Promise<string[]> {
+  const result = await target.query<{ indexname: string }>(`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND tablename = 'ContentAsset'
+      AND indexname =
+        'ContentAsset_clientId_sourceSystem_trendTopicId_templateId_key'
+  `);
+  return result.rows.map(({ indexname }) => indexname);
 }
 
 async function ownershipDefaultCount(target: Client): Promise<number> {
@@ -1256,6 +1273,7 @@ describe.skipIf(!integrationEnabled).sequential(
     it("enforces legacy nullability, foreign keys, triggers, and indexes", async () => {
       await applyMigration(client, enforceMigrationPath);
       await applyMigration(client, contractMigrationPath);
+      await applyMigration(client, generatedContentMigrationPath);
 
       const nullability = await client.query<{
         table_name: string;
@@ -3905,6 +3923,19 @@ describe.skipIf(!integrationEnabled).sequential(
       });
     });
 
+    it("adds the generated-content business key on base to head upgrade", async () => {
+      await withFreshSchema("generated_content_upgrade", async (target) => {
+        await prepareBaseEnforcedFreshSchema(target);
+        await applyMigration(target, contractMigrationPath);
+        expect(await generatedContentUniqueIndexNames(target)).toEqual([]);
+
+        await applyMigration(target, generatedContentMigrationPath);
+        expect(await generatedContentUniqueIndexNames(target)).toEqual([
+          "ContentAsset_clientId_sourceSystem_trendTopicId_templateId_key",
+        ]);
+      });
+    });
+
     it("deploys fresh migrations and safely repeats deployment", async () => {
       await withFreshSchema("repeat_deploy", async (target, schema) => {
         await deployMigrations(schema);
@@ -3919,8 +3950,20 @@ describe.skipIf(!integrationEnabled).sequential(
             AND rolled_back_at IS NULL
         `);
         expect(contractMigration.rows[0]?.count).toBe(1);
+        const generatedContentMigration = await target.query<{ count: number }>(`
+          SELECT count(*)::int AS count
+          FROM "_prisma_migrations"
+          WHERE migration_name =
+            '20260731130000_generated_content_business_key'
+            AND finished_at IS NOT NULL
+            AND rolled_back_at IS NULL
+        `);
+        expect(generatedContentMigration.rows[0]?.count).toBe(1);
         expect(await trendUniqueIndexNames(target)).toEqual([
           "TrendTopic_clientId_keyword_platform_key",
+        ]);
+        expect(await generatedContentUniqueIndexNames(target)).toEqual([
+          "ContentAsset_clientId_sourceSystem_trendTopicId_templateId_key",
         ]);
       });
     });
@@ -3933,6 +3976,7 @@ describe.skipIf(!integrationEnabled).sequential(
           backfillMigrationPath,
           enforceMigrationPath,
           contractMigrationPath,
+          generatedContentMigrationPath,
         ]) {
           await applyMigration(replayClient, migrationPath);
         }
@@ -3962,6 +4006,9 @@ describe.skipIf(!integrationEnabled).sequential(
           contentClientNullable: "NO",
           ownershipDefaults: 0,
         });
+        expect(await generatedContentUniqueIndexNames(replayClient)).toEqual([
+          "ContentAsset_clientId_sourceSystem_trendTopicId_templateId_key",
+        ]);
       });
     });
   },
