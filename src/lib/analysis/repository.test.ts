@@ -46,9 +46,50 @@ function existingRun(overrides: Record<string, unknown> = {}) {
     source: "siteone",
     sourceVersion: "2.0.0",
     adapterVersion: "1.0.0",
+    status: "queued",
+    startedAt: null,
+    finishedAt: null,
+    errorCode: null,
+    errorSummary: null,
     artifacts: [],
     observations: [],
     ...overrides,
+  };
+}
+
+function envelopeRunState(
+  source: AnalysisEnvelope = envelope,
+): Record<string, unknown> {
+  return {
+    status: source.status,
+    startedAt: new Date(source.startedAt),
+    finishedAt: source.finishedAt === null
+      ? null
+      : new Date(source.finishedAt),
+    errorCode: source.error?.code ?? null,
+    errorSummary: source.error?.message ?? null,
+  };
+}
+
+function envelopeFacts(source: AnalysisEnvelope = envelope) {
+  return {
+    artifacts: source.rawArtifact === null
+      ? []
+      : [{
+        uri: source.rawArtifact.uri,
+        checksum: source.rawArtifact.checksum,
+        mediaType: source.rawArtifact.mediaType,
+        byteSize: source.rawArtifact.byteSize,
+        sourceVersion: source.sourceVersion,
+        retentionAt: new Date("2027-01-27T01:01:00.000Z"),
+      }],
+    observations: source.observations.map((observation) => ({
+      kind: observation.kind,
+      subject: observation.subject,
+      value: observation.value,
+      surface: observation.surface ?? null,
+      observedAt: new Date(observation.observedAt),
+    })),
   };
 }
 
@@ -145,6 +186,26 @@ describe("ingestEnvelope", () => {
     expect(database.rawArtifact.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["cross-run", "artifact://run_2/report.json"],
+    ["traversal", "artifact://run_1/../report.json"],
+    ["encoded traversal", "artifact://run_1/%2e%2e"],
+    ["query", "artifact://run_1/report.json?download=1"],
+  ])("rejects a %s raw artifact URI without writes", async (_label, uri) => {
+    const database = analysisDatabase();
+
+    await expect(
+      ingestEnvelope(database as never, {
+        ...envelope,
+        rawArtifact: { ...envelope.rawArtifact!, uri },
+      }),
+    ).rejects.toMatchObject({ code: "ANALYSIS_CONTRACT_MISMATCH" });
+    expect(database.rawArtifact.create).not.toHaveBeenCalled();
+    expect(database.observation.createMany).not.toHaveBeenCalled();
+    expect(database.analysisRun.update).not.toHaveBeenCalled();
+    expect(database.outboxEvent.create).not.toHaveBeenCalled();
+  });
+
   it("persists immutable evidence and updates the run in call order", async () => {
     const database = analysisDatabase();
     const order: string[] = [];
@@ -217,21 +278,8 @@ describe("ingestEnvelope", () => {
     await ingestEnvelope(initial as never, envelope);
     const markerPayload = initial.outboxEvent.create.mock.calls[0]?.[0].data.payload;
     const database = analysisDatabase(existingRun({
-      artifacts: [{
-        uri: envelope.rawArtifact!.uri,
-        checksum: envelope.rawArtifact!.checksum,
-        mediaType: envelope.rawArtifact!.mediaType,
-        byteSize: envelope.rawArtifact!.byteSize,
-        sourceVersion: envelope.sourceVersion,
-        retentionAt: new Date("2027-01-27T01:01:00.000Z"),
-      }],
-      observations: [{
-        kind: "http_status",
-        subject: "https://example.com/",
-        value: { status: 200 },
-        surface: "api",
-        observedAt: new Date("2026-07-31T01:00:30.000Z"),
-      }],
+      ...envelopeRunState(),
+      ...envelopeFacts(),
     }));
     database.outboxEvent.findMany.mockResolvedValue([{
       id: "marker_1",
@@ -242,6 +290,77 @@ describe("ingestEnvelope", () => {
 
     expect(database.rawArtifact.create).not.toHaveBeenCalled();
     expect(database.observation.createMany).not.toHaveBeenCalled();
+    expect(database.analysisRun.update).not.toHaveBeenCalled();
+    expect(database.outboxEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("repairs complete run state before marking matching recovered facts", async () => {
+    const database = analysisDatabase(existingRun({
+      ...envelopeFacts(),
+      status: "queued",
+      startedAt: null,
+      finishedAt: null,
+      errorCode: "STALE",
+      errorSummary: "stale state",
+    }));
+    const order: string[] = [];
+    database.analysisRun.update.mockImplementation(async () => {
+      order.push("run");
+      return { id: "run_1" };
+    });
+    database.outboxEvent.create.mockImplementation(async () => {
+      order.push("marker");
+      return { id: "marker_1" };
+    });
+
+    await ingestEnvelope(database as never, envelope);
+
+    expect(order).toEqual(["run", "marker"]);
+    expect(database.analysisRun.update).toHaveBeenCalledWith({
+      where: { id: "run_1" },
+      data: envelopeRunState(),
+    });
+    expect(database.rawArtifact.create).not.toHaveBeenCalled();
+    expect(database.observation.createMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects marker-backed replay when sealed run state drifted", async () => {
+    const initial = analysisDatabase();
+    await ingestEnvelope(initial as never, envelope);
+    const markerPayload = initial.outboxEvent.create.mock.calls[0]?.[0].data.payload;
+    const database = analysisDatabase(existingRun({
+      ...envelopeFacts(),
+      status: "queued",
+    }));
+    database.outboxEvent.findMany.mockResolvedValue([{
+      id: "marker_1",
+      payload: markerPayload,
+    }]);
+
+    await expect(
+      ingestEnvelope(database as never, envelope),
+    ).rejects.toMatchObject({ code: "ANALYSIS_REPLAY_CONFLICT" });
+    expect(database.analysisRun.update).not.toHaveBeenCalled();
+    expect(database.outboxEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("replays recovered facts after run state and marker are consistent", async () => {
+    const initial = analysisDatabase(existingRun({
+      ...envelopeFacts(),
+    }));
+    await ingestEnvelope(initial as never, envelope);
+    const markerPayload = initial.outboxEvent.create.mock.calls[0]?.[0].data.payload;
+    const database = analysisDatabase(existingRun({
+      ...envelopeFacts(),
+      ...envelopeRunState(),
+    }));
+    database.outboxEvent.findMany.mockResolvedValue([{
+      id: "marker_1",
+      payload: markerPayload,
+    }]);
+
+    await ingestEnvelope(database as never, envelope);
+
     expect(database.analysisRun.update).not.toHaveBeenCalled();
     expect(database.outboxEvent.create).not.toHaveBeenCalled();
   });
@@ -270,6 +389,7 @@ describe("ingestEnvelope", () => {
     await ingestEnvelope(initial as never, noArtifact);
     const markerPayload = initial.outboxEvent.create.mock.calls[0]?.[0].data.payload;
     const database = analysisDatabase(existingRun({
+      ...envelopeRunState(noArtifact),
       observations: [{
         kind: "http_status",
         subject: "https://example.com/",
@@ -362,21 +482,8 @@ describe("ingestEnvelope", () => {
     await ingestEnvelope(initial as never, partial);
     const markerPayload = initial.outboxEvent.create.mock.calls[0]?.[0].data.payload;
     const database = analysisDatabase(existingRun({
-      artifacts: [{
-        uri: partial.rawArtifact!.uri,
-        checksum: partial.rawArtifact!.checksum,
-        mediaType: partial.rawArtifact!.mediaType,
-        byteSize: partial.rawArtifact!.byteSize,
-        sourceVersion: partial.sourceVersion,
-        retentionAt: new Date("2027-01-27T01:01:00.000Z"),
-      }],
-      observations: [{
-        kind: "http_status",
-        subject: "https://example.com/",
-        value: { status: 200 },
-        surface: "api",
-        observedAt: new Date("2026-07-31T01:00:30.000Z"),
-      }],
+      ...envelopeRunState(partial),
+      ...envelopeFacts(partial),
     }));
     database.outboxEvent.findMany.mockResolvedValue([{
       id: "marker_1",

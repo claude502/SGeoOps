@@ -9,6 +9,8 @@ import {
   rename,
   rm,
   symlink,
+  truncate,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -333,6 +335,52 @@ describe("LocalArtifactStore", () => {
     ).rejects.toMatchObject({ code: "ARTIFACT_CORRUPT" });
   });
 
+  it("rejects oversized sparse metadata before allocating its contents", async () => {
+    const root = await temporaryRoot();
+    const objectDir = objectDirectory(root, "run_1", "large.bin");
+    await mkdir(objectDir);
+    await writeFile(join(objectDir, "payload"), new Uint8Array([1]));
+    await writeFile(join(objectDir, "metadata.json"), "");
+    await truncate(join(objectDir, "metadata.json"), 64 * 1024 * 1024);
+    const before = process.memoryUsage().arrayBuffers;
+
+    await expect(
+      new LocalArtifactStore(root).get("artifact://run_1/large.bin"),
+    ).rejects.toMatchObject({ code: "ARTIFACT_CORRUPT" });
+
+    const allocated = process.memoryUsage().arrayBuffers - before;
+    expect(allocated).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it("distinguishes missing objects from incomplete stored objects", async () => {
+    const root = await temporaryRoot();
+    const store = new LocalArtifactStore(root);
+
+    await expect(
+      store.get("artifact://run_1/missing.bin"),
+    ).rejects.toMatchObject({ code: "ARTIFACT_NOT_FOUND" });
+
+    const missingMetadata = objectDirectory(root, "run_1", "no-metadata.bin");
+    await mkdir(missingMetadata);
+    await writeFile(join(missingMetadata, "payload"), new Uint8Array([1]));
+    await expect(
+      store.get("artifact://run_1/no-metadata.bin"),
+    ).rejects.toMatchObject({ code: "ARTIFACT_CORRUPT" });
+
+    const missingPayload = objectDirectory(root, "run_1", "no-payload.bin");
+    await mkdir(missingPayload);
+    await writeFile(join(missingPayload, "metadata.json"), JSON.stringify({
+      version: 1,
+      uri: "artifact://run_1/no-payload.bin",
+      checksum: checksum(new Uint8Array([1])),
+      mediaType: "application/octet-stream",
+      byteSize: 1,
+    }));
+    await expect(
+      store.get("artifact://run_1/no-payload.bin"),
+    ).rejects.toMatchObject({ code: "ARTIFACT_CORRUPT" });
+  });
+
   it("rejects root-external symlinks for writes and reads", async () => {
     const root = await temporaryRoot();
     const outside = await temporaryRoot();
@@ -406,17 +454,19 @@ describe("LocalArtifactStore", () => {
     ).toEqual([]);
   });
 
-  it("anchors publication to root when the logical run path changes", async () => {
-    const root = await temporaryRoot();
-    const outside = await temporaryRoot();
-    await mkdir(join(root, "run_1"));
+  it("never publishes into a replacement configured-root pathname", async () => {
+    const parent = await temporaryRoot();
+    const root = join(parent, "configured-root");
+    const originalRoot = join(parent, "original-root");
+    await mkdir(root);
+    const trustedIdentity = await lstat(root);
     let replaced = false;
     const store = storeWithHooks(root, {
       async beforePublishRename() {
         if (replaced) return;
         replaced = true;
-        await rename(join(root, "run_1"), join(root, "run_displaced"));
-        await symlink(outside, join(root, "run_1"), "dir");
+        await rename(root, originalRoot);
+        await mkdir(root);
       },
     });
 
@@ -427,19 +477,77 @@ describe("LocalArtifactStore", () => {
         new Uint8Array([4, 5, 6]),
         "application/octet-stream",
       ),
-    ).resolves.toMatchObject({
-      uri: "artifact://run_1/report.bin",
+    ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
+
+    const replacementIdentity = await lstat(root);
+    const movedTrustedIdentity = await lstat(originalRoot);
+    expect({
+      dev: movedTrustedIdentity.dev,
+      ino: movedTrustedIdentity.ino,
+    }).toEqual({
+      dev: trustedIdentity.dev,
+      ino: trustedIdentity.ino,
+    });
+    expect({
+      dev: replacementIdentity.dev,
+      ino: replacementIdentity.ino,
+    }).not.toEqual({
+      dev: trustedIdentity.dev,
+      ino: trustedIdentity.ino,
+    });
+    expect(await readdir(root)).toEqual([]);
+    expect((await readdir(originalRoot)).some((entry) =>
+      entry.startsWith("artifact-")
+    )).toBe(false);
+  });
+
+  it("scavenges only old inactive owned staging directories", async () => {
+    const root = await temporaryRoot();
+    const outside = await temporaryRoot();
+    const oldTimestamp = 1_000;
+    const now = 100_000;
+    const stale = join(root, `.artifact-tmp-999999-${oldTimestamp}-ABC123`);
+    const active = join(root, `.artifact-tmp-111-${oldTimestamp}-ABC123`);
+    const fresh = join(root, `.artifact-tmp-999998-${now - 1_000}-ABC123`);
+    const unknown = join(root, ".artifact-tmp-legacy");
+    const linked = join(root, `.artifact-tmp-999997-${oldTimestamp}-ABC123`);
+    await Promise.all([
+      mkdir(stale),
+      mkdir(active),
+      mkdir(fresh),
+      mkdir(unknown),
+    ]);
+    await writeFile(join(stale, "payload"), new Uint8Array([1]));
+    await Promise.all([
+      utimes(stale, oldTimestamp / 1_000, oldTimestamp / 1_000),
+      utimes(active, oldTimestamp / 1_000, oldTimestamp / 1_000),
+      utimes(fresh, (now - 1_000) / 1_000, (now - 1_000) / 1_000),
+      symlink(outside, linked, "dir"),
+    ]);
+    const store = storeWithHooks(root, {
+      now: () => now,
+      staleStagingAgeMs: 10_000,
+      isProcessAlive: (pid) => pid === 111,
     });
 
-    await expect(readdir(outside)).resolves.toEqual([]);
-    await expect(
-      store.get("artifact://run_1/report.bin"),
-    ).resolves.toEqual(new Uint8Array([4, 5, 6]));
-    await expect(
-      lstat(objectDirectory(root, "run_1", "report.bin")),
-    ).resolves.toMatchObject({
+    await store.put(
+      "run_1",
+      "report.bin",
+      new Uint8Array([1]),
+      "application/octet-stream",
+    );
+
+    await expect(lstat(stale).catch(() => null)).resolves.toBeNull();
+    await expect(lstat(active)).resolves.toMatchObject({
       isDirectory: expect.any(Function),
     });
+    await expect(lstat(fresh)).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    });
+    await expect(lstat(unknown)).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    });
+    expect((await lstat(linked)).isSymbolicLink()).toBe(true);
   });
 
   it("never returns external bytes after an object directory replacement", async () => {

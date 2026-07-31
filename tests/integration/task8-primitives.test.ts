@@ -363,6 +363,86 @@ describe.skipIf(!integrationEnabled).sequential(
       });
     });
 
+    it("rejects non-canonical and cross-run artifact URIs atomically", async () => {
+      await seedRun();
+
+      for (const uri of [
+        "artifact://run_2/report.json",
+        "artifact://run_1/%2e%2e",
+      ]) {
+        await expect(
+          prisma.$transaction((tx) =>
+            ingestEnvelope(tx, {
+              ...envelope,
+              rawArtifact: { ...envelope.rawArtifact!, uri },
+            })
+          ),
+        ).rejects.toMatchObject({ code: "ANALYSIS_CONTRACT_MISMATCH" });
+      }
+
+      await expect(counts()).resolves.toEqual({
+        runs: 1,
+        artifacts: 0,
+        observations: 0,
+        outbox: 0,
+      });
+      const run = await prisma.analysisRun.findUniqueOrThrow({
+        where: { id: "run_1" },
+      });
+      expect(run.status).toBe("queued");
+    });
+
+    it("repairs run state before marking and replaying recovered facts", async () => {
+      await seedRun();
+      await prisma.rawArtifact.create({
+        data: {
+          runId: envelope.runId,
+          uri: envelope.rawArtifact!.uri,
+          checksum: envelope.rawArtifact!.checksum,
+          mediaType: envelope.rawArtifact!.mediaType,
+          byteSize: envelope.rawArtifact!.byteSize,
+          sourceVersion: envelope.sourceVersion,
+          retentionAt: new Date("2027-01-27T01:01:00.000Z"),
+        },
+      });
+      await prisma.observation.createMany({
+        data: envelope.observations.map((observation) => ({
+          runId: envelope.runId,
+          kind: observation.kind,
+          subject: observation.subject,
+          value: observation.value,
+          surface: observation.surface ?? null,
+          observedAt: new Date(observation.observedAt),
+        })),
+      });
+
+      await prisma.$transaction((tx) => ingestEnvelope(tx, envelope));
+      const recovered = await prisma.analysisRun.findUniqueOrThrow({
+        where: { id: "run_1" },
+      });
+      expect(recovered).toMatchObject({
+        status: "succeeded",
+        startedAt: new Date("2026-07-31T01:00:00.000Z"),
+        finishedAt: new Date("2026-07-31T01:01:00.000Z"),
+        errorCode: null,
+        errorSummary: null,
+      });
+      await expect(counts()).resolves.toEqual({
+        runs: 1,
+        artifacts: 1,
+        observations: 1,
+        outbox: 1,
+      });
+
+      await prisma.$transaction((tx) => ingestEnvelope(tx, envelope));
+      await expect(counts()).resolves.toEqual({
+        runs: 1,
+        artifacts: 1,
+        observations: 1,
+        outbox: 1,
+      });
+    });
+
     it("rejects a different artifact checksum without changing facts", async () => {
       await seedRun();
       await prisma.$transaction((tx) => ingestEnvelope(tx, envelope));

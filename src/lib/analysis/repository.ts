@@ -9,6 +9,10 @@ import {
   createOutboxEvent,
   type CreateOutboxEvent,
 } from "@/lib/events/outbox";
+import {
+  ArtifactUriError,
+  parseArtifactUri,
+} from "@/lib/artifacts/uri";
 
 export type { CreateOutboxEvent } from "@/lib/events/outbox";
 
@@ -94,6 +98,48 @@ function envelopeHash(envelope: AnalysisEnvelope) {
 function safeErrorText(value: string, maximumLength: number) {
   return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ")
     .trim().slice(0, maximumLength);
+}
+
+function expectedRunState(envelope: AnalysisEnvelope) {
+  const persistedError = envelope.error;
+  return {
+    status: envelope.status,
+    startedAt: new Date(envelope.startedAt),
+    finishedAt: envelope.finishedAt === null
+      ? null
+      : new Date(envelope.finishedAt),
+    errorCode: persistedError === null
+      ? null
+      : safeErrorText(persistedError.code, 128),
+    errorSummary: persistedError === null
+      ? null
+      : safeErrorText(persistedError.message, 512),
+  };
+}
+
+function assertRunState(
+  run: {
+    status: RunStatus;
+    startedAt: Date | null;
+    finishedAt: Date | null;
+    errorCode: string | null;
+    errorSummary: string | null;
+  },
+  envelope: AnalysisEnvelope,
+) {
+  const expected = expectedRunState(envelope);
+  if (
+    run.status !== expected.status ||
+    run.startedAt?.getTime() !== expected.startedAt.getTime() ||
+    run.finishedAt?.getTime() !== expected.finishedAt?.getTime() ||
+    run.errorCode !== expected.errorCode ||
+    run.errorSummary !== expected.errorSummary
+  ) {
+    throw new AnalysisRepositoryError(
+      "ANALYSIS_REPLAY_CONFLICT",
+      "Analysis run state differs from the accepted replay.",
+    );
+  }
 }
 
 function observationSignature(observation: {
@@ -229,6 +275,25 @@ export async function ingestEnvelope(
   envelope: AnalysisEnvelope,
 ): Promise<void> {
   const parsed = analysisEnvelopeSchema.parse(envelope);
+  if (parsed.rawArtifact !== null) {
+    try {
+      const location = parseArtifactUri(parsed.rawArtifact.uri);
+      if (location.runId !== parsed.runId) {
+        throw new ArtifactUriError(
+          "Raw artifact URI does not belong to the analysis run.",
+        );
+      }
+    } catch (error) {
+      if (error instanceof ArtifactUriError) {
+        throw new AnalysisRepositoryError(
+          "ANALYSIS_CONTRACT_MISMATCH",
+          "Analysis raw artifact URI is invalid or belongs to another run.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
 
   await tx.$queryRaw`
     WITH acquired AS MATERIALIZED (
@@ -249,6 +314,11 @@ export async function ingestEnvelope(
       source: true,
       sourceVersion: true,
       adapterVersion: true,
+      status: true,
+      startedAt: true,
+      finishedAt: true,
+      errorCode: true,
+      errorSummary: true,
       artifacts: {
         select: {
           uri: true,
@@ -327,6 +397,7 @@ export async function ingestEnvelope(
         "Analysis envelope differs from the accepted replay.",
       );
     }
+    assertRunState(run, parsed);
     return;
   }
 
@@ -335,6 +406,10 @@ export async function ingestEnvelope(
   if (hasImmutableFacts) {
     assertArtifactFacts(run.artifacts, parsed);
     assertObservationFacts(run.observations, parsed);
+    await tx.analysisRun.update({
+      where: { id: parsed.runId },
+      data: expectedRunState(parsed),
+    });
     await createIngestMarker(tx, parsed.runId, hash);
     return;
   }
@@ -365,22 +440,9 @@ export async function ingestEnvelope(
     });
   }
 
-  const persistedError = parsed.error;
   await tx.analysisRun.update({
     where: { id: parsed.runId },
-    data: {
-      status: parsed.status,
-      startedAt: new Date(parsed.startedAt),
-      finishedAt: parsed.finishedAt === null
-        ? null
-        : new Date(parsed.finishedAt),
-      errorCode: persistedError === null
-        ? null
-        : safeErrorText(persistedError.code, 128),
-      errorSummary: persistedError === null
-        ? null
-        : safeErrorText(persistedError.message, 512),
-    },
+    data: expectedRunState(parsed),
   });
   await createIngestMarker(tx, parsed.runId, hash);
 }

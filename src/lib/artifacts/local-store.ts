@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readdir,
   realpath,
   rm,
   type FileHandle,
@@ -21,9 +22,14 @@ import {
 import { z } from "zod";
 
 import type { ArtifactStore, StoredArtifact } from "@/lib/artifacts/store";
+import {
+  ArtifactUriError,
+  createArtifactCoordinates,
+  parseArtifactUri as parseCanonicalArtifactUri,
+  type ArtifactCoordinates,
+} from "@/lib/artifacts/uri";
 
 const checksumPattern = /^sha256:[a-f0-9]{64}$/;
-const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const mediaTypePattern =
   /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=(?:"[^"\r\n]*"|[A-Za-z0-9!#$&^_.+-]+))*$/;
 const metadataSchema = z.object({
@@ -37,6 +43,9 @@ const metadataLimit = 4 * 1024;
 const helperConflictExitCode = 73;
 const helperUnavailableExitCode = 78;
 const helperErrorLimit = 4 * 1024;
+const defaultStaleStagingAgeMs = 24 * 60 * 60 * 1_000;
+const stagingNamePattern =
+  /^\.artifact-tmp-([1-9][0-9]{0,9})-([0-9]{1,16})-[A-Za-z0-9]{6}$/;
 
 export type ArtifactStoreErrorCode =
   | "ARTIFACT_ROOT_REQUIRED"
@@ -61,12 +70,6 @@ export class ArtifactStoreError extends Error {
   }
 }
 
-type ArtifactCoordinates = {
-  runId: string;
-  name: string;
-  uri: string;
-};
-
 type Identity = {
   device: number;
   inode: number;
@@ -90,6 +93,9 @@ type FileSnapshot = Identity & {
 export interface LocalArtifactStoreTestHooks {
   afterObjectSnapshot?: () => Promise<void>;
   beforePublishRename?: () => Promise<void>;
+  now?: () => number;
+  staleStagingAgeMs?: number;
+  isProcessAlive?: (pid: number) => boolean;
 }
 
 function unsafe(message: string, cause?: unknown): never {
@@ -98,26 +104,6 @@ function unsafe(message: string, cause?: unknown): never {
     message,
     cause === undefined ? undefined : { cause },
   );
-}
-
-function validateIdentifier(
-  value: string,
-  field: "runId" | "name",
-  maximumLength: number,
-) {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > maximumLength ||
-    value === "." ||
-    value === ".." ||
-    !identifierPattern.test(value)
-  ) {
-    throw new ArtifactStoreError(
-      "ARTIFACT_INPUT_INVALID",
-      `Invalid artifact ${field}.`,
-    );
-  }
 }
 
 function validateMediaType(mediaType: string) {
@@ -134,51 +120,28 @@ function validateMediaType(mediaType: string) {
 }
 
 function coordinates(runId: string, name: string): ArtifactCoordinates {
-  validateIdentifier(runId, "runId", 128);
-  validateIdentifier(name, "name", 255);
-  return {
-    runId,
-    name,
-    uri: `artifact://${runId}/${name}`,
-  };
+  try {
+    return createArtifactCoordinates(runId, name);
+  } catch (error) {
+    if (error instanceof ArtifactUriError) {
+      throw new ArtifactStoreError(
+        "ARTIFACT_INPUT_INVALID",
+        error.message,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 function parseArtifactUri(uri: string): ArtifactCoordinates {
-  if (
-    typeof uri !== "string" ||
-    uri.length > 512 ||
-    uri.includes("\0") ||
-    uri.includes("%") ||
-    uri.includes("\\") ||
-    uri.includes("?") ||
-    uri.includes("#")
-  ) {
-    throw new ArtifactStoreError(
-      "ARTIFACT_URI_INVALID",
-      "Artifact URI is not canonical.",
-    );
-  }
-  const match = /^artifact:\/\/([^/]+)\/([^/]+)$/.exec(uri);
-  if (!match) {
-    throw new ArtifactStoreError(
-      "ARTIFACT_URI_INVALID",
-      "Artifact URI is not canonical.",
-    );
-  }
   try {
-    const parsed = coordinates(match[1], match[2]);
-    if (parsed.uri !== uri) {
-      throw new Error("non-canonical");
-    }
-    return parsed;
+    return parseCanonicalArtifactUri(uri);
   } catch (error) {
-    if (
-      error instanceof ArtifactStoreError &&
-      error.code === "ARTIFACT_INPUT_INVALID"
-    ) {
+    if (error instanceof ArtifactUriError) {
       throw new ArtifactStoreError(
         "ARTIFACT_URI_INVALID",
-        "Artifact URI is not canonical.",
+        error.message,
         { cause: error },
       );
     }
@@ -223,17 +186,18 @@ function validatePhysicalBasename(name: string) {
   }
 }
 
-function asStoreError(error: unknown, notFoundCode = false): never {
+function processIsAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function asStoreError(error: unknown): never {
   if (error instanceof ArtifactStoreError) {
     throw error;
-  }
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  if (notFoundCode && code === "ENOENT") {
-    throw new ArtifactStoreError(
-      "ARTIFACT_NOT_FOUND",
-      "Artifact does not exist.",
-      { cause: error },
-    );
   }
   throw new ArtifactStoreError(
     "ARTIFACT_CORRUPT",
@@ -245,9 +209,28 @@ function asStoreError(error: unknown, notFoundCode = false): never {
 async function snapshotDirectory(
   path: string,
   expectedParent?: DirectorySnapshot,
+  missingBehavior: "unsafe" | "not-found" = "unsafe",
 ): Promise<DirectorySnapshot> {
+  let stat;
   try {
-    const stat = await lstat(path);
+    stat = await lstat(path);
+  } catch (error) {
+    if (
+      missingBehavior === "not-found" &&
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      if (expectedParent !== undefined) {
+        await verifyDirectory(expectedParent);
+      }
+      throw new ArtifactStoreError(
+        "ARTIFACT_NOT_FOUND",
+        "Artifact does not exist.",
+        { cause: error },
+      );
+    }
+    unsafe("Artifact directory identity could not be verified.", error);
+  }
+  try {
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
       unsafe("Artifact path contains a non-directory or symlink component.");
     }
@@ -263,7 +246,7 @@ async function snapshotDirectory(
     return { path, canonical, ...identityFrom(stat) };
   } catch (error) {
     if (error instanceof ArtifactStoreError) throw error;
-    unsafe("Artifact directory identity could not be verified.", error);
+    unsafe("Artifact directory identity changed while being verified.", error);
   }
 }
 
@@ -280,9 +263,26 @@ async function verifyDirectory(snapshot: DirectorySnapshot) {
 async function snapshotFile(
   path: string,
   expectedParent: DirectorySnapshot,
+  missingBehavior: "unsafe" | "corrupt" = "unsafe",
 ): Promise<FileSnapshot> {
+  let stat;
   try {
-    const stat = await lstat(path);
+    stat = await lstat(path);
+  } catch (error) {
+    if (
+      missingBehavior === "corrupt" &&
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      await verifyDirectory(expectedParent);
+      throw new ArtifactStoreError(
+        "ARTIFACT_CORRUPT",
+        "Stored artifact is missing a required file.",
+        { cause: error },
+      );
+    }
+    unsafe("Artifact file identity could not be verified.", error);
+  }
+  try {
     if (!stat.isFile() || stat.isSymbolicLink()) {
       unsafe("Artifact file is not a regular non-symlink file.");
     }
@@ -302,7 +302,7 @@ async function snapshotFile(
     };
   } catch (error) {
     if (error instanceof ArtifactStoreError) throw error;
-    unsafe("Artifact file identity could not be verified.", error);
+    unsafe("Artifact file identity changed while being verified.", error);
   }
 }
 
@@ -642,9 +642,65 @@ export class LocalArtifactStore implements ArtifactStore {
     }
   }
 
+  private async scavengeStaleStaging(root: RootSnapshot) {
+    const now = this.testHooks.now?.() ?? Date.now();
+    const minimumAge =
+      this.testHooks.staleStagingAgeMs ?? defaultStaleStagingAgeMs;
+    if (
+      !Number.isSafeInteger(now) ||
+      now < 0 ||
+      !Number.isSafeInteger(minimumAge) ||
+      minimumAge <= 0
+    ) {
+      unsafe("Artifact staging cleanup configuration is invalid.");
+    }
+
+    await verifyRoot(root);
+    const entries = await readdir(root.path, { withFileTypes: true }).catch(
+      (error) => unsafe("Artifact staging root could not be inspected.", error),
+    );
+    for (const entry of entries) {
+      const match = stagingNamePattern.exec(entry.name);
+      if (!match || !entry.isDirectory() || entry.isSymbolicLink()) {
+        continue;
+      }
+      const pid = Number(match[1]);
+      const createdAt = Number(match[2]);
+      const path = join(root.path, entry.name);
+      let stat;
+      try {
+        stat = await lstat(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        unsafe("Artifact staging candidate could not be inspected.", error);
+      }
+      if (
+        !stat.isDirectory() ||
+        stat.isSymbolicLink() ||
+        now - Math.max(createdAt, stat.mtimeMs) < minimumAge
+      ) {
+        continue;
+      }
+      const alive = this.testHooks.isProcessAlive?.(pid) ??
+        processIsAlive(pid);
+      if (alive) continue;
+
+      const stale = await snapshotDirectory(path, root);
+      await verifyChain(root, stale);
+      await cleanupOwnedDirectory(stale, [path]);
+    }
+    await verifyRoot(root);
+  }
+
   private async createStagingDirectory(root: RootSnapshot) {
     await verifyRoot(root);
-    const path = await mkdtemp(join(root.path, ".artifact-tmp-"));
+    const now = this.testHooks.now?.() ?? Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      unsafe("Artifact staging clock is invalid.");
+    }
+    const path = await mkdtemp(
+      join(root.path, `.artifact-tmp-${process.pid}-${now}-`),
+    );
     const staging = await snapshotDirectory(path, root);
     await verifyChain(root, staging);
     return staging;
@@ -694,6 +750,7 @@ export class LocalArtifactStore implements ArtifactStore {
     mediaType: string,
   ): Promise<StoredArtifact> {
     const root = await this.trustedRoot();
+    await this.scavengeStaleStaging(root);
     const rootHandle = await openTrustedRoot(root);
     const checksum = artifactChecksum(body);
     const stored: StoredArtifact = {
@@ -802,10 +859,11 @@ export class LocalArtifactStore implements ArtifactStore {
     object: DirectorySnapshot,
     name: string,
     expectedSize?: number,
+    maximumSize?: number,
   ) {
     await verifyChain(root, object);
     const path = join(object.path, name);
-    const before = await snapshotFile(path, object);
+    const before = await snapshotFile(path, object, "corrupt");
     if (
       expectedSize !== undefined &&
       before.byteSize !== expectedSize
@@ -815,17 +873,49 @@ export class LocalArtifactStore implements ArtifactStore {
         "Artifact file size does not match trusted metadata.",
       );
     }
-    const handle = await open(
-      path,
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
+    if (maximumSize !== undefined && before.byteSize > maximumSize) {
+      throw new ArtifactStoreError(
+        "ARTIFACT_CORRUPT",
+        "Artifact file exceeds its verified size limit.",
+      );
+    }
+    let handle: FileHandle;
+    try {
+      handle = await open(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        unsafe("Artifact file changed before it could be opened.", error);
+      }
+      throw error;
+    }
     try {
       if (!sameIdentity(identityFrom(await handle.stat()), before)) {
         unsafe("Artifact read handle did not match its trusted path.");
       }
       await verifyFile(before, object);
       await verifyChain(root, object);
-      const bytes = await handle.readFile();
+      const bytes = Buffer.allocUnsafe(before.byteSize);
+      let offset = 0;
+      while (offset < before.byteSize) {
+        const { bytesRead } = await handle.read(
+          bytes,
+          offset,
+          before.byteSize - offset,
+          offset,
+        );
+        if (bytesRead === 0) {
+          unsafe("Artifact file was truncated while reading.");
+        }
+        offset += bytesRead;
+      }
+      const probe = Buffer.allocUnsafe(1);
+      const trailing = await handle.read(probe, 0, 1, before.byteSize);
+      if (trailing.bytesRead !== 0) {
+        unsafe("Artifact file grew while reading.");
+      }
       const afterStat = await handle.stat();
       const after: FileSnapshot = {
         path,
@@ -852,7 +942,7 @@ export class LocalArtifactStore implements ArtifactStore {
     try {
       const root = await this.trustedRoot();
       const objectPath = join(root.path, physicalObjectName(location));
-      const object = await snapshotDirectory(objectPath, root);
+      const object = await snapshotDirectory(objectPath, root, "not-found");
       await this.testHooks.afterObjectSnapshot?.();
       await verifyChain(root, object);
 
@@ -860,10 +950,11 @@ export class LocalArtifactStore implements ArtifactStore {
         root,
         object,
         "metadata.json",
+        undefined,
+        metadataLimit,
       );
       if (
-        metadataRead.bytes.byteLength === 0 ||
-        metadataRead.bytes.byteLength > metadataLimit
+        metadataRead.bytes.byteLength === 0
       ) {
         throw new ArtifactStoreError(
           "ARTIFACT_CORRUPT",
@@ -902,7 +993,7 @@ export class LocalArtifactStore implements ArtifactStore {
       await verifyChain(root, object);
       return { metadata: parsed.data, body: payloadRead.bytes };
     } catch (error) {
-      return asStoreError(error, true);
+      return asStoreError(error);
     }
   }
 }
