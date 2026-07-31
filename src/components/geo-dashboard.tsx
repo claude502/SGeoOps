@@ -2,7 +2,6 @@
 
 import {
   Activity,
-  BarChart3,
   BookOpenText,
   Bot,
   CalendarClock,
@@ -16,18 +15,22 @@ import {
   Lightbulb,
   Link2,
   Loader2,
-  Megaphone,
   Network,
   Play,
   Plus,
   RefreshCw,
   Send,
-  Settings,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
+import {
+  LOCAL_PANEL_NAV_ITEMS,
+  OPERATIONS_NAV_ITEMS,
+  type NavSection,
+} from "@/components/geo-navigation";
 import type {
   ChannelPlatform,
   ChannelVariant,
@@ -52,7 +55,6 @@ type ActionState =
   | "geoflow"
   | "sync"
   | "workspace";
-type NavSection = "overview" | "assets" | "runs" | "channels" | "settings";
 type ToastTone = "info" | "success" | "danger";
 type ToastMessage = { text: string; tone: ToastTone } | null;
 
@@ -60,14 +62,6 @@ const actionHeaders = {
   "content-type": "application/json",
   "x-geo-ops-action": "true",
 };
-
-const navItems = [
-  { id: "overview", label: "总览 / Overview", icon: BarChart3 },
-  { id: "assets", label: "资产 / Assets", icon: FileText },
-  { id: "runs", label: "监测 / GEO Runs", icon: Bot },
-  { id: "channels", label: "渠道 / Channels", icon: Megaphone },
-  { id: "settings", label: "设置 / Settings", icon: Settings },
-] satisfies Array<{ id: NavSection; label: string; icon: typeof BarChart3 }>;
 
 const emptyAssetDraft = {
   title: "",
@@ -220,7 +214,7 @@ function MetricTile({
   );
 }
 
-function Sidebar({
+export function Sidebar({
   activeSection,
   onSelect,
 }: {
@@ -237,10 +231,11 @@ function Sidebar({
       </div>
 
       <nav aria-label="Primary navigation" className="nav-list">
-        {navItems.map((item) => {
+        {LOCAL_PANEL_NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           return (
             <button
+              aria-label={item.label}
               aria-current={activeSection === item.id ? "page" : undefined}
               className={clsx("nav-item", activeSection === item.id && "nav-item-active")}
               key={item.label}
@@ -250,6 +245,20 @@ function Sidebar({
               <Icon size={18} />
               <span>{item.label}</span>
             </button>
+          );
+        })}
+        {OPERATIONS_NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link
+              aria-label={item.label}
+              className="nav-item"
+              href={item.href}
+              key={item.href}
+            >
+              <Icon aria-hidden="true" size={18} />
+              <span>{item.label}</span>
+            </Link>
           );
         })}
       </nav>

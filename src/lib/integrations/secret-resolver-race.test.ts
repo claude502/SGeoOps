@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const race = vi.hoisted(() => ({
   beforeOpen: null as null | (() => Promise<void>),
+  beforeRead: null as null | (() => Promise<void>),
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -21,7 +22,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ...actual,
     open: async (...args: Parameters<typeof actual.open>) => {
       await race.beforeOpen?.();
-      return actual.open(...args);
+      const handle = await actual.open(...args);
+      const originalRead = handle.read.bind(handle);
+      handle.read = async (...readArgs: Parameters<typeof handle.read>) => {
+        await race.beforeRead?.();
+        return originalRead(...readArgs);
+      };
+      return handle;
     },
   };
 });
@@ -32,6 +39,7 @@ const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   race.beforeOpen = null;
+  race.beforeRead = null;
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true }),
@@ -72,5 +80,24 @@ describe("FileSecretResolver adversarial races", () => {
         await rename(parked, live);
       }
     }
+  });
+
+  it("fails closed when a secret grows past the byte limit during reading", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sgeo-secret-growth-hook-"));
+    temporaryDirectories.push(root);
+    const token = join(root, "token");
+    await writeFile(token, "inside-secret");
+    const resolver = new FileSecretResolver({ SGEO_SECRET_ROOT: root });
+    let attacked = false;
+
+    race.beforeRead = async () => {
+      if (attacked) return;
+      attacked = true;
+      await writeFile(token, Buffer.alloc(64 * 1024 + 1, 0x61));
+    };
+
+    await expect(resolver.resolve("file:token")).rejects.toThrow(
+      "SECRET_TOO_LARGE",
+    );
   });
 });

@@ -9,7 +9,12 @@ export async function GET(request: Request) {
   try {
     const scope = await requireAccessScope(request);
     const clients = await organizationRepository.listClients(scope);
-    return NextResponse.json({ clients });
+    return NextResponse.json({
+      clients,
+      permissions: {
+        canCreateClient: scope.role === "Admin",
+      },
+    });
   } catch (error) {
     return organizationRouteError(error);
   }

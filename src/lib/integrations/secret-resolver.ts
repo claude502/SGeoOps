@@ -9,6 +9,7 @@ import {
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 export type SecretRef = `file:${string}`;
+export const MAX_SECRET_BYTES = 64 * 1024;
 
 export interface SecretResolver {
   resolve(reference: SecretRef): Promise<string>;
@@ -39,6 +40,12 @@ function secretError(code: string): SecretResolutionError {
 
 function sameIdentity(left: FileIdentity, right: FileIdentity) {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function enforceSecretSize(size: bigint | number) {
+  if (size > BigInt(MAX_SECRET_BYTES)) {
+    throw secretError("SECRET_TOO_LARGE");
+  }
 }
 
 function isInsideRoot(root: string, target: string) {
@@ -162,6 +169,7 @@ async function loadTrustedTarget(
     if (!targetStat.isFile()) {
       throw secretError("SECRET_NOT_REGULAR_FILE");
     }
+    enforceSecretSize(targetStat.size);
     return {
       canonicalPath,
       identity: targetStat,
@@ -194,7 +202,6 @@ async function validateTrustedSnapshot(
     ) {
       throw secretError("SECRET_IDENTITY_CHANGED");
     }
-
     await validateNoSymlinkComponents(
       root.canonicalPath,
       segments,
@@ -208,7 +215,6 @@ async function validateTrustedSnapshot(
     ) {
       throw secretError("SECRET_IDENTITY_CHANGED");
     }
-
     const [currentTargetStat, handleStat] = await Promise.all([
       stat(currentTarget, { bigint: true }),
       handle.stat({ bigint: true }),
@@ -221,6 +227,8 @@ async function validateTrustedSnapshot(
     ) {
       throw secretError("SECRET_IDENTITY_CHANGED");
     }
+    enforceSecretSize(currentTargetStat.size);
+    enforceSecretSize(handleStat.size);
   } catch (error) {
     if (error instanceof SecretResolutionError) {
       throw error;
@@ -262,6 +270,7 @@ export class FileSecretResolver implements SecretResolver {
       ) {
         throw secretError("SECRET_IDENTITY_CHANGED");
       }
+      enforceSecretSize(openedStat.size);
 
       await validateTrustedSnapshot(
         root,
@@ -270,7 +279,15 @@ export class FileSecretResolver implements SecretResolver {
         segments,
         handle,
       );
-      const bytes = await handle.readFile();
+      const readBuffer = Buffer.allocUnsafe(MAX_SECRET_BYTES + 1);
+      const { bytesRead } = await handle.read(
+        readBuffer,
+        0,
+        readBuffer.length,
+        0,
+      );
+      enforceSecretSize(bytesRead);
+      const bytes = readBuffer.subarray(0, bytesRead);
       await validateTrustedSnapshot(
         root,
         target,
@@ -278,7 +295,19 @@ export class FileSecretResolver implements SecretResolver {
         segments,
         handle,
       );
-      return stripOneTrailingNewline(bytes).toString("utf8");
+      const normalized = stripOneTrailingNewline(bytes);
+      if (normalized.length === 0) {
+        throw secretError("SECRET_EMPTY");
+      }
+
+      try {
+        return new TextDecoder("utf-8", {
+          fatal: true,
+          ignoreBOM: true,
+        }).decode(normalized);
+      } catch {
+        throw secretError("SECRET_INVALID_UTF8");
+      }
     } catch (error) {
       if (error instanceof SecretResolutionError) {
         throw error;

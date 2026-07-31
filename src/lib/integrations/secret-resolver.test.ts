@@ -1,6 +1,6 @@
 import {
-  mkdtemp,
   mkdir,
+  mkdtemp,
   rename,
   rm,
   symlink,
@@ -11,7 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { FileSecretResolver } from "@/lib/integrations/secret-resolver";
+import {
+  FileSecretResolver,
+  MAX_SECRET_BYTES,
+} from "@/lib/integrations/secret-resolver";
 
 const temporaryDirectories: string[] = [];
 
@@ -47,6 +50,43 @@ describe("FileSecretResolver", () => {
     await expect(resolver.resolve("file:lf")).resolves.toBe(" secret ");
     await expect(resolver.resolve("file:crlf")).resolves.toBe("secret");
     await expect(resolver.resolve("file:double")).resolves.toBe("secret\n");
+  });
+
+  it("rejects files larger than the secret byte limit", async () => {
+    const root = await temporaryDirectory("sgeo-secret-root-");
+    await writeFile(
+      join(root, "oversize"),
+      Buffer.alloc(MAX_SECRET_BYTES + 1, 0x61),
+    );
+    const resolver = new FileSecretResolver({ SGEO_SECRET_ROOT: root });
+
+    await expect(resolver.resolve("file:oversize")).rejects.toThrow(
+      "SECRET_TOO_LARGE",
+    );
+  });
+
+  it("rejects invalid UTF-8", async () => {
+    const root = await temporaryDirectory("sgeo-secret-root-");
+    await writeFile(join(root, "invalid"), Buffer.from([0xc3, 0x28]));
+    const resolver = new FileSecretResolver({ SGEO_SECRET_ROOT: root });
+
+    await expect(resolver.resolve("file:invalid")).rejects.toThrow(
+      "SECRET_INVALID_UTF8",
+    );
+  });
+
+  it.each([
+    ["empty", Buffer.alloc(0)],
+    ["lf-only", Buffer.from("\n")],
+    ["crlf-only", Buffer.from("\r\n")],
+  ])("rejects an empty secret after newline handling: %s", async (name, bytes) => {
+    const root = await temporaryDirectory("sgeo-secret-root-");
+    await writeFile(join(root, name), bytes);
+    const resolver = new FileSecretResolver({ SGEO_SECRET_ROOT: root });
+
+    await expect(resolver.resolve(`file:${name}` as never)).rejects.toThrow(
+      "SECRET_EMPTY",
+    );
   });
 
   it.each([

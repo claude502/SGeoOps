@@ -60,10 +60,29 @@ describe("/api/clients", () => {
           updatedAt: "2026-07-31T00:00:00.000Z",
         },
       ],
+      permissions: {
+        canCreateClient: false,
+      },
     });
     expect(mocks.listClients).toHaveBeenCalledWith(
       expect.objectContaining({ actorId: "operator_a", role: "Viewer" }),
     );
+  });
+
+  it("reports client creation permission for Admin", async () => {
+    mocks.requireAccessScope.mockResolvedValue({ ...operator, role: "Admin" });
+    mocks.listClients.mockResolvedValue([]);
+    const { GET } = await import("./route");
+
+    const response = await GET(new Request("http://localhost/api/clients"));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      clients: [],
+      permissions: {
+        canCreateClient: true,
+      },
+    });
   });
 
   it("returns 401 when the request has no session", async () => {
