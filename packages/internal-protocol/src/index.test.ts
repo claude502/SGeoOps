@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   signInternalRequest,
   verifyInternalRequest,
@@ -11,6 +11,15 @@ const METHOD = "POST";
 const PATHNAME = "/ingest";
 const BODY = "{\"status\":\"ready\"}";
 const SIGNED_AT = 1_785_438_000;
+
+function createHmacPoisonSecret(): string {
+  return {
+    length: 1,
+    [Symbol.toPrimitive]() {
+      throw new Error("HMAC must not run for an invalid timestamp");
+    },
+  } as unknown as string;
+}
 
 async function sign(
   overrides: {
@@ -97,6 +106,60 @@ describe("internal request signatures", () => {
     const signed = await sign();
 
     expect(await verify({ ...signed, timestamp })).toBe(false);
+  });
+
+  it("accepts Number.MAX_SAFE_INTEGER and applies the clock window", async () => {
+    const signed = await sign({ nowSeconds: Number.MAX_SAFE_INTEGER });
+
+    expect(await verify(signed, {
+      nowSeconds: Number.MAX_SAFE_INTEGER,
+    })).toBe(true);
+    expect(await verify(signed, {
+      nowSeconds: Number.MAX_SAFE_INTEGER - 300,
+    })).toBe(true);
+    expect(await verify(signed, {
+      nowSeconds: Number.MAX_SAFE_INTEGER - 301,
+    })).toBe(false);
+  });
+
+  it("rejects Number.MAX_SAFE_INTEGER + 1 before HMAC", async () => {
+    const signed = await sign({ nowSeconds: Number.MAX_SAFE_INTEGER });
+
+    await expect(verifyInternalRequest(
+      createHmacPoisonSecret(),
+      {
+        ...signed,
+        timestamp: String(Number.MAX_SAFE_INTEGER + 1),
+      },
+      METHOD,
+      PATHNAME,
+      BODY,
+      Number.MAX_SAFE_INTEGER,
+    )).resolves.toBe(false);
+  });
+
+  it.each([
+    ["thousands", "9".repeat(4_096)],
+    ["one million", "9".repeat(1_000_000)],
+  ])("rejects %s of timestamp digits before BigInt or HMAC", async (_size, timestamp) => {
+    const signed = await sign();
+    const bigIntSpy = vi.spyOn(globalThis, "BigInt").mockImplementation(() => {
+      throw new Error("BigInt must not parse an oversized timestamp");
+    });
+
+    try {
+      await expect(verifyInternalRequest(
+        createHmacPoisonSecret(),
+        { ...signed, timestamp },
+        METHOD,
+        PATHNAME,
+        BODY,
+        SIGNED_AT,
+      )).resolves.toBe(false);
+      expect(bigIntSpy).not.toHaveBeenCalled();
+    } finally {
+      bigIntSpy.mockRestore();
+    }
   });
 
   it.each([

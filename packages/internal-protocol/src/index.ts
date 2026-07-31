@@ -7,13 +7,26 @@ export interface InternalSignature {
 
 export type InternalRequestBody = string | Uint8Array;
 
-const MAX_CLOCK_SKEW_SECONDS = BigInt(300);
+const MAX_CLOCK_SKEW_SECONDS = 300;
+const MAX_TIMESTAMP_LENGTH = 16;
 const CANONICAL_TIMESTAMP_PATTERN = /^(0|[1-9]\d*)$/;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 
 function resolveNowSeconds(nowSeconds?: number): number | null {
   const resolved = nowSeconds ?? Math.floor(Date.now() / 1_000);
   return Number.isSafeInteger(resolved) && resolved >= 0 ? resolved : null;
+}
+
+function parseCanonicalTimestamp(timestamp: string): number | null {
+  if (
+    timestamp.length > MAX_TIMESTAMP_LENGTH ||
+    !CANONICAL_TIMESTAMP_PATTERN.test(timestamp)
+  ) {
+    return null;
+  }
+
+  const parsed = Number(timestamp);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function createCanonicalInput(
@@ -79,7 +92,6 @@ export async function verifyInternalRequest(
     secret.length === 0 ||
     typeof signed?.timestamp !== "string" ||
     typeof signed?.signature !== "string" ||
-    !CANONICAL_TIMESTAMP_PATTERN.test(signed.timestamp) ||
     !SHA256_HEX_PATTERN.test(signed.signature)
   ) {
     return false;
@@ -90,10 +102,12 @@ export async function verifyInternalRequest(
     return false;
   }
 
-  const signedAt = BigInt(signed.timestamp);
-  const clockSkew = signedAt > BigInt(resolvedNowSeconds)
-    ? signedAt - BigInt(resolvedNowSeconds)
-    : BigInt(resolvedNowSeconds) - signedAt;
+  const signedAt = parseCanonicalTimestamp(signed.timestamp);
+  if (signedAt === null) {
+    return false;
+  }
+
+  const clockSkew = Math.abs(signedAt - resolvedNowSeconds);
   if (clockSkew > MAX_CLOCK_SKEW_SECONDS) {
     return false;
   }
