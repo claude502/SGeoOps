@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -16,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ArtifactStoreError,
   LocalArtifactStore,
+  type LocalArtifactStoreTestHooks,
 } from "@/lib/artifacts/local-store";
 
 const temporaryRoots: string[] = [];
@@ -24,6 +26,33 @@ async function temporaryRoot() {
   const root = await mkdtemp(join(tmpdir(), "sgeo-artifacts-"));
   temporaryRoots.push(root);
   return root;
+}
+
+function storeWithHooks(
+  root: string,
+  hooks: LocalArtifactStoreTestHooks,
+) {
+  return new LocalArtifactStore(root, {}, hooks);
+}
+
+function checksum(body: Uint8Array) {
+  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+}
+
+async function writeArtifactObject(
+  objectDirectory: string,
+  uri: string,
+  body: Uint8Array,
+) {
+  await mkdir(objectDirectory, { recursive: true });
+  await writeFile(join(objectDirectory, "payload"), body);
+  await writeFile(join(objectDirectory, "metadata.json"), JSON.stringify({
+    version: 1,
+    uri,
+    checksum: checksum(body),
+    mediaType: "application/octet-stream",
+    byteSize: body.byteLength,
+  }));
 }
 
 afterEach(async () => {
@@ -255,5 +284,98 @@ describe("LocalArtifactStore", () => {
     expect((await lstat(join(root, "run_link"))).isSymbolicLink()).toBe(true);
     expect(await readFile(join(outside, "missing"), "utf8").catch(() => null))
       .toBeNull();
+  });
+
+  it("fails closed when the run directory is replaced after write validation", async () => {
+    const root = await temporaryRoot();
+    const outside = await temporaryRoot();
+    const displacedRun = join(root, "run_displaced");
+    let replaced = false;
+    const store = storeWithHooks(root, {
+      async afterRunSnapshot() {
+        if (replaced) return;
+        replaced = true;
+        await rename(join(root, "run_1"), displacedRun);
+        await symlink(outside, join(root, "run_1"), "dir");
+      },
+    });
+
+    await expect(
+      store.put(
+        "run_1",
+        "report.bin",
+        new Uint8Array([4, 5, 6]),
+        "application/octet-stream",
+      ),
+    ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
+
+    await expect(
+      lstat(join(outside, "report.bin")).catch(() => null),
+    ).resolves.toBeNull();
+    expect(
+      (await readdir(outside))
+        .filter((name) => name.startsWith(".artifact-tmp-")),
+    ).toEqual([]);
+  });
+
+  it("removes an external publication when the run changes at rename", async () => {
+    const root = await temporaryRoot();
+    const outside = await temporaryRoot();
+    const displacedRun = join(root, "run_displaced");
+    let replaced = false;
+    const store = storeWithHooks(root, {
+      async beforePublishRename() {
+        if (replaced) return;
+        replaced = true;
+        await rename(join(root, "run_1"), displacedRun);
+        await symlink(outside, join(root, "run_1"), "dir");
+      },
+    });
+
+    await expect(
+      store.put(
+        "run_1",
+        "report.bin",
+        new Uint8Array([4, 5, 6]),
+        "application/octet-stream",
+      ),
+    ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
+
+    await expect(
+      lstat(join(outside, "report.bin")).catch(() => null),
+    ).resolves.toBeNull();
+  });
+
+  it("never returns external bytes after an object directory replacement", async () => {
+    const root = await temporaryRoot();
+    const outside = await temporaryRoot();
+    const seed = new LocalArtifactStore(root);
+    const trustedBody = new Uint8Array([1, 2, 3]);
+    const externalBody = new Uint8Array([9, 8, 7]);
+    await seed.put(
+      "run_1",
+      "report.bin",
+      trustedBody,
+      "application/octet-stream",
+    );
+    await writeArtifactObject(
+      join(outside, "report.bin"),
+      "artifact://run_1/report.bin",
+      externalBody,
+    );
+
+    let replaced = false;
+    const store = storeWithHooks(root, {
+      async afterObjectSnapshot() {
+        if (replaced) return;
+        replaced = true;
+        await rename(join(root, "run_1"), join(root, "run_displaced"));
+        await symlink(outside, join(root, "run_1"), "dir");
+      },
+    });
+
+    await expect(
+      store.get("artifact://run_1/report.bin"),
+    ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
   });
 });

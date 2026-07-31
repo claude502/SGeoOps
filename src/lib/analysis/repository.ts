@@ -12,7 +12,9 @@ import {
 
 export type { CreateOutboxEvent } from "@/lib/events/outbox";
 
-const retentionMilliseconds = 90 * 24 * 60 * 60 * 1_000;
+export const RAW_ARTIFACT_RETENTION_DAYS = 180;
+const retentionMilliseconds =
+  RAW_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 const ingestAggregateType = "AnalysisRunIngest";
 const ingestEventType = "analysis_run.ingested";
 
@@ -363,7 +365,7 @@ export async function ingestEnvelope(
     });
   }
 
-  const failedError = parsed.status === "failed" ? parsed.error : null;
+  const persistedError = parsed.error;
   await tx.analysisRun.update({
     where: { id: parsed.runId },
     data: {
@@ -372,12 +374,12 @@ export async function ingestEnvelope(
       finishedAt: parsed.finishedAt === null
         ? null
         : new Date(parsed.finishedAt),
-      errorCode: failedError === null
+      errorCode: persistedError === null
         ? null
-        : safeErrorText(failedError.code, 128),
-      errorSummary: failedError === null
+        : safeErrorText(persistedError.code, 128),
+      errorSummary: persistedError === null
         ? null
-        : safeErrorText(failedError.message, 512),
+        : safeErrorText(persistedError.message, 512),
     },
   });
   await createIngestMarker(tx, parsed.runId, hash);

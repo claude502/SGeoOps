@@ -176,7 +176,7 @@ describe("ingestEnvelope", () => {
         mediaType: "application/json",
         byteSize: 42,
         sourceVersion: "2.0.0",
-        retentionAt: new Date("2026-10-29T01:01:00.000Z"),
+        retentionAt: new Date("2027-01-27T01:01:00.000Z"),
       }),
     });
     expect(database.observation.createMany).toHaveBeenCalledWith({
@@ -223,7 +223,7 @@ describe("ingestEnvelope", () => {
         mediaType: envelope.rawArtifact!.mediaType,
         byteSize: envelope.rawArtifact!.byteSize,
         sourceVersion: envelope.sourceVersion,
-        retentionAt: new Date("2026-10-29T01:01:00.000Z"),
+        retentionAt: new Date("2027-01-27T01:01:00.000Z"),
       }],
       observations: [{
         kind: "http_status",
@@ -252,7 +252,7 @@ describe("ingestEnvelope", () => {
         ...envelope.rawArtifact,
         checksum: `sha256:${"b".repeat(64)}`,
         sourceVersion: envelope.sourceVersion,
-        retentionAt: new Date("2026-10-29T01:01:00.000Z"),
+        retentionAt: new Date("2027-01-27T01:01:00.000Z"),
       }],
     }));
 
@@ -321,6 +321,72 @@ describe("ingestEnvelope", () => {
     expect(update.errorCode.length).toBeLessThanOrEqual(128);
     expect(update.errorSummary.length).toBeLessThanOrEqual(512);
     expect(update.errorSummary).not.toMatch(/[\n\t]/);
+  });
+
+  it.each(["partial", "retrying"] as const)(
+    "persists a bounded non-null error for %s envelopes",
+    async (status) => {
+      const database = analysisDatabase();
+      const withError = {
+        ...envelope,
+        status,
+        error: {
+          code: `${status.toUpperCase()}_${"X".repeat(200)}`,
+          message: `${status}\n${"detail ".repeat(100)}`,
+          retryable: status === "retrying",
+        },
+      } satisfies AnalysisEnvelope;
+
+      await ingestEnvelope(database as never, withError);
+
+      const update = database.analysisRun.update.mock.calls[0]?.[0].data;
+      expect(update.errorCode).toBeTruthy();
+      expect(update.errorCode.length).toBeLessThanOrEqual(128);
+      expect(update.errorSummary).toBeTruthy();
+      expect(update.errorSummary.length).toBeLessThanOrEqual(512);
+      expect(update.errorSummary).not.toMatch(/[\n\t]/);
+    },
+  );
+
+  it("replays an identical partial envelope with error without writes", async () => {
+    const partial = {
+      ...envelope,
+      status: "partial",
+      error: {
+        code: "PROVIDER_PARTIAL",
+        message: "Provider returned incomplete evidence.",
+        retryable: true,
+      },
+    } satisfies AnalysisEnvelope;
+    const initial = analysisDatabase();
+    await ingestEnvelope(initial as never, partial);
+    const markerPayload = initial.outboxEvent.create.mock.calls[0]?.[0].data.payload;
+    const database = analysisDatabase(existingRun({
+      artifacts: [{
+        uri: partial.rawArtifact!.uri,
+        checksum: partial.rawArtifact!.checksum,
+        mediaType: partial.rawArtifact!.mediaType,
+        byteSize: partial.rawArtifact!.byteSize,
+        sourceVersion: partial.sourceVersion,
+        retentionAt: new Date("2027-01-27T01:01:00.000Z"),
+      }],
+      observations: [{
+        kind: "http_status",
+        subject: "https://example.com/",
+        value: { status: 200 },
+        surface: "api",
+        observedAt: new Date("2026-07-31T01:00:30.000Z"),
+      }],
+    }));
+    database.outboxEvent.findMany.mockResolvedValue([{
+      id: "marker_1",
+      payload: markerPayload,
+    }]);
+
+    await ingestEnvelope(database as never, partial);
+
+    expect(database.analysisRun.update).not.toHaveBeenCalled();
+    expect(database.outboxEvent.create).not.toHaveBeenCalled();
   });
 
   it("uses stable repository error instances", () => {

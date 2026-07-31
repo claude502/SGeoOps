@@ -304,6 +304,12 @@ describe.skipIf(!integrationEnabled).sequential(
         errorCode: null,
         errorSummary: null,
       });
+      const artifact = await prisma.rawArtifact.findUniqueOrThrow({
+        where: { uri: "artifact://run_1/report.json" },
+      });
+      expect(artifact.retentionAt).toEqual(
+        new Date("2027-01-27T01:01:00.000Z"),
+      );
 
       await prisma.$transaction((tx) => ingestEnvelope(tx, envelope));
       await expect(counts()).resolves.toEqual({
@@ -318,6 +324,37 @@ describe.skipIf(!integrationEnabled).sequential(
           ingestEnvelope(tx, { ...envelope, clientId: "client_2" })
         ),
       ).rejects.toMatchObject({ code: "ANALYSIS_OWNERSHIP_MISMATCH" });
+      await expect(counts()).resolves.toEqual({
+        runs: 1,
+        artifacts: 1,
+        observations: 1,
+        outbox: 1,
+      });
+    });
+
+    it("persists and replays partial errors", async () => {
+      await seedRun();
+      const partial = {
+        ...envelope,
+        status: "partial",
+        error: {
+          code: "PROVIDER_PARTIAL",
+          message: "Provider returned incomplete evidence.",
+          retryable: true,
+        },
+      } satisfies AnalysisEnvelope;
+
+      await prisma.$transaction((tx) => ingestEnvelope(tx, partial));
+      await prisma.$transaction((tx) => ingestEnvelope(tx, partial));
+
+      const run = await prisma.analysisRun.findUniqueOrThrow({
+        where: { id: "run_1" },
+      });
+      expect(run).toMatchObject({
+        status: "partial",
+        errorCode: "PROVIDER_PARTIAL",
+        errorSummary: "Provider returned incomplete evidence.",
+      });
       await expect(counts()).resolves.toEqual({
         runs: 1,
         artifacts: 1,
