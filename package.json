@@ -8,7 +8,11 @@
     "packages/*"
   ],
   "scripts": {
+    "native:build": "node scripts/build-renameat-helper.mjs",
+    "postinstall": "npm run native:build",
+    "predev": "npm run native:build",
     "dev": "next dev",
+    "prebuild": "npm run native:build",
     "build": "next build",
     "start": "next start",
     "prisma:generate": "prisma generate",
@@ -17,8 +21,11 @@
     "prisma:seed": "node prisma/seed.mjs",
     "auth:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run native:build",
     "test": "vitest run",
+    "pretest:unit": "npm run native:build",
     "test:unit": "vitest run",
+    "pretest:integration": "npm run native:build",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "verify": "npm run prisma:generate && npm run test:unit && npm run typecheck && npm run build"
   },

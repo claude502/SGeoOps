@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import {
   lstat,
@@ -6,10 +7,17 @@ import {
   mkdtemp,
   open,
   realpath,
-  rename,
   rm,
+  type FileHandle,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { z } from "zod";
 
 import type { ArtifactStore, StoredArtifact } from "@/lib/artifacts/store";
@@ -26,6 +34,9 @@ const metadataSchema = z.object({
   byteSize: z.number().int().nonnegative().max(2_147_483_647),
 }).strict();
 const metadataLimit = 4 * 1024;
+const helperConflictExitCode = 73;
+const helperUnavailableExitCode = 78;
+const helperErrorLimit = 4 * 1024;
 
 export type ArtifactStoreErrorCode =
   | "ARTIFACT_ROOT_REQUIRED"
@@ -35,7 +46,9 @@ export type ArtifactStoreErrorCode =
   | "ARTIFACT_PATH_UNSAFE"
   | "ARTIFACT_NOT_FOUND"
   | "ARTIFACT_CONFLICT"
-  | "ARTIFACT_CORRUPT";
+  | "ARTIFACT_CORRUPT"
+  | "ARTIFACT_PUBLISH_UNAVAILABLE"
+  | "ARTIFACT_PUBLISH_FAILED";
 
 export class ArtifactStoreError extends Error {
   constructor(
@@ -75,7 +88,6 @@ type FileSnapshot = Identity & {
 };
 
 export interface LocalArtifactStoreTestHooks {
-  afterRunSnapshot?: (operation: "put" | "get") => Promise<void>;
   afterObjectSnapshot?: () => Promise<void>;
   beforePublishRename?: () => Promise<void>;
 }
@@ -192,6 +204,23 @@ function sameIdentity(left: Identity, right: Identity) {
 
 function artifactChecksum(body: Uint8Array) {
   return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+}
+
+function physicalObjectName(location: ArtifactCoordinates) {
+  return `artifact-${createHash("sha256").update(location.uri).digest("hex")}`;
+}
+
+function validatePhysicalBasename(name: string) {
+  if (
+    name.length === 0 ||
+    name.length > 255 ||
+    name === "." ||
+    name === ".." ||
+    basename(name) !== name ||
+    !/^[A-Za-z0-9._-]+$/.test(name)
+  ) {
+    unsafe("Artifact physical object name is unsafe.");
+  }
 }
 
 function asStoreError(error: unknown, notFoundCode = false): never {
@@ -328,6 +357,37 @@ async function verifyChain(
   await verifyRoot(root);
 }
 
+async function openTrustedRoot(root: RootSnapshot) {
+  const handle = await open(
+    root.path,
+    constants.O_RDONLY |
+      (constants.O_DIRECTORY ?? 0) |
+      (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const stat = await handle.stat();
+    if (!stat.isDirectory() || !sameIdentity(identityFrom(stat), root)) {
+      unsafe("Root directory handle did not match its trusted identity.");
+    }
+    await verifyRoot(root);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function verifyRootHandle(
+  root: RootSnapshot,
+  handle: FileHandle,
+) {
+  const stat = await handle.stat();
+  if (!stat.isDirectory() || !sameIdentity(identityFrom(stat), root)) {
+    unsafe("Root directory handle identity changed during the operation.");
+  }
+  await verifyRoot(root);
+}
+
 async function syncVerifiedDirectory(
   root: RootSnapshot,
   chain: DirectorySnapshot[],
@@ -352,15 +412,6 @@ async function syncVerifiedDirectory(
   } finally {
     await handle.close();
   }
-}
-
-async function verifyWriteContext(
-  root: RootSnapshot,
-  run: DirectorySnapshot,
-  staging: DirectorySnapshot,
-) {
-  await verifyChain(root, run);
-  await verifyChain(root, staging);
 }
 
 async function cleanupOwnedDirectory(
@@ -391,8 +442,83 @@ async function cleanupOwnedDirectory(
   }
 }
 
+type AnchoredRenameResult = "published" | "conflict";
+
+async function anchoredRename(
+  helperPath: string,
+  rootHandle: FileHandle,
+  sourceName: string,
+  targetName: string,
+): Promise<AnchoredRenameResult> {
+  validatePhysicalBasename(sourceName);
+  validatePhysicalBasename(targetName);
+  if (!isAbsolute(helperPath) || resolve(helperPath) !== helperPath) {
+    throw new ArtifactStoreError(
+      "ARTIFACT_PUBLISH_UNAVAILABLE",
+      "Artifact publication helper path is unavailable.",
+    );
+  }
+
+  return new Promise((resolveRename, rejectRename) => {
+    let settled = false;
+    let errorOutput = "";
+    const child = spawn(helperPath, [sourceName, targetName], {
+      shell: false,
+      stdio: ["ignore", "ignore", "pipe", rootHandle.fd],
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      if (errorOutput.length < helperErrorLimit) {
+        errorOutput += chunk.slice(0, helperErrorLimit - errorOutput.length);
+      }
+    });
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      if (settled) return;
+      settled = true;
+      const unavailable = error.code === "ENOENT" || error.code === "EACCES";
+      rejectRename(new ArtifactStoreError(
+        unavailable
+          ? "ARTIFACT_PUBLISH_UNAVAILABLE"
+          : "ARTIFACT_PUBLISH_FAILED",
+        unavailable
+          ? "Artifact publication helper is unavailable."
+          : "Artifact publication helper could not start.",
+        { cause: error },
+      ));
+    });
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      if (code === 0) {
+        resolveRename("published");
+        return;
+      }
+      if (code === helperConflictExitCode) {
+        resolveRename("conflict");
+        return;
+      }
+      const unavailable = code === helperUnavailableExitCode;
+      rejectRename(new ArtifactStoreError(
+        unavailable
+          ? "ARTIFACT_PUBLISH_UNAVAILABLE"
+          : "ARTIFACT_PUBLISH_FAILED",
+        unavailable
+          ? "Artifact publication is unsupported on this platform."
+          : "Artifact publication helper failed.",
+        {
+          cause: new Error(
+            errorOutput.trim() ||
+              `helper exited with ${code ?? `signal ${signal ?? "unknown"}`}`,
+          ),
+        },
+      ));
+    });
+  });
+}
+
 export class LocalArtifactStore implements ArtifactStore {
   private readonly configuredRoot: string;
+  private readonly renameHelperPath: string;
   private readonly locks = new Map<string, Promise<void>>();
 
   constructor(
@@ -418,6 +544,9 @@ export class LocalArtifactStore implements ArtifactStore {
       );
     }
     this.configuredRoot = configured;
+    const configuredHelper = env.SGEO_ARTIFACT_RENAME_HELPER?.trim();
+    this.renameHelperPath = configuredHelper ||
+      resolve(process.cwd(), ".sgeo-native", "sgeo-renameat-helper");
   }
 
   async put(
@@ -513,45 +642,21 @@ export class LocalArtifactStore implements ArtifactStore {
     }
   }
 
-  private async trustedRunDirectory(
-    root: RootSnapshot,
-    runId: string,
-    create: boolean,
-  ) {
-    const runPath = join(root.path, runId);
+  private async createStagingDirectory(root: RootSnapshot) {
     await verifyRoot(root);
-    if (create) {
-      try {
-        await mkdir(runPath, { mode: 0o700 });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw error;
-        }
-      }
-      await verifyRoot(root);
-    }
-    return snapshotDirectory(runPath, root);
-  }
-
-  private async createStagingDirectory(
-    root: RootSnapshot,
-    run: DirectorySnapshot,
-  ) {
-    await verifyChain(root, run);
     const path = await mkdtemp(join(root.path, ".artifact-tmp-"));
     const staging = await snapshotDirectory(path, root);
-    await verifyWriteContext(root, run, staging);
+    await verifyChain(root, staging);
     return staging;
   }
 
   private async writeStagedFile(
     root: RootSnapshot,
-    run: DirectorySnapshot,
     staging: DirectorySnapshot,
     name: string,
     body: Uint8Array,
   ) {
-    await verifyWriteContext(root, run, staging);
+    await verifyChain(root, staging);
     const path = join(staging.path, name);
     const handle = await open(
       path,
@@ -565,7 +670,7 @@ export class LocalArtifactStore implements ArtifactStore {
       if (!sameIdentity(opened, created)) {
         unsafe("New artifact file handle did not match its path.");
       }
-      await verifyWriteContext(root, run, staging);
+      await verifyChain(root, staging);
       await handle.writeFile(body);
       await handle.sync();
       const completedStat = await handle.stat();
@@ -576,7 +681,7 @@ export class LocalArtifactStore implements ArtifactStore {
         ...identityFrom(completedStat),
       };
       await verifyFile(completed, staging);
-      await verifyWriteContext(root, run, staging);
+      await verifyChain(root, staging);
       return completed;
     } finally {
       await handle.close();
@@ -589,10 +694,7 @@ export class LocalArtifactStore implements ArtifactStore {
     mediaType: string,
   ): Promise<StoredArtifact> {
     const root = await this.trustedRoot();
-    const run = await this.trustedRunDirectory(root, location.runId, true);
-    await this.testHooks.afterRunSnapshot?.("put");
-    await verifyChain(root, run);
-
+    const rootHandle = await openTrustedRoot(root);
     const checksum = artifactChecksum(body);
     const stored: StoredArtifact = {
       uri: location.uri,
@@ -600,63 +702,64 @@ export class LocalArtifactStore implements ArtifactStore {
       mediaType,
       byteSize: body.byteLength,
     };
-    const target = join(run.path, location.name);
-
-    try {
-      await lstat(target);
-      return await this.assertIdempotent(location, stored, body);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        if (error instanceof ArtifactStoreError) throw error;
-        return asStoreError(error);
-      }
-    }
+    const targetName = physicalObjectName(location);
+    validatePhysicalBasename(targetName);
+    const target = join(root.path, targetName);
 
     let staging: DirectorySnapshot | undefined;
-    let targetCandidate = target;
     let published = false;
     try {
-      staging = await this.createStagingDirectory(root, run);
-      await this.writeStagedFile(root, run, staging, "payload", body);
+      try {
+        await lstat(target);
+        return await this.assertIdempotent(location, stored, body);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          if (error instanceof ArtifactStoreError) throw error;
+          return asStoreError(error);
+        }
+      }
+
+      staging = await this.createStagingDirectory(root);
+      const stagingName = basename(staging.path);
+      validatePhysicalBasename(stagingName);
+      await this.writeStagedFile(root, staging, "payload", body);
       const metadata = new TextEncoder().encode(JSON.stringify({
         version: 1,
         ...stored,
       }));
       await this.writeStagedFile(
         root,
-        run,
         staging,
         "metadata.json",
         metadata,
       );
       await syncVerifiedDirectory(root, [staging]);
-      await verifyWriteContext(root, run, staging);
+      await verifyRootHandle(root, rootHandle);
+      await verifyChain(root, staging);
       await this.testHooks.beforePublishRename?.();
+      await verifyRootHandle(root, rootHandle);
 
-      try {
-        await rename(staging.path, target);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST" && code !== "ENOTEMPTY") {
-          throw error;
-        }
+      const result = await anchoredRename(
+        this.renameHelperPath,
+        rootHandle,
+        stagingName,
+        targetName,
+      );
+      if (result === "conflict") {
         await cleanupOwnedDirectory(staging, [staging.path]);
         staging = undefined;
         return await this.assertIdempotent(location, stored, body);
       }
 
-      try {
-        targetCandidate = await realpath(target);
-      } catch {
-        // The identity checks below will fail and cleanup will use target.
-      }
-      const publishedDirectory = await snapshotDirectory(target, run);
+      const publishedDirectory = await snapshotDirectory(target, root);
       if (!sameIdentity(publishedDirectory, staging)) {
         unsafe("Published artifact identity did not match its staging object.");
       }
-      await verifyChain(root, run, publishedDirectory);
-      await syncVerifiedDirectory(root, [run]);
-      await verifyChain(root, run, publishedDirectory);
+      await verifyRootHandle(root, rootHandle);
+      await verifyChain(root, publishedDirectory);
+      await rootHandle.sync();
+      await verifyRootHandle(root, rootHandle);
+      await verifyChain(root, publishedDirectory);
       published = true;
       return stored;
     } catch (error) {
@@ -667,9 +770,9 @@ export class LocalArtifactStore implements ArtifactStore {
         await cleanupOwnedDirectory(staging, [
           staging.path,
           target,
-          targetCandidate,
         ]);
       }
+      await rootHandle.close();
     }
   }
 
@@ -696,12 +799,11 @@ export class LocalArtifactStore implements ArtifactStore {
 
   private async readVerifiedFile(
     root: RootSnapshot,
-    run: DirectorySnapshot,
     object: DirectorySnapshot,
     name: string,
     expectedSize?: number,
   ) {
-    await verifyChain(root, run, object);
+    await verifyChain(root, object);
     const path = join(object.path, name);
     const before = await snapshotFile(path, object);
     if (
@@ -722,7 +824,7 @@ export class LocalArtifactStore implements ArtifactStore {
         unsafe("Artifact read handle did not match its trusted path.");
       }
       await verifyFile(before, object);
-      await verifyChain(root, run, object);
+      await verifyChain(root, object);
       const bytes = await handle.readFile();
       const afterStat = await handle.stat();
       const after: FileSnapshot = {
@@ -739,7 +841,7 @@ export class LocalArtifactStore implements ArtifactStore {
         unsafe("Artifact file changed while reading.");
       }
       await verifyFile(before, object);
-      await verifyChain(root, run, object);
+      await verifyChain(root, object);
       return { bytes: new Uint8Array(bytes), snapshot: before };
     } finally {
       await handle.close();
@@ -749,22 +851,13 @@ export class LocalArtifactStore implements ArtifactStore {
   private async readStored(location: ArtifactCoordinates) {
     try {
       const root = await this.trustedRoot();
-      const run = await this.trustedRunDirectory(
-        root,
-        location.runId,
-        false,
-      );
-      await this.testHooks.afterRunSnapshot?.("get");
-      await verifyChain(root, run);
-
-      const objectPath = join(run.path, location.name);
-      const object = await snapshotDirectory(objectPath, run);
+      const objectPath = join(root.path, physicalObjectName(location));
+      const object = await snapshotDirectory(objectPath, root);
       await this.testHooks.afterObjectSnapshot?.();
-      await verifyChain(root, run, object);
+      await verifyChain(root, object);
 
       const metadataRead = await this.readVerifiedFile(
         root,
-        run,
         object,
         "metadata.json",
       );
@@ -793,21 +886,20 @@ export class LocalArtifactStore implements ArtifactStore {
 
       const payloadRead = await this.readVerifiedFile(
         root,
-        run,
         object,
         "payload",
         parsed.data.byteSize,
       );
       await verifyFile(metadataRead.snapshot, object);
       await verifyFile(payloadRead.snapshot, object);
-      await verifyChain(root, run, object);
+      await verifyChain(root, object);
       if (artifactChecksum(payloadRead.bytes) !== parsed.data.checksum) {
         throw new ArtifactStoreError(
           "ARTIFACT_CORRUPT",
           "Artifact checksum does not match its payload.",
         );
       }
-      await verifyChain(root, run, object);
+      await verifyChain(root, object);
       return { metadata: parsed.data, body: payloadRead.bytes };
     } catch (error) {
       return asStoreError(error, true);

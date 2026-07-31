@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -11,7 +12,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -21,6 +24,9 @@ import {
 } from "@/lib/artifacts/local-store";
 
 const temporaryRoots: string[] = [];
+const renameHelperPath = fileURLToPath(
+  new URL("../../../.sgeo-native/sgeo-renameat-helper", import.meta.url),
+);
 
 async function temporaryRoot() {
   const root = await mkdtemp(join(tmpdir(), "sgeo-artifacts-"));
@@ -37,6 +43,51 @@ function storeWithHooks(
 
 function checksum(body: Uint8Array) {
   return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+}
+
+function objectName(runId: string, name: string) {
+  const uri = `artifact://${runId}/${name}`;
+  return `artifact-${createHash("sha256").update(uri).digest("hex")}`;
+}
+
+function objectDirectory(root: string, runId: string, name: string) {
+  return join(root, objectName(runId, name));
+}
+
+async function runPutProcess(root: string, name: string, body: string) {
+  const fixture = fileURLToPath(
+    new URL("../../../tests/fixtures/artifact-put-process.ts", import.meta.url),
+  );
+  return new Promise<number | null>((resolveProcess, rejectProcess) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", fixture],
+      {
+        cwd: dirname(fixture),
+        env: {
+          ...process.env,
+          SGEO_PROCESS_ARTIFACT_ROOT: root,
+          SGEO_PROCESS_ARTIFACT_NAME: name,
+          SGEO_PROCESS_ARTIFACT_BODY: body,
+          SGEO_ARTIFACT_RENAME_HELPER: renameHelperPath,
+        },
+        stdio: ["ignore", "ignore", "pipe"],
+      },
+    );
+    let errorOutput = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      errorOutput += chunk;
+    });
+    child.once("error", rejectProcess);
+    child.once("close", (code) => {
+      if (code !== 0 && code !== 2) {
+        rejectProcess(new Error(errorOutput || `child exited ${code}`));
+        return;
+      }
+      resolveProcess(code);
+    });
+  });
 }
 
 async function writeArtifactObject(
@@ -91,6 +142,12 @@ describe("LocalArtifactStore", () => {
     expect(firstRead).toEqual(bytes);
     expect(secondRead).toEqual(bytes);
     expect(firstRead).not.toBe(secondRead);
+    await expect(lstat(join(root, "run_1")).catch(() => null)).resolves.toBeNull();
+    await expect(
+      lstat(objectDirectory(root, "run_1", "report.json")),
+    ).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    });
   });
 
   it.each([
@@ -233,9 +290,25 @@ describe("LocalArtifactStore", () => {
       "rejected",
     ]);
     expect(
-      (await readdir(join(root, "run_1")))
+      (await readdir(root))
         .filter((name) => name.startsWith(".artifact-tmp-")),
     ).toEqual([]);
+  });
+
+  it("uses no-replace publication across separate Node processes", async () => {
+    const root = await temporaryRoot();
+
+    const identical = await Promise.all([
+      runPutProcess(root, "shared.bin", "same"),
+      runPutProcess(root, "shared.bin", "same"),
+    ]);
+    expect(identical).toEqual([0, 0]);
+
+    const conflicting = await Promise.all([
+      runPutProcess(root, "conflict.bin", "first"),
+      runPutProcess(root, "conflict.bin", "second"),
+    ]);
+    expect(conflicting.sort()).toEqual([0, 2]);
   });
 
   it("rejects corrupted payloads and metadata", async () => {
@@ -247,7 +320,7 @@ describe("LocalArtifactStore", () => {
       new Uint8Array([1, 2, 3]),
       "application/octet-stream",
     );
-    const objectDir = join(root, "run_1", "report.bin");
+    const objectDir = objectDirectory(root, "run_1", "report.bin");
 
     await writeFile(join(objectDir, "payload"), new Uint8Array([1, 2]));
     await expect(
@@ -265,7 +338,8 @@ describe("LocalArtifactStore", () => {
     const outside = await temporaryRoot();
     const store = new LocalArtifactStore(root);
 
-    await symlink(outside, join(root, "run_link"), "dir");
+    const linkedObject = objectDirectory(root, "run_link", "report.json");
+    await symlink(outside, linkedObject, "dir");
     await expect(
       store.put(
         "run_link",
@@ -275,29 +349,24 @@ describe("LocalArtifactStore", () => {
       ),
     ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
 
-    await mkdir(join(root, "run_1"));
-    await symlink(outside, join(root, "run_1", "report.json"), "dir");
+    await symlink(
+      outside,
+      objectDirectory(root, "run_1", "report.json"),
+      "dir",
+    );
     await expect(
       store.get("artifact://run_1/report.json"),
     ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
 
-    expect((await lstat(join(root, "run_link"))).isSymbolicLink()).toBe(true);
+    expect((await lstat(linkedObject)).isSymbolicLink()).toBe(true);
     expect(await readFile(join(outside, "missing"), "utf8").catch(() => null))
       .toBeNull();
   });
 
-  it("fails closed when the run directory is replaced after write validation", async () => {
+  it("fails closed when the helper is missing and cleans staging", async () => {
     const root = await temporaryRoot();
-    const outside = await temporaryRoot();
-    const displacedRun = join(root, "run_displaced");
-    let replaced = false;
-    const store = storeWithHooks(root, {
-      async afterRunSnapshot() {
-        if (replaced) return;
-        replaced = true;
-        await rename(join(root, "run_1"), displacedRun);
-        await symlink(outside, join(root, "run_1"), "dir");
-      },
+    const store = new LocalArtifactStore(root, {
+      SGEO_ARTIFACT_RENAME_HELPER: join(root, "missing-helper"),
     });
 
     await expect(
@@ -307,27 +376,46 @@ describe("LocalArtifactStore", () => {
         new Uint8Array([4, 5, 6]),
         "application/octet-stream",
       ),
-    ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
-
-    await expect(
-      lstat(join(outside, "report.bin")).catch(() => null),
-    ).resolves.toBeNull();
+    ).rejects.toMatchObject({ code: "ARTIFACT_PUBLISH_UNAVAILABLE" });
     expect(
-      (await readdir(outside))
+      (await readdir(root))
         .filter((name) => name.startsWith(".artifact-tmp-")),
     ).toEqual([]);
   });
 
-  it("removes an external publication when the run changes at rename", async () => {
+  it("fails closed when the helper exits unsuccessfully", async () => {
+    const root = await temporaryRoot();
+    const helper = join(root, "failing-helper");
+    await writeFile(helper, "#!/usr/bin/env node\nprocess.exit(1);\n");
+    await chmod(helper, 0o700);
+    const store = new LocalArtifactStore(root, {
+      SGEO_ARTIFACT_RENAME_HELPER: helper,
+    });
+
+    await expect(
+      store.put(
+        "run_1",
+        "report.bin",
+        new Uint8Array([4, 5, 6]),
+        "application/octet-stream",
+      ),
+    ).rejects.toMatchObject({ code: "ARTIFACT_PUBLISH_FAILED" });
+    expect(
+      (await readdir(root))
+        .filter((name) => name.startsWith(".artifact-tmp-")),
+    ).toEqual([]);
+  });
+
+  it("anchors publication to root when the logical run path changes", async () => {
     const root = await temporaryRoot();
     const outside = await temporaryRoot();
-    const displacedRun = join(root, "run_displaced");
+    await mkdir(join(root, "run_1"));
     let replaced = false;
     const store = storeWithHooks(root, {
       async beforePublishRename() {
         if (replaced) return;
         replaced = true;
-        await rename(join(root, "run_1"), displacedRun);
+        await rename(join(root, "run_1"), join(root, "run_displaced"));
         await symlink(outside, join(root, "run_1"), "dir");
       },
     });
@@ -339,11 +427,19 @@ describe("LocalArtifactStore", () => {
         new Uint8Array([4, 5, 6]),
         "application/octet-stream",
       ),
-    ).rejects.toMatchObject({ code: "ARTIFACT_PATH_UNSAFE" });
+    ).resolves.toMatchObject({
+      uri: "artifact://run_1/report.bin",
+    });
 
+    await expect(readdir(outside)).resolves.toEqual([]);
     await expect(
-      lstat(join(outside, "report.bin")).catch(() => null),
-    ).resolves.toBeNull();
+      store.get("artifact://run_1/report.bin"),
+    ).resolves.toEqual(new Uint8Array([4, 5, 6]));
+    await expect(
+      lstat(objectDirectory(root, "run_1", "report.bin")),
+    ).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    });
   });
 
   it("never returns external bytes after an object directory replacement", async () => {
@@ -358,8 +454,9 @@ describe("LocalArtifactStore", () => {
       trustedBody,
       "application/octet-stream",
     );
+    const physicalObjectName = objectName("run_1", "report.bin");
     await writeArtifactObject(
-      join(outside, "report.bin"),
+      join(outside, physicalObjectName),
       "artifact://run_1/report.bin",
       externalBody,
     );
@@ -369,8 +466,15 @@ describe("LocalArtifactStore", () => {
       async afterObjectSnapshot() {
         if (replaced) return;
         replaced = true;
-        await rename(join(root, "run_1"), join(root, "run_displaced"));
-        await symlink(outside, join(root, "run_1"), "dir");
+        await rename(
+          join(root, physicalObjectName),
+          join(root, "object-displaced"),
+        );
+        await symlink(
+          join(outside, physicalObjectName),
+          join(root, physicalObjectName),
+          "dir",
+        );
       },
     });
 
