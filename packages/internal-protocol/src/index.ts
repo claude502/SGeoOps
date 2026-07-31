@@ -5,6 +5,8 @@ export interface InternalSignature {
   signature: string;
 }
 
+export type InternalRequestBody = string | Uint8Array;
+
 const MAX_CLOCK_SKEW_SECONDS = BigInt(300);
 const CANONICAL_TIMESTAMP_PATTERN = /^(0|[1-9]\d*)$/;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
@@ -18,9 +20,15 @@ function createCanonicalInput(
   timestamp: string,
   method: string,
   pathname: string,
-  body: string,
+  body: InternalRequestBody,
 ): string {
-  const bodyHash = createHash("sha256").update(body, "utf8").digest("hex");
+  const bodyHasher = createHash("sha256");
+  if (typeof body === "string") {
+    bodyHasher.update(body, "utf8");
+  } else {
+    bodyHasher.update(body);
+  }
+  const bodyHash = bodyHasher.digest("hex");
   return `${timestamp}\n${method}\n${pathname}\n${bodyHash}`;
 }
 
@@ -29,7 +37,7 @@ function createSignature(
   timestamp: string,
   method: string,
   pathname: string,
-  body: string,
+  body: InternalRequestBody,
 ): string {
   return createHmac("sha256", secret)
     .update(createCanonicalInput(timestamp, method, pathname, body), "utf8")
@@ -40,7 +48,7 @@ export async function signInternalRequest(
   secret: string,
   method: string,
   pathname: string,
-  body: string,
+  body: InternalRequestBody,
   nowSeconds?: number,
 ): Promise<InternalSignature> {
   if (secret.length === 0) {
@@ -64,7 +72,7 @@ export async function verifyInternalRequest(
   signed: InternalSignature,
   method: string,
   pathname: string,
-  body: string,
+  body: InternalRequestBody,
   nowSeconds?: number,
 ): Promise<boolean> {
   if (

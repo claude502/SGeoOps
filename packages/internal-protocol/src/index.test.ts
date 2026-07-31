@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   signInternalRequest,
   verifyInternalRequest,
+  type InternalRequestBody,
   type InternalSignature,
 } from "./index";
 
@@ -16,7 +17,7 @@ async function sign(
     secret?: string;
     method?: string;
     pathname?: string;
-    body?: string;
+    body?: InternalRequestBody;
     nowSeconds?: number;
   } = {},
 ): Promise<InternalSignature> {
@@ -35,7 +36,7 @@ async function verify(
     secret?: string;
     method?: string;
     pathname?: string;
-    body?: string;
+    body?: InternalRequestBody;
     nowSeconds?: number;
   } = {},
 ): Promise<boolean> {
@@ -50,6 +51,14 @@ async function verify(
 }
 
 describe("internal request signatures", () => {
+  it("exposes the backward-compatible request body contract", () => {
+    expectTypeOf<InternalRequestBody>().toEqualTypeOf<string | Uint8Array>();
+    expectTypeOf(signInternalRequest).parameter(3)
+      .toEqualTypeOf<InternalRequestBody>();
+    expectTypeOf(verifyInternalRequest).parameter(4)
+      .toEqualTypeOf<InternalRequestBody>();
+  });
+
   it("accepts a matching signature inside the permitted window", async () => {
     const signed = await sign();
 
@@ -132,6 +141,70 @@ describe("internal request signatures", () => {
     const signed = await sign({ body: "caf\u00e9" });
 
     expect(await verify(signed, { body: "cafe\u0301" })).toBe(false);
+  });
+
+  it("matches a UTF-8 string with the same explicit bytes", async () => {
+    const signed = await sign({ body: "\u00e9" });
+
+    expect(await verify(signed, {
+      body: Uint8Array.of(0xc3, 0xa9),
+    })).toBe(true);
+  });
+
+  it("signs a non-UTF-8 Uint8Array view using only its exact byte slice", async () => {
+    const backing = Uint8Array.of(0x11, 0x00, 0x80, 0xff, 0x22);
+    const body = backing.subarray(1, 4);
+    const signed = await signInternalRequest(
+      "secret",
+      "POST",
+      "/ingest",
+      body,
+      SIGNED_AT,
+    );
+
+    expect(signed).toEqual({
+      timestamp: String(SIGNED_AT),
+      signature: "a3ac8946b1ae9b46f902fb3b65bddcf102cc9464b9985a59110db80b0c09d1b1",
+    });
+    expect(await verifyInternalRequest(
+      "secret",
+      signed,
+      "POST",
+      "/ingest",
+      body,
+      SIGNED_AT,
+    )).toBe(true);
+    expect(await verifyInternalRequest(
+      "secret",
+      signed,
+      "POST",
+      "/ingest",
+      backing,
+      SIGNED_AT,
+    )).toBe(false);
+  });
+
+  it("does not equate different byte encodings of the same visible character", async () => {
+    const utf8 = Uint8Array.of(0xc3, 0xa9);
+    const latin1 = Uint8Array.of(0xe9);
+    const utf8Signed = await sign({ body: utf8 });
+    const latin1Signed = await sign({ body: latin1 });
+
+    expect(utf8Signed.signature).not.toBe(latin1Signed.signature);
+    expect(await verify(utf8Signed, { body: latin1 })).toBe(false);
+    expect(await verify(latin1Signed, { body: utf8 })).toBe(false);
+  });
+
+  it("hashes Uint8Array contents at each call", async () => {
+    const body = Uint8Array.of(0x00, 0x80, 0xff);
+    const beforeMutation = await sign({ body });
+
+    body[1] = 0x81;
+    const afterMutation = await sign({ body });
+
+    expect(afterMutation.signature).not.toBe(beforeMutation.signature);
+    expect(await verify(beforeMutation, { body })).toBe(false);
+    expect(await verify(afterMutation, { body })).toBe(true);
   });
 
   it.each([
