@@ -564,7 +564,34 @@ DECLARE
   matched_rows bigint;
 BEGIN
   parent_table := "resolve_legacy_entity_table"(entity_type);
-  IF parent_table IS NULL OR entity_id IS NULL THEN
+  -- Unknown types are intentional site-level provenance, not unverifiable
+  -- market-scoped references.
+  IF parent_table IS NULL THEN
+    IF scope_market_id IS NOT NULL THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = format(
+          'site-level polymorphic provenance requires NULL market for %s: unknown entity type %s',
+          scope_context,
+          entity_type
+        );
+    END IF;
+    RETURN;
+  END IF;
+
+  -- AuditEvent.entityId is intentionally nullable: a known type with no id is
+  -- a valid type-level/site-level audit, not a dangling parent reference.
+  -- EventDelivery.entityId remains NOT NULL and cannot reach this branch.
+  IF entity_id IS NULL THEN
+    IF scope_market_id IS NOT NULL THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = format(
+          'type-level polymorphic audit requires NULL market for %s: entity type %s',
+          scope_context,
+          entity_type
+        );
+    END IF;
     RETURN;
   END IF;
 

@@ -941,8 +941,11 @@ END
 $$;
 
 -- AuditEvent and EventDelivery use intentional polymorphic references. Known
--- legacy entity types are strict provenance links; unknown types remain
--- explicit site-level operations.
+-- legacy entity types with an entityId are strict provenance links. Unknown
+-- types are site-level provenance and therefore cannot carry a market.
+-- AuditEvent intentionally permits a known type with entityId NULL as a
+-- type-level audit; that is not a dangling reference and must also be
+-- site-level. EventDelivery.entityId is NOT NULL in the legacy schema.
 DO $$
 DECLARE
   reference_row record;
@@ -1003,7 +1006,25 @@ BEGIN
       ELSE NULL
     END;
 
-    IF parent_table IS NULL OR reference_row.entity_id IS NULL THEN
+    IF parent_table IS NULL THEN
+      IF reference_row.child_market_id IS NOT NULL THEN
+        RAISE EXCEPTION
+          'site-level polymorphic provenance has market: % row % entity type %',
+          reference_row.child_table,
+          reference_row.child_id,
+          reference_row.entity_type;
+      END IF;
+      CONTINUE;
+    END IF;
+
+    IF reference_row.entity_id IS NULL THEN
+      IF reference_row.child_market_id IS NOT NULL THEN
+        RAISE EXCEPTION
+          'type-level polymorphic audit has market: % row % entity type %',
+          reference_row.child_table,
+          reference_row.child_id,
+          reference_row.entity_type;
+      END IF;
       CONTINUE;
     END IF;
 

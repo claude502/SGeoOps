@@ -125,6 +125,51 @@ const backfillRelationshipCases = [
   },
 ] as const;
 
+const polymorphicSiteLevelBackfillRejectCases = [
+  {
+    label: "unknown AuditEvent type with market",
+    table: "AuditEvent",
+    rowId: "audit_txpuro",
+    mutation: `
+      UPDATE "AuditEvent"
+      SET
+        "entityType" = 'GeoBrief',
+        "entityId" = 'brief_without_table',
+        "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+      WHERE "id" = 'audit_txpuro'
+    `,
+    message: /site-level polymorphic provenance has market.*AuditEvent/i,
+  },
+  {
+    label: "known AuditEvent type with null entity and market",
+    table: "AuditEvent",
+    rowId: "audit_txpuro",
+    mutation: `
+      UPDATE "AuditEvent"
+      SET
+        "entityType" = 'ContentAsset',
+        "entityId" = NULL,
+        "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+      WHERE "id" = 'audit_txpuro'
+    `,
+    message: /type-level polymorphic audit has market.*AuditEvent/i,
+  },
+  {
+    label: "unknown EventDelivery type with market",
+    table: "EventDelivery",
+    rowId: "delivery_txpuro",
+    mutation: `
+      UPDATE "EventDelivery"
+      SET
+        "entityType" = 'Workspace',
+        "entityId" = 'workspace_internal',
+        "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+      WHERE "id" = 'delivery_txpuro'
+    `,
+    message: /site-level polymorphic provenance has market.*EventDelivery/i,
+  },
+] as const;
+
 const polymorphicParents = [
   ["ContentAsset", "asset_txpuro_zh", "content-assets"],
   ["GeoRun", "geo_run_txpuro_linked", "GEORUN"],
@@ -2383,6 +2428,109 @@ describe.skipIf(!integrationEnabled).sequential(
       },
     );
 
+    it.each(polymorphicSiteLevelBackfillRejectCases)(
+      "rejects $label before backfill commits",
+      async ({ label, table, rowId, mutation, message }) => {
+        await withFreshSchema(
+          `backfill_poly_scope_${label.replaceAll(/[^a-zA-Z0-9]/g, "_")}`,
+          async (target) => {
+            await prepareExpandedLegacyFixture(target);
+            await target.query(mutation);
+
+            await expectPgError(
+              () => applyMigration(target, backfillMigrationPath),
+              "P0001",
+              message,
+            );
+            const roots = await target.query(`
+              SELECT count(*)::int AS count FROM "Workspace"
+            `);
+            expect(roots.rows[0]?.count).toBe(0);
+            const preserved = await target.query(
+              `
+                SELECT "siteMarketId"
+                FROM ${quoteIdentifier(table)}
+                WHERE "id" = $1
+              `,
+              [rowId],
+            );
+            expect(preserved.rows[0]?.siteMarketId).toBe(
+              fixedOwnership.zhMarketId,
+            );
+          },
+        );
+      },
+    );
+
+    it("backfills site-level polymorphic provenance without inventing a market", async () => {
+      await withFreshSchema("backfill_poly_site_level", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "entityType" = 'ContentAsset',
+            "entityId" = NULL,
+            "siteMarketId" = NULL
+          WHERE "id" = 'audit_txpuro';
+
+          UPDATE "EventDelivery"
+          SET
+            "entityType" = 'Workspace',
+            "entityId" = 'workspace_internal',
+            "siteMarketId" = NULL
+          WHERE "id" = 'delivery_txpuro';
+        `);
+
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        const scopes = await target.query(`
+          SELECT
+            'AuditEvent' AS "tableName",
+            "entityType",
+            "entityId",
+            "clientId",
+            "brandId",
+            "siteId",
+            "siteMarketId"
+          FROM "AuditEvent"
+          WHERE "id" = 'audit_txpuro'
+          UNION ALL
+          SELECT
+            'EventDelivery',
+            "entityType",
+            "entityId",
+            "clientId",
+            "brandId",
+            "siteId",
+            "siteMarketId"
+          FROM "EventDelivery"
+          WHERE "id" = 'delivery_txpuro'
+          ORDER BY "tableName"
+        `);
+        expect(scopes.rows).toEqual([
+          {
+            tableName: "AuditEvent",
+            entityType: "ContentAsset",
+            entityId: null,
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+            siteMarketId: null,
+          },
+          {
+            tableName: "EventDelivery",
+            entityType: "Workspace",
+            entityId: "workspace_internal",
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+            siteMarketId: null,
+          },
+        ]);
+      });
+    });
+
     it("blocks legacy writes between backfill and successful enforce", async () => {
       await withFreshSchema("write_gate_lifecycle", async (target) => {
         await prepareBackfilledFreshSchema(target);
@@ -2671,6 +2819,130 @@ describe.skipIf(!integrationEnabled).sequential(
           parent_delete_triggers: legacyTables.length,
           reverse_indexes: 2,
         });
+      });
+    });
+
+    it("requires nullable polymorphic provenance to remain site-level", async () => {
+      await withFreshSchema("polymorphic_site_level_scope", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+
+        await cloneAuditEvent(target, {
+          id: "audit_known_type_level",
+          entityType: "ContentAsset",
+          entityId: null,
+          siteMarketId: null,
+        });
+        await cloneAuditEvent(target, {
+          id: "audit_unknown_site_level",
+          entityType: "GeoBrief",
+          entityId: "brief_without_table",
+          siteMarketId: null,
+        });
+        await cloneEventDelivery(target, {
+          id: "delivery_unknown_site_level",
+          entityType: "Workspace",
+          entityId: "workspace_internal",
+          siteMarketId: null,
+        });
+
+        await expectPgError(
+          () =>
+            cloneAuditEvent(target, {
+              id: "audit_known_type_level_with_market",
+              entityType: "ContentAsset",
+              entityId: null,
+              siteMarketId: fixedOwnership.zhMarketId,
+            }),
+          "23514",
+          /type-level polymorphic audit requires NULL market.*AuditEvent/i,
+        );
+        await expectPgError(
+          () =>
+            cloneAuditEvent(target, {
+              id: "audit_unknown_with_market",
+              entityType: "GeoBrief",
+              entityId: "brief_without_table",
+              siteMarketId: fixedOwnership.zhMarketId,
+            }),
+          "23514",
+          /site-level polymorphic provenance requires NULL market.*AuditEvent/i,
+        );
+        await expectPgError(
+          () =>
+            cloneEventDelivery(target, {
+              id: "delivery_unknown_with_market",
+              entityType: "Workspace",
+              entityId: "workspace_internal",
+              siteMarketId: fixedOwnership.zhMarketId,
+            }),
+          "23514",
+          /site-level polymorphic provenance requires NULL market.*EventDelivery/i,
+        );
+
+        await expectPgError(
+          () =>
+            target.query(`
+              UPDATE "AuditEvent"
+              SET "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+              WHERE "id" = 'audit_known_type_level'
+            `),
+          "23514",
+          /type-level polymorphic audit requires NULL market.*AuditEvent/i,
+        );
+        await expectPgError(
+          () =>
+            target.query(`
+              UPDATE "AuditEvent"
+              SET "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+              WHERE "id" = 'audit_unknown_site_level'
+            `),
+          "23514",
+          /site-level polymorphic provenance requires NULL market.*AuditEvent/i,
+        );
+        await expectPgError(
+          () =>
+            target.query(`
+              UPDATE "EventDelivery"
+              SET "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+              WHERE "id" = 'delivery_unknown_site_level'
+            `),
+          "23514",
+          /site-level polymorphic provenance requires NULL market.*EventDelivery/i,
+        );
+
+        const allowed = await target.query(`
+          SELECT "id", "entityType", "entityId", "siteMarketId"
+          FROM "AuditEvent"
+          WHERE "id" IN (
+            'audit_known_type_level',
+            'audit_unknown_site_level'
+          )
+          UNION ALL
+          SELECT "id", "entityType", "entityId", "siteMarketId"
+          FROM "EventDelivery"
+          WHERE "id" = 'delivery_unknown_site_level'
+          ORDER BY "id"
+        `);
+        expect(allowed.rows).toEqual([
+          {
+            id: "audit_known_type_level",
+            entityType: "ContentAsset",
+            entityId: null,
+            siteMarketId: null,
+          },
+          {
+            id: "audit_unknown_site_level",
+            entityType: "GeoBrief",
+            entityId: "brief_without_table",
+            siteMarketId: null,
+          },
+          {
+            id: "delivery_unknown_site_level",
+            entityType: "Workspace",
+            entityId: "workspace_internal",
+            siteMarketId: null,
+          },
+        ]);
       });
     });
 
