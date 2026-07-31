@@ -1,6 +1,14 @@
 import { pathToFileURL } from "node:url";
+import type { Prisma } from "@prisma/client";
 
 type BootstrapEnvironment = Record<string, string | undefined>;
+
+// Stable signed int32 keys spell "SGEO" / "BOOT" in ASCII. Changing either
+// key would break mutual exclusion between bootstrap processes during rollout.
+export const BOOTSTRAP_ADVISORY_LOCK = {
+  namespace: 0x5347454f,
+  key: 0x424f4f54,
+} as const;
 
 export type BootstrapAdminInput = {
   email: string;
@@ -9,6 +17,7 @@ export type BootstrapAdminInput = {
 };
 
 export type BootstrapTransaction = {
+  acquireBootstrapLock(): Promise<void>;
   countUsers(): Promise<number>;
   findInternalWorkspace(): Promise<{ id: string } | null>;
   signUpEmail(
@@ -26,6 +35,20 @@ export type BootstrapDependencies = {
     operation: (transaction: BootstrapTransaction) => Promise<T>,
   ): Promise<T>;
 };
+
+export async function acquireBootstrapAdvisoryLock(
+  database: Prisma.TransactionClient,
+) {
+  await database.$queryRaw<Array<{ acquired: boolean }>>`
+    WITH bootstrap_lock AS MATERIALIZED (
+      SELECT pg_advisory_xact_lock(
+        ${BOOTSTRAP_ADVISORY_LOCK.namespace}::integer,
+        ${BOOTSTRAP_ADVISORY_LOCK.key}::integer
+      )
+    )
+    SELECT true AS acquired FROM bootstrap_lock
+  `;
+}
 
 export function readBootstrapAdminInput(
   env: BootstrapEnvironment = process.env,
@@ -46,6 +69,8 @@ export async function bootstrapAdmin(
   dependencies: BootstrapDependencies,
 ) {
   return dependencies.transaction(async (transaction) => {
+    await transaction.acquireBootstrapLock();
+
     if ((await transaction.countUsers()) > 0) {
       throw new Error("BOOTSTRAP_ALREADY_COMPLETED");
     }
@@ -79,6 +104,8 @@ async function main() {
     transaction: (operation) =>
       prisma.$transaction(async (database) =>
         operation({
+          acquireBootstrapLock: () =>
+            acquireBootstrapAdvisoryLock(database),
           countUsers: () => database.user.count(),
           findInternalWorkspace: () =>
             database.workspace.findUnique({

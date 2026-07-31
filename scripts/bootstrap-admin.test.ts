@@ -43,12 +43,47 @@ describe("bootstrap admin input", () => {
 });
 
 describe("bootstrap admin transaction", () => {
+  it("acquires the transaction advisory lock before checking users", async () => {
+    const calls: string[] = [];
+    let releaseLock: () => void = () => undefined;
+    const lockAcquired = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const transaction: BootstrapDependencies["transaction"] = async (
+      operation,
+    ) =>
+      operation({
+        acquireBootstrapLock: async () => {
+          calls.push("lock");
+          await lockAcquired;
+        },
+        countUsers: async () => {
+          calls.push("count");
+          return 1;
+        },
+        findInternalWorkspace: vi.fn(),
+        signUpEmail: vi.fn(),
+        createMembership: vi.fn(),
+      });
+
+    const bootstrap = bootstrapAdmin(input, { transaction });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(calls).toEqual(["lock"]);
+
+    releaseLock();
+    await expect(bootstrap).rejects.toThrow(
+      "BOOTSTRAP_ALREADY_COMPLETED",
+    );
+    expect(calls).toEqual(["lock", "count"]);
+  });
+
   it("refuses to bootstrap when any user already exists", async () => {
     const signUpEmail = vi.fn();
     const createMembership = vi.fn();
     const dependencies: BootstrapDependencies = {
       transaction: async (operation) =>
         operation({
+          acquireBootstrapLock: vi.fn(),
           countUsers: async () => 1,
           findInternalWorkspace: vi.fn(),
           signUpEmail,
@@ -68,6 +103,7 @@ describe("bootstrap admin transaction", () => {
     const dependencies: BootstrapDependencies = {
       transaction: async (operation) =>
         operation({
+          acquireBootstrapLock: vi.fn(),
           countUsers: async () => 0,
           findInternalWorkspace: async () => ({ id: "workspace_internal" }),
           signUpEmail: async () => ({ user: { id: "user_admin" } }),
@@ -95,6 +131,7 @@ describe("bootstrap admin transaction", () => {
     ) => {
       const draft = structuredClone(committed);
       const tx: BootstrapTransaction = {
+        acquireBootstrapLock: async () => undefined,
         countUsers: async () => draft.users.length,
         findInternalWorkspace: async () => ({ id: "workspace_internal" }),
         signUpEmail: async () => {
