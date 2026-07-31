@@ -24,7 +24,6 @@ $$;
 
 -- Trend keys are tenant data. The pre-platform global key would make one
 -- client able to conflict with another client's otherwise-valid topic.
-ALTER TABLE "TrendTopic"
-  DROP CONSTRAINT IF EXISTS "TrendTopic_keyword_platform_key";
+DROP INDEX IF EXISTS "TrendTopic_keyword_platform_key";
 CREATE UNIQUE INDEX "TrendTopic_clientId_keyword_platform_key"
   ON "TrendTopic"("clientId", "keyword", "platform");

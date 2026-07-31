@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const integrationEnabled = process.env.SGEO_DATABASE_INTEGRATION === "1";
 const databaseUrl = process.env.TEST_DATABASE_URL ?? "";
+const execFileAsync = promisify(execFile);
 
 const legacyMigrationPaths = [
   "prisma/migrations/20260504120000_geoflow_bridge_init/migration.sql",
@@ -545,6 +548,34 @@ async function ownershipDefaultCount(target: Client): Promise<number> {
     [legacyTables],
   );
   return result.rows[0]?.count ?? 0;
+}
+
+async function trendUniqueIndexNames(target: Client): Promise<string[]> {
+  const result = await target.query<{ indexname: string }>(`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND tablename = 'TrendTopic'
+      AND indexname IN (
+        'TrendTopic_keyword_platform_key',
+        'TrendTopic_clientId_keyword_platform_key'
+      )
+    ORDER BY indexname
+  `);
+  return result.rows.map(({ indexname }) => indexname);
+}
+
+async function deployMigrations(schema: string): Promise<void> {
+  const deploymentUrl = new URL(pgConnectionString);
+  deploymentUrl.searchParams.set("schema", schema);
+  await execFileAsync(
+    resolve("node_modules/.bin/prisma"),
+    ["migrate", "deploy"],
+    {
+      cwd: resolve("."),
+      env: { ...process.env, DATABASE_URL: deploymentUrl.toString() },
+    },
+  );
 }
 
 async function openSchemaClient(
@@ -3807,6 +3838,9 @@ describe.skipIf(!integrationEnabled).sequential(
 
         await applyMigration(target, contractMigrationPath);
         expect(await ownershipDefaultCount(target)).toBe(0);
+        expect(await trendUniqueIndexNames(target)).toEqual([
+          "TrendTopic_clientId_keyword_platform_key",
+        ]);
 
         await expect(
           target.query(`
@@ -3818,6 +3852,76 @@ describe.skipIf(!integrationEnabled).sequential(
             )
           `),
         ).rejects.toMatchObject({ code: "23502" });
+      });
+    });
+
+    it("scopes trend uniqueness by client on a fresh schema", async () => {
+      await withFreshSchema("trend_client_unique", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        await seedOtherOwnershipRoot(target);
+
+        await target.query(`
+          INSERT INTO "TrendTopic" (
+            "id", "clientId", "brandId", "siteId", "siteMarketId",
+            "keyword", "platform", "score", "region", "sourceType",
+            "status", "capturedAt"
+          ) VALUES (
+            'trend_unique_txpuro', 'client_wing_heng', 'brand_txpuro',
+            'site_txpuro_com', 'site_market_txpuro_my_en',
+            'shared trend contract', 'manual', 50, 'MY', 'manual',
+            'pending', CURRENT_TIMESTAMP
+          )
+        `);
+        await target.query(`
+          INSERT INTO "TrendTopic" (
+            "id", "clientId", "brandId", "siteId", "siteMarketId",
+            "keyword", "platform", "score", "region", "sourceType",
+            "status", "capturedAt"
+          ) VALUES (
+            'trend_unique_other', 'client_other', 'brand_other',
+            'site_other_com', 'site_market_other_my_en',
+            'shared trend contract', 'manual', 50, 'MY', 'manual',
+            'pending', CURRENT_TIMESTAMP
+          )
+        `);
+
+        await expectPgError(
+          () =>
+            target.query(`
+              INSERT INTO "TrendTopic" (
+                "id", "clientId", "brandId", "siteId", "siteMarketId",
+                "keyword", "platform", "score", "region", "sourceType",
+                "status", "capturedAt"
+              ) VALUES (
+                'trend_unique_txpuro_duplicate', 'client_wing_heng',
+                'brand_txpuro', 'site_txpuro_com',
+                'site_market_txpuro_my_en', 'shared trend contract',
+                'manual', 51, 'MY', 'manual', 'pending', CURRENT_TIMESTAMP
+              )
+            `),
+          "23505",
+          /TrendTopic_clientId_keyword_platform_key/,
+        );
+      });
+    });
+
+    it("deploys fresh migrations and safely repeats deployment", async () => {
+      await withFreshSchema("repeat_deploy", async (target, schema) => {
+        await deployMigrations(schema);
+        await deployMigrations(schema);
+
+        const contractMigration = await target.query<{ count: number }>(`
+          SELECT count(*)::int AS count
+          FROM "_prisma_migrations"
+          WHERE migration_name =
+            '20260731120000_remove_legacy_ownership_defaults'
+            AND finished_at IS NOT NULL
+            AND rolled_back_at IS NULL
+        `);
+        expect(contractMigration.rows[0]?.count).toBe(1);
+        expect(await trendUniqueIndexNames(target)).toEqual([
+          "TrendTopic_clientId_keyword_platform_key",
+        ]);
       });
     });
 

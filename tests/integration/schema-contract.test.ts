@@ -42,7 +42,7 @@ describe("platform Prisma schema", () => {
     expect(contractMigration).toContain('ALTER COLUMN "brandId" DROP DEFAULT');
     expect(contractMigration).toContain('ALTER COLUMN "siteId" DROP DEFAULT');
     expect(contractMigration).toContain(
-      'DROP CONSTRAINT IF EXISTS "TrendTopic_keyword_platform_key"',
+      'DROP INDEX IF EXISTS "TrendTopic_keyword_platform_key"',
     );
     expect(contractMigration).toContain(
       'CREATE UNIQUE INDEX "TrendTopic_clientId_keyword_platform_key"',
