@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   rename,
@@ -90,6 +92,29 @@ async function runPutProcess(root: string, name: string, body: string) {
       resolveProcess(code);
     });
   });
+}
+
+async function runAnchoredRenameHelper(
+  rootFd: number,
+  sourceName: string,
+  targetName: string,
+) {
+  return new Promise<{ code: number | null; stderr: string }>(
+    (resolveProcess, rejectProcess) => {
+      const child = spawn(renameHelperPath, [sourceName, targetName], {
+        shell: false,
+        stdio: ["ignore", "ignore", "pipe", rootFd],
+      });
+      const stderrStream = child.stderr!;
+      let stderr = "";
+      stderrStream.setEncoding("utf8");
+      stderrStream.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.once("error", rejectProcess);
+      child.once("close", (code) => resolveProcess({ code, stderr }));
+    },
+  );
 }
 
 async function writeArtifactObject(
@@ -501,6 +526,48 @@ describe("LocalArtifactStore", () => {
     )).toBe(false);
   });
 
+  it("anchors the native helper syscall to the opened original root fd", async () => {
+    const parent = await temporaryRoot();
+    const configuredRoot = join(parent, "configured-root");
+    const movedOriginalRoot = join(parent, "moved-original-root");
+    const sourceName = ".artifact-tmp-123-1000-ABC123";
+    const targetName = `artifact-${"a".repeat(64)}`;
+    await mkdir(join(configuredRoot, sourceName), { recursive: true });
+    const trustedIdentity = await lstat(configuredRoot);
+    const rootHandle = await open(
+      configuredRoot,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0),
+    );
+
+    try {
+      await rename(configuredRoot, movedOriginalRoot);
+      await mkdir(configuredRoot);
+
+      const result = await runAnchoredRenameHelper(
+        rootHandle.fd,
+        sourceName,
+        targetName,
+      );
+
+      expect(result).toEqual({ code: 0, stderr: "" });
+    } finally {
+      await rootHandle.close();
+    }
+
+    const movedIdentity = await lstat(movedOriginalRoot);
+    expect({
+      dev: movedIdentity.dev,
+      ino: movedIdentity.ino,
+    }).toEqual({
+      dev: trustedIdentity.dev,
+      ino: trustedIdentity.ino,
+    });
+    expect((await lstat(join(movedOriginalRoot, targetName))).isDirectory())
+      .toBe(true);
+    await expect(readdir(movedOriginalRoot)).resolves.toEqual([targetName]);
+    await expect(readdir(configuredRoot)).resolves.toEqual([]);
+  });
+
   it("scavenges only old inactive owned staging directories", async () => {
     const root = await temporaryRoot();
     const outside = await temporaryRoot();
@@ -548,6 +615,156 @@ describe("LocalArtifactStore", () => {
       isDirectory: expect.any(Function),
     });
     expect((await lstat(linked)).isSymbolicLink()).toBe(true);
+  });
+
+  it("single-flights concurrent stores when a stale candidate disappears", async () => {
+    const root = await temporaryRoot();
+    const now = 100_000;
+    const stale = join(root, ".artifact-tmp-999999-1000-ABC123");
+    await mkdir(stale);
+    await utimes(stale, 1, 1);
+    let scans = 0;
+    let candidateChecks = 0;
+    const hooks: LocalArtifactStoreTestHooks = {
+      now: () => now,
+      staleStagingAgeMs: 10_000,
+      stagingMaintenanceIntervalMs: 5_000,
+      isProcessAlive: () => false,
+      onStagingScan: () => {
+        scans += 1;
+      },
+      async afterStaleCandidateLstat(path) {
+        candidateChecks += 1;
+        await rm(path, { recursive: true, force: true });
+      },
+    };
+    const first = storeWithHooks(root, hooks);
+    const second = storeWithHooks(root, hooks);
+
+    await expect(Promise.all([
+      first.put(
+        "run_1",
+        "first.bin",
+        new Uint8Array([1]),
+        "application/octet-stream",
+      ),
+      second.put(
+        "run_1",
+        "second.bin",
+        new Uint8Array([2]),
+        "application/octet-stream",
+      ),
+    ])).resolves.toHaveLength(2);
+
+    expect(scans).toBe(1);
+    expect(candidateChecks).toBe(1);
+    await expect(first.get("artifact://run_1/first.bin"))
+      .resolves.toEqual(new Uint8Array([1]));
+    await expect(second.get("artifact://run_1/second.bin"))
+      .resolves.toEqual(new Uint8Array([2]));
+  });
+
+  it("skips a stale candidate replaced during concurrent maintenance", async () => {
+    const root = await temporaryRoot();
+    const now = 100_000;
+    const stale = join(root, ".artifact-tmp-999999-1000-ABC123");
+    const displaced = join(root, "displaced-stale");
+    await mkdir(stale);
+    await utimes(stale, 1, 1);
+    let candidateChecks = 0;
+    const hooks: LocalArtifactStoreTestHooks = {
+      now: () => now,
+      staleStagingAgeMs: 10_000,
+      stagingMaintenanceIntervalMs: 5_000,
+      isProcessAlive: () => false,
+      async afterStaleCandidateLstat(path) {
+        candidateChecks += 1;
+        await rename(path, displaced);
+        await mkdir(path);
+        await utimes(path, now / 1_000, now / 1_000);
+      },
+    };
+    const first = storeWithHooks(root, hooks);
+    const second = storeWithHooks(root, hooks);
+
+    await expect(Promise.all([
+      first.put(
+        "run_1",
+        "first-replacement.bin",
+        new Uint8Array([1]),
+        "application/octet-stream",
+      ),
+      second.put(
+        "run_1",
+        "second-replacement.bin",
+        new Uint8Array([2]),
+        "application/octet-stream",
+      ),
+    ])).resolves.toHaveLength(2);
+
+    expect(candidateChecks).toBe(1);
+    expect((await lstat(stale)).isDirectory()).toBe(true);
+    expect((await lstat(displaced)).isDirectory()).toBe(true);
+  });
+
+  it("throttles maintenance across stores and rescans after the interval", async () => {
+    const root = await temporaryRoot();
+    let now = 100_000;
+    let scans = 0;
+    await Promise.all(Array.from({ length: 128 }, (_, index) =>
+      mkdir(join(root, `artifact-seed-${index}`))
+    ));
+    const hooks: LocalArtifactStoreTestHooks = {
+      now: () => now,
+      staleStagingAgeMs: 10_000,
+      stagingMaintenanceIntervalMs: 5_000,
+      isProcessAlive: () => false,
+      onStagingScan: () => {
+        scans += 1;
+      },
+    };
+    const first = storeWithHooks(root, hooks);
+    const second = storeWithHooks(root, hooks);
+
+    for (let index = 0; index < 64; index += 1) {
+      const store = index % 2 === 0 ? first : second;
+      await store.put(
+        "run_1",
+        `batch-${index}.bin`,
+        new Uint8Array([index]),
+        "application/octet-stream",
+      );
+    }
+    await first.put(
+      "run_1",
+      "batch-0.bin",
+      new Uint8Array([0]),
+      "application/octet-stream",
+    );
+    expect(scans).toBe(1);
+
+    const stale = join(root, ".artifact-tmp-999999-1000-ABC123");
+    await mkdir(stale);
+    await utimes(stale, 1, 1);
+    now += 4_999;
+    await second.put(
+      "run_1",
+      "before-interval.bin",
+      new Uint8Array([1]),
+      "application/octet-stream",
+    );
+    expect(scans).toBe(1);
+    expect((await lstat(stale)).isDirectory()).toBe(true);
+
+    now += 1;
+    await first.put(
+      "run_1",
+      "after-interval.bin",
+      new Uint8Array([2]),
+      "application/octet-stream",
+    );
+    expect(scans).toBe(2);
+    await expect(lstat(stale).catch(() => null)).resolves.toBeNull();
   });
 
   it("never returns external bytes after an object directory replacement", async () => {

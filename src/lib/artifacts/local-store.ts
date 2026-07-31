@@ -44,8 +44,13 @@ const helperConflictExitCode = 73;
 const helperUnavailableExitCode = 78;
 const helperErrorLimit = 4 * 1024;
 const defaultStaleStagingAgeMs = 24 * 60 * 60 * 1_000;
+const defaultStagingMaintenanceIntervalMs = 5 * 60 * 1_000;
 const stagingNamePattern =
   /^\.artifact-tmp-([1-9][0-9]{0,9})-([0-9]{1,16})-[A-Za-z0-9]{6}$/;
+const stagingMaintenanceByRoot = new Map<string, {
+  inFlight?: Promise<void>;
+  lastCompletedAt?: number;
+}>();
 
 export type ArtifactStoreErrorCode =
   | "ARTIFACT_ROOT_REQUIRED"
@@ -95,7 +100,10 @@ export interface LocalArtifactStoreTestHooks {
   beforePublishRename?: () => Promise<void>;
   now?: () => number;
   staleStagingAgeMs?: number;
+  stagingMaintenanceIntervalMs?: number;
   isProcessAlive?: (pid: number) => boolean;
+  onStagingScan?: () => void;
+  afterStaleCandidateLstat?: (path: string) => Promise<void>;
 }
 
 function unsafe(message: string, cause?: unknown): never {
@@ -163,6 +171,10 @@ function identityFrom(stat: { dev: number; ino: number }): Identity {
 
 function sameIdentity(left: Identity, right: Identity) {
   return left.device === right.device && left.inode === right.inode;
+}
+
+function rootMaintenanceKey(root: RootSnapshot) {
+  return `${root.canonical}\0${root.device}:${root.inode}`;
 }
 
 function artifactChecksum(body: Uint8Array) {
@@ -642,13 +654,54 @@ export class LocalArtifactStore implements ArtifactStore {
     }
   }
 
-  private async scavengeStaleStaging(root: RootSnapshot) {
+  private maintenanceClock() {
     const now = this.testHooks.now?.() ?? Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      unsafe("Artifact staging clock is invalid.");
+    }
+    return now;
+  }
+
+  private async maintainStaging(root: RootSnapshot) {
+    const now = this.maintenanceClock();
+    const interval = this.testHooks.stagingMaintenanceIntervalMs ??
+      defaultStagingMaintenanceIntervalMs;
+    if (!Number.isSafeInteger(interval) || interval <= 0) {
+      unsafe("Artifact staging maintenance interval is invalid.");
+    }
+
+    const key = rootMaintenanceKey(root);
+    const state = stagingMaintenanceByRoot.get(key) ?? {};
+    stagingMaintenanceByRoot.set(key, state);
+    if (state.inFlight !== undefined) {
+      await state.inFlight;
+      return;
+    }
+    if (
+      state.lastCompletedAt !== undefined &&
+      now >= state.lastCompletedAt &&
+      now - state.lastCompletedAt < interval
+    ) {
+      return;
+    }
+
+    const operation = this.scavengeStaleStaging(root, now).then(() => {
+      state.lastCompletedAt = now;
+    });
+    state.inFlight = operation;
+    try {
+      await operation;
+    } finally {
+      if (state.inFlight === operation) {
+        delete state.inFlight;
+      }
+    }
+  }
+
+  private async scavengeStaleStaging(root: RootSnapshot, now: number) {
     const minimumAge =
       this.testHooks.staleStagingAgeMs ?? defaultStaleStagingAgeMs;
     if (
-      !Number.isSafeInteger(now) ||
-      now < 0 ||
       !Number.isSafeInteger(minimumAge) ||
       minimumAge <= 0
     ) {
@@ -656,6 +709,7 @@ export class LocalArtifactStore implements ArtifactStore {
     }
 
     await verifyRoot(root);
+    this.testHooks.onStagingScan?.();
     const entries = await readdir(root.path, { withFileTypes: true }).catch(
       (error) => unsafe("Artifact staging root could not be inspected.", error),
     );
@@ -672,7 +726,8 @@ export class LocalArtifactStore implements ArtifactStore {
         stat = await lstat(path);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        unsafe("Artifact staging candidate could not be inspected.", error);
+        await verifyRoot(root);
+        continue;
       }
       if (
         !stat.isDirectory() ||
@@ -681,11 +736,37 @@ export class LocalArtifactStore implements ArtifactStore {
       ) {
         continue;
       }
+      await this.testHooks.afterStaleCandidateLstat?.(path);
+
+      let stale: DirectorySnapshot;
+      try {
+        stale = await snapshotDirectory(path, root);
+      } catch {
+        await verifyRoot(root);
+        continue;
+      }
+      if (!sameIdentity(identityFrom(stat), stale)) continue;
+
+      let currentStat;
+      try {
+        currentStat = await lstat(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        await verifyRoot(root);
+        continue;
+      }
+      if (
+        !currentStat.isDirectory() ||
+        currentStat.isSymbolicLink() ||
+        !sameIdentity(identityFrom(currentStat), stale) ||
+        now - Math.max(createdAt, currentStat.mtimeMs) < minimumAge
+      ) {
+        continue;
+      }
       const alive = this.testHooks.isProcessAlive?.(pid) ??
         processIsAlive(pid);
       if (alive) continue;
 
-      const stale = await snapshotDirectory(path, root);
       await verifyChain(root, stale);
       await cleanupOwnedDirectory(stale, [path]);
     }
@@ -694,10 +775,7 @@ export class LocalArtifactStore implements ArtifactStore {
 
   private async createStagingDirectory(root: RootSnapshot) {
     await verifyRoot(root);
-    const now = this.testHooks.now?.() ?? Date.now();
-    if (!Number.isSafeInteger(now) || now < 0) {
-      unsafe("Artifact staging clock is invalid.");
-    }
+    const now = this.maintenanceClock();
     const path = await mkdtemp(
       join(root.path, `.artifact-tmp-${process.pid}-${now}-`),
     );
@@ -750,7 +828,7 @@ export class LocalArtifactStore implements ArtifactStore {
     mediaType: string,
   ): Promise<StoredArtifact> {
     const root = await this.trustedRoot();
-    await this.scavengeStaleStaging(root);
+    await this.maintainStaging(root);
     const rootHandle = await openTrustedRoot(root);
     const checksum = artifactChecksum(body);
     const stored: StoredArtifact = {
