@@ -2581,6 +2581,292 @@ describe.skipIf(!integrationEnabled).sequential(
       });
     });
 
+    it("converges AuditEvent to EventDelivery to an anchored SeoAudit market", async () => {
+      await withFreshSchema("backfill_poly_audit_delivery_anchor", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "entityType" = 'event-deliveries',
+            "entityId" = 'delivery_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'audit_txpuro';
+
+          UPDATE "EventDelivery"
+          SET
+            "entityType" = 'seo_audits',
+            "entityId" = 'seo_audit_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'delivery_txpuro';
+        `);
+
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        const scopes = await target.query(`
+          SELECT 'AuditEvent' AS source, "clientId", "brandId", "siteId",
+            "siteMarketId"
+          FROM "AuditEvent" WHERE "id" = 'audit_txpuro'
+          UNION ALL
+          SELECT 'EventDelivery', "clientId", "brandId", "siteId",
+            "siteMarketId"
+          FROM "EventDelivery" WHERE "id" = 'delivery_txpuro'
+          ORDER BY source
+        `);
+        expect(scopes.rows).toEqual([
+          {
+            source: "AuditEvent",
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+            siteMarketId: fixedOwnership.enMarketId,
+          },
+          {
+            source: "EventDelivery",
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+            siteMarketId: fixedOwnership.enMarketId,
+          },
+        ]);
+      });
+    });
+
+    it("converges EventDelivery to AuditEvent to an anchored SeoAudit market", async () => {
+      await withFreshSchema("backfill_poly_delivery_audit_anchor", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "entityType" = 'SEO_AUDITS',
+            "entityId" = 'seo_audit_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'audit_txpuro';
+
+          UPDATE "EventDelivery"
+          SET
+            "entityType" = 'audit-events',
+            "entityId" = 'audit_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'delivery_txpuro';
+        `);
+
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        const scopes = await target.query(`
+          SELECT 'AuditEvent' AS source, "siteMarketId"
+          FROM "AuditEvent" WHERE "id" = 'audit_txpuro'
+          UNION ALL
+          SELECT 'EventDelivery', "siteMarketId"
+          FROM "EventDelivery" WHERE "id" = 'delivery_txpuro'
+          ORDER BY source
+        `);
+        expect(scopes.rows).toEqual([
+          {
+            source: "AuditEvent",
+            siteMarketId: fixedOwnership.enMarketId,
+          },
+          {
+            source: "EventDelivery",
+            siteMarketId: fixedOwnership.enMarketId,
+          },
+        ]);
+      });
+    });
+
+    it("converges a three-hop alternating polymorphic chain", async () => {
+      await withFreshSchema("backfill_poly_long_chain", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await cloneAuditEvent(target, {
+          id: "audit_chain_middle",
+          entityType: "event_deliveries",
+          entityId: "delivery_txpuro",
+          siteMarketId: null,
+        });
+        await cloneEventDelivery(target, {
+          id: "delivery_chain_middle",
+          entityType: "audit-events",
+          entityId: "audit_chain_middle",
+          siteMarketId: null,
+        });
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "entityType" = 'event-deliveries',
+            "entityId" = 'delivery_chain_middle',
+            "siteMarketId" = NULL
+          WHERE "id" = 'audit_txpuro';
+
+          UPDATE "EventDelivery"
+          SET
+            "entityType" = 'seo-audits',
+            "entityId" = 'seo_audit_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'delivery_txpuro';
+        `);
+
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        const scopes = await target.query(`
+          SELECT "siteMarketId"
+          FROM "AuditEvent"
+          WHERE "id" IN ('audit_txpuro', 'audit_chain_middle')
+          UNION ALL
+          SELECT "siteMarketId"
+          FROM "EventDelivery"
+          WHERE "id" IN ('delivery_txpuro', 'delivery_chain_middle')
+        `);
+        expect(scopes.rows).toHaveLength(4);
+        expect(
+          scopes.rows.every(
+            (scope) => scope.siteMarketId === fixedOwnership.enMarketId,
+          ),
+        ).toBe(true);
+      });
+    });
+
+    it("propagates through a cycle with an existing ownership anchor", async () => {
+      await withFreshSchema("backfill_poly_anchored_cycle", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "clientId" = 'client_wing_heng',
+            "brandId" = 'brand_txpuro',
+            "siteId" = 'site_txpuro_com',
+            "siteMarketId" = 'site_market_txpuro_my_en',
+            "entityType" = 'event-deliveries',
+            "entityId" = 'delivery_txpuro'
+          WHERE "id" = 'audit_txpuro';
+
+          UPDATE "EventDelivery"
+          SET
+            "entityType" = 'audit_events',
+            "entityId" = 'audit_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'delivery_txpuro';
+        `);
+
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        const delivery = await target.query(`
+          SELECT "clientId", "brandId", "siteId", "siteMarketId"
+          FROM "EventDelivery" WHERE "id" = 'delivery_txpuro'
+        `);
+        expect(delivery.rows[0]).toEqual({
+          clientId: fixedOwnership.clientId,
+          brandId: fixedOwnership.brandId,
+          siteId: fixedOwnership.siteId,
+          siteMarketId: fixedOwnership.enMarketId,
+        });
+      });
+    });
+
+    it("falls back an unanchored polymorphic cycle to site-level ownership", async () => {
+      await withFreshSchema("backfill_poly_unanchored_cycle", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "entityType" = 'event-deliveries',
+            "entityId" = 'delivery_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'audit_txpuro';
+
+          UPDATE "EventDelivery"
+          SET
+            "entityType" = 'audit_events',
+            "entityId" = 'audit_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'delivery_txpuro';
+        `);
+
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        const scopes = await target.query(`
+          SELECT "clientId", "brandId", "siteId", "siteMarketId"
+          FROM "AuditEvent" WHERE "id" = 'audit_txpuro'
+          UNION ALL
+          SELECT "clientId", "brandId", "siteId", "siteMarketId"
+          FROM "EventDelivery" WHERE "id" = 'delivery_txpuro'
+        `);
+        expect(scopes.rows).toHaveLength(2);
+        expect(scopes.rows).toEqual([
+          {
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+            siteMarketId: null,
+          },
+          {
+            clientId: fixedOwnership.clientId,
+            brandId: fixedOwnership.brandId,
+            siteId: fixedOwnership.siteId,
+            siteMarketId: null,
+          },
+        ]);
+      });
+    });
+
+    it("rolls back a converged chain with a contradictory existing market", async () => {
+      await withFreshSchema("backfill_poly_chain_market_conflict", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "entityType" = 'event-deliveries',
+            "entityId" = 'delivery_txpuro',
+            "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+          WHERE "id" = 'audit_txpuro';
+
+          UPDATE "EventDelivery"
+          SET
+            "entityType" = 'seo-audits',
+            "entityId" = 'seo_audit_txpuro',
+            "siteMarketId" = NULL
+          WHERE "id" = 'delivery_txpuro';
+        `);
+
+        await expectPgError(
+          () => applyMigration(target, backfillMigrationPath),
+          "P0001",
+          /legacy relationship ownership mismatch.*AuditEvent.*EventDelivery/i,
+        );
+        const roots = await target.query(`
+          SELECT count(*)::int AS count FROM "Workspace"
+        `);
+        expect(roots.rows[0]?.count).toBe(0);
+      });
+    });
+
+    it("rolls back a missing known polymorphic parent after convergence", async () => {
+      await withFreshSchema("backfill_poly_missing_parent", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "AuditEvent"
+          SET
+            "entityType" = 'content-assets',
+            "entityId" = 'asset_missing',
+            "siteMarketId" = NULL
+          WHERE "id" = 'audit_txpuro'
+        `);
+
+        await expectPgError(
+          () => applyMigration(target, backfillMigrationPath),
+          "P0001",
+          /legacy polymorphic parent missing.*AuditEvent.*ContentAsset.*asset_missing/i,
+        );
+        const roots = await target.query(`
+          SELECT count(*)::int AS count FROM "Workspace"
+        `);
+        expect(roots.rows[0]?.count).toBe(0);
+      });
+    });
+
     it("backfills site-level polymorphic provenance without inventing a market", async () => {
       await withFreshSchema("backfill_poly_site_level", async (target) => {
         await prepareExpandedLegacyFixture(target);

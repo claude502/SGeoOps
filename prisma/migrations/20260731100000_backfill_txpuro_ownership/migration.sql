@@ -715,59 +715,213 @@ WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
 
--- Audit and delivery ownership is derived from a referenced legacy entity
--- when possible. Unknown legacy entity types are deterministic site-level
--- operations and intentionally keep siteMarketId NULL.
-WITH entity_scope AS (
-  SELECT 'contentasset' AS entity_type, "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "ContentAsset"
-  UNION ALL
-  SELECT 'georun', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "GeoRun"
-  UNION ALL
-  SELECT 'channelvariant', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "ChannelVariant"
-  UNION ALL
-  SELECT 'geoflowtasklink', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "GeoFlowTaskLink"
-  UNION ALL
-  SELECT 'geoflowsyncrun', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "GeoFlowSyncRun"
-  UNION ALL
-  SELECT 'trendtopic', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "TrendTopic"
-  UNION ALL
-  SELECT 'variantmetric', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "VariantMetric"
-  UNION ALL
-  SELECT 'seoaudit', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "SeoAudit"
-  UNION ALL
-  SELECT 'keywordranking', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "KeywordRanking"
-  UNION ALL
-  SELECT 'exportpackage', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "ExportPackage"
-  UNION ALL
-  SELECT 'distributiondispatch', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "DistributionDispatch"
-  UNION ALL
-  SELECT 'eventdelivery', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "EventDelivery"
-)
-UPDATE "AuditEvent" audit
-SET
-  "clientId" = scope."clientId",
-  "brandId" = scope."brandId",
-  "siteId" = scope."siteId",
-  "siteMarketId" = COALESCE(audit."siteMarketId", scope."siteMarketId")
-FROM entity_scope scope
-WHERE lower("resolve_legacy_entity_table"(audit."entityType")) =
-      scope.entity_type
-  AND audit."entityId" = scope."id"
-  AND audit."clientId" IS NULL
-  AND audit."brandId" IS NULL
-  AND audit."siteId" IS NULL;
+-- Resolve polymorphic ownership to a fixed point before site-level fallback.
+-- A row moves only from an empty root tuple to a complete root tuple, so each
+-- AuditEvent/EventDelivery row can update at most once. N rows therefore need
+-- at most N propagation rounds plus one zero-update convergence round.
+DO $$
+DECLARE
+  iteration_count bigint := 0;
+  max_iterations bigint;
+  audit_updates bigint;
+  delivery_updates bigint;
+BEGIN
+  SELECT
+    (SELECT count(*) FROM "AuditEvent")
+    + (SELECT count(*) FROM "EventDelivery")
+    + 1
+  INTO max_iterations;
+
+  LOOP
+    iteration_count := iteration_count + 1;
+
+    WITH entity_scope AS (
+      SELECT 'ContentAsset' AS entity_table, "id", "clientId", "brandId",
+        "siteId", "siteMarketId" FROM "ContentAsset"
+      UNION ALL
+      SELECT 'GeoRun', "id", "clientId", "brandId", "siteId", "siteMarketId"
+        FROM "GeoRun"
+      UNION ALL
+      SELECT 'ChannelVariant', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "ChannelVariant"
+      UNION ALL
+      SELECT 'GeoFlowTaskLink', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "GeoFlowTaskLink"
+      UNION ALL
+      SELECT 'GeoFlowSyncRun', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "GeoFlowSyncRun"
+      UNION ALL
+      SELECT 'AuditEvent', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "AuditEvent"
+      UNION ALL
+      SELECT 'TrendTopic', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "TrendTopic"
+      UNION ALL
+      SELECT 'VariantMetric', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "VariantMetric"
+      UNION ALL
+      SELECT 'SeoAudit', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "SeoAudit"
+      UNION ALL
+      SELECT 'KeywordRanking', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "KeywordRanking"
+      UNION ALL
+      SELECT 'ExportPackage', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "ExportPackage"
+      UNION ALL
+      SELECT 'DistributionDispatch', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "DistributionDispatch"
+      UNION ALL
+      SELECT 'EventDelivery', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "EventDelivery"
+    )
+    UPDATE "AuditEvent" audit
+    SET
+      "clientId" = scope."clientId",
+      "brandId" = scope."brandId",
+      "siteId" = scope."siteId",
+      "siteMarketId" = COALESCE(
+        audit."siteMarketId",
+        scope."siteMarketId"
+      )
+    FROM entity_scope scope
+    WHERE "resolve_legacy_entity_table"(audit."entityType") =
+          scope.entity_table
+      AND audit."entityId" = scope."id"
+      AND audit."clientId" IS NULL
+      AND audit."brandId" IS NULL
+      AND audit."siteId" IS NULL
+      AND scope."clientId" IS NOT NULL
+      AND scope."brandId" IS NOT NULL
+      AND scope."siteId" IS NOT NULL;
+    GET DIAGNOSTICS audit_updates = ROW_COUNT;
+
+    WITH entity_scope AS (
+      SELECT 'ContentAsset' AS entity_table, "id", "clientId", "brandId",
+        "siteId", "siteMarketId" FROM "ContentAsset"
+      UNION ALL
+      SELECT 'GeoRun', "id", "clientId", "brandId", "siteId", "siteMarketId"
+        FROM "GeoRun"
+      UNION ALL
+      SELECT 'ChannelVariant', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "ChannelVariant"
+      UNION ALL
+      SELECT 'GeoFlowTaskLink', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "GeoFlowTaskLink"
+      UNION ALL
+      SELECT 'GeoFlowSyncRun', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "GeoFlowSyncRun"
+      UNION ALL
+      SELECT 'AuditEvent', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "AuditEvent"
+      UNION ALL
+      SELECT 'TrendTopic', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "TrendTopic"
+      UNION ALL
+      SELECT 'VariantMetric', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "VariantMetric"
+      UNION ALL
+      SELECT 'SeoAudit', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "SeoAudit"
+      UNION ALL
+      SELECT 'KeywordRanking', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "KeywordRanking"
+      UNION ALL
+      SELECT 'ExportPackage', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "ExportPackage"
+      UNION ALL
+      SELECT 'DistributionDispatch', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "DistributionDispatch"
+      UNION ALL
+      SELECT 'EventDelivery', "id", "clientId", "brandId", "siteId",
+        "siteMarketId" FROM "EventDelivery"
+    )
+    UPDATE "EventDelivery" delivery
+    SET
+      "clientId" = scope."clientId",
+      "brandId" = scope."brandId",
+      "siteId" = scope."siteId",
+      "siteMarketId" = COALESCE(
+        delivery."siteMarketId",
+        scope."siteMarketId"
+      )
+    FROM entity_scope scope
+    WHERE "resolve_legacy_entity_table"(delivery."entityType") =
+          scope.entity_table
+      AND delivery."entityId" = scope."id"
+      AND delivery."clientId" IS NULL
+      AND delivery."brandId" IS NULL
+      AND delivery."siteId" IS NULL
+      AND scope."clientId" IS NOT NULL
+      AND scope."brandId" IS NOT NULL
+      AND scope."siteId" IS NOT NULL;
+    GET DIAGNOSTICS delivery_updates = ROW_COUNT;
+
+    EXIT WHEN audit_updates + delivery_updates = 0;
+    IF iteration_count >= max_iterations THEN
+      RAISE EXCEPTION
+        'polymorphic ownership propagation did not converge after % iterations for % rows',
+        iteration_count,
+        max_iterations - 1;
+    END IF;
+  END LOOP;
+END
+$$;
+
+-- Rows without a reachable ownership anchor become intentional site-level
+-- provenance only when they have no existing market signal. Preserve and
+-- reject any contradictory signal instead of clearing it.
+DO $$
+DECLARE
+  unresolved record;
+  parent_table text;
+BEGIN
+  SELECT child_table, child_id, entity_type, entity_id
+  INTO unresolved
+  FROM (
+    SELECT 'AuditEvent'::text AS child_table, "id" AS child_id,
+      "entityType" AS entity_type, "entityId" AS entity_id
+    FROM "AuditEvent"
+    WHERE "clientId" IS NULL
+      AND "brandId" IS NULL
+      AND "siteId" IS NULL
+      AND "siteMarketId" IS NOT NULL
+    UNION ALL
+    SELECT 'EventDelivery', "id", "entityType", "entityId"
+    FROM "EventDelivery"
+    WHERE "clientId" IS NULL
+      AND "brandId" IS NULL
+      AND "siteId" IS NULL
+      AND "siteMarketId" IS NOT NULL
+  ) unresolved_scope
+  ORDER BY child_table, child_id
+  LIMIT 1;
+
+  IF unresolved.child_id IS NOT NULL THEN
+    parent_table := "resolve_legacy_entity_table"(unresolved.entity_type);
+    IF parent_table IS NULL THEN
+      RAISE EXCEPTION
+        'site-level polymorphic provenance has market: % row % entity type %',
+        unresolved.child_table,
+        unresolved.child_id,
+        unresolved.entity_type;
+    ELSIF unresolved.entity_id IS NULL THEN
+      RAISE EXCEPTION
+        'type-level polymorphic audit has market: % row % entity type %',
+        unresolved.child_table,
+        unresolved.child_id,
+        unresolved.entity_type;
+    ELSE
+      RAISE EXCEPTION
+        'unresolved polymorphic provenance has market: % row % references % row %',
+        unresolved.child_table,
+        unresolved.child_id,
+        parent_table,
+        unresolved.entity_id;
+    END IF;
+  END IF;
+END
+$$;
 
 UPDATE "AuditEvent"
 SET
@@ -777,57 +931,6 @@ SET
 WHERE "clientId" IS NULL
   AND "brandId" IS NULL
   AND "siteId" IS NULL;
-
-WITH entity_scope AS (
-  SELECT 'contentasset' AS entity_type, "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "ContentAsset"
-  UNION ALL
-  SELECT 'georun', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "GeoRun"
-  UNION ALL
-  SELECT 'channelvariant', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "ChannelVariant"
-  UNION ALL
-  SELECT 'geoflowtasklink', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "GeoFlowTaskLink"
-  UNION ALL
-  SELECT 'geoflowsyncrun', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "GeoFlowSyncRun"
-  UNION ALL
-  SELECT 'auditevent', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "AuditEvent"
-  UNION ALL
-  SELECT 'trendtopic', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "TrendTopic"
-  UNION ALL
-  SELECT 'variantmetric', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "VariantMetric"
-  UNION ALL
-  SELECT 'seoaudit', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "SeoAudit"
-  UNION ALL
-  SELECT 'keywordranking', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "KeywordRanking"
-  UNION ALL
-  SELECT 'exportpackage', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "ExportPackage"
-  UNION ALL
-  SELECT 'distributiondispatch', "id", "clientId", "brandId", "siteId", "siteMarketId"
-  FROM "DistributionDispatch"
-)
-UPDATE "EventDelivery" delivery
-SET
-  "clientId" = scope."clientId",
-  "brandId" = scope."brandId",
-  "siteId" = scope."siteId",
-  "siteMarketId" = COALESCE(delivery."siteMarketId", scope."siteMarketId")
-FROM entity_scope scope
-WHERE lower("resolve_legacy_entity_table"(delivery."entityType")) =
-      scope.entity_type
-  AND delivery."entityId" = scope."id"
-  AND delivery."clientId" IS NULL
-  AND delivery."brandId" IS NULL
-  AND delivery."siteId" IS NULL;
 
 UPDATE "EventDelivery"
 SET
