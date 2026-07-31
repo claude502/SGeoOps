@@ -1,17 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockFetch = vi.fn();
-const mockFindUnique = vi.fn();
-const mockUpdate = vi.fn();
+const mocks = vi.hoisted(() => ({
+  requireAccessScope: vi.fn(),
+  requireRole: vi.fn(),
+  updateTrendStatus: vi.fn(),
+}));
 
-vi.stubGlobal("fetch", mockFetch);
+const scope = {
+  actorId: "reviewer_a",
+  workspaceId: "workspace_internal",
+  role: "Reviewer" as const,
+  clientIds: ["client_a"],
+};
 
-vi.mock("@/lib/prisma", () => ({
-  db: {
-    trendTopic: {
-      findUnique: mockFindUnique,
-      update: mockUpdate,
-    },
+vi.mock("@/lib/authorization", () => ({
+  AuthorizationError: class AuthorizationError extends Error {},
+  requireAccessScope: mocks.requireAccessScope,
+  requireRole: mocks.requireRole,
+}));
+
+vi.mock("@/lib/business/repository", () => ({
+  PrismaBusinessRepository: class {
+    updateTrendStatus(
+      receivedScope: typeof scope,
+      id: string,
+      status: "approved" | "rejected",
+      request: Request,
+    ) {
+      return mocks.updateTrendStatus(
+        receivedScope,
+        id,
+        status,
+        request,
+      );
+    }
   },
 }));
 
@@ -19,9 +41,7 @@ describe("PATCH /api/trends/[id]/status", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
-    process.env.TRIGGER_API_URL = "http://trigger-dev:3000";
-    process.env.TRIGGER_WORKER_API_KEY = "test-api-key";
-    process.env.TRIGGER_PROJECT_REF = "proj_geo_ops";
+    mocks.requireAccessScope.mockResolvedValue(scope);
   });
 
   it("returns 400 for an invalid status", async () => {
@@ -36,11 +56,11 @@ describe("PATCH /api/trends/[id]/status", () => {
     );
 
     expect(response.status).toBe(400);
+    expect(mocks.updateTrendStatus).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when the topic does not exist", async () => {
-    mockFindUnique.mockResolvedValue(null);
-
+  it("returns 404 when the scoped repository cannot find the topic", async () => {
+    mocks.updateTrendStatus.mockResolvedValue(null);
     const { PATCH } = await import("./route");
     const response = await PATCH(
       new Request("http://localhost/api/trends/topic_404/status", {
@@ -54,86 +74,51 @@ describe("PATCH /api/trends/[id]/status", () => {
     expect(response.status).toBe(404);
   });
 
-  it("does not emit an event when the topic is rejected", async () => {
-    mockFindUnique.mockResolvedValue({
-      id: "topic_reject",
-      keyword: "LHDN e-Invoice deadline",
-      platform: "linkedin",
-    });
-    mockUpdate.mockResolvedValue({
-      id: "topic_reject",
-      keyword: "LHDN e-Invoice deadline",
-      platform: "linkedin",
-      status: "rejected",
-    });
+  it.each(["approved", "rejected"] as const)(
+    "persists %s through the scoped transactional repository",
+    async (status) => {
+      mocks.updateTrendStatus.mockResolvedValue({
+        id: "topic_a",
+        clientId: "client_a",
+        status,
+      });
+      const { PATCH } = await import("./route");
+      const request = new Request(
+        "http://localhost/api/trends/topic_a/status",
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status }),
+        },
+      );
+      const response = await PATCH(request, {
+        params: Promise.resolve({ id: "topic_a" }),
+      });
 
-    const { PATCH } = await import("./route");
-    const response = await PATCH(
-      new Request("http://localhost/api/trends/topic_reject/status", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "rejected" }),
-      }),
-      { params: Promise.resolve({ id: "topic_reject" }) },
+      expect(response.status).toBe(200);
+      expect(mocks.updateTrendStatus).toHaveBeenCalledWith(
+        scope,
+        "topic_a",
+        status,
+        request,
+      );
+    },
+  );
+
+  it("returns 500 when required audit or outbox persistence fails", async () => {
+    mocks.updateTrendStatus.mockRejectedValue(
+      new Error("required event failed"),
     );
-
-    expect(response.status).toBe(200);
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("emits trend.approved when the topic is approved", async () => {
-    mockFindUnique.mockResolvedValue({
-      id: "topic_approve",
-      keyword: "LHDN e-Invoice deadline",
-      platform: "linkedin",
-    });
-    mockUpdate.mockResolvedValue({
-      id: "topic_approve",
-      keyword: "LHDN e-Invoice deadline",
-      platform: "linkedin",
-      status: "approved",
-    });
-    mockFetch.mockResolvedValue(new Response(null, { status: 202 }));
-
     const { PATCH } = await import("./route");
     const response = await PATCH(
-      new Request("http://localhost/api/trends/topic_approve/status", {
+      new Request("http://localhost/api/trends/topic_a/status", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "approved" }),
       }),
-      { params: Promise.resolve({ id: "topic_approve" }) },
+      { params: Promise.resolve({ id: "topic_a" }) },
     );
 
-    expect(response.status).toBe(200);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/events");
-    expect(init.method).toBe("POST");
-    expect(init.body).toContain("trend.approved");
-    expect(init.body).toContain("topic_approve");
-    expect(init.body).toContain("LHDN e-Invoice deadline");
-  });
-
-  it("returns 502 and does not approve when event delivery fails", async () => {
-    mockFindUnique.mockResolvedValue({
-      id: "topic_broken",
-      keyword: "LHDN e-Invoice deadline",
-      platform: "linkedin",
-    });
-    mockFetch.mockResolvedValue(new Response("boom", { status: 500 }));
-
-    const { PATCH } = await import("./route");
-    const response = await PATCH(
-      new Request("http://localhost/api/trends/topic_broken/status", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "approved" }),
-      }),
-      { params: Promise.resolve({ id: "topic_broken" }) },
-    );
-
-    expect(response.status).toBe(502);
-    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(response.status).toBe(500);
   });
 });

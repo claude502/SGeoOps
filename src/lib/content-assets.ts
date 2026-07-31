@@ -66,6 +66,10 @@ export const contentAssetInputSchema = z.object({
   publishedPath: optionalTrimmedText,
 });
 
+export const scopedContentAssetInputSchema = contentAssetInputSchema.extend({
+  siteId: z.string().trim().min(1),
+});
+
 export type ContentAssetInput = z.infer<typeof contentAssetInputSchema>;
 
 function slug(value: string) {

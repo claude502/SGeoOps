@@ -64,9 +64,9 @@ enum RunStatus {
 
 model ContentAsset {
   id                     String                 @id
-  clientId               String                 @default("client_wing_heng")
-  brandId                String                 @default("brand_txpuro")
-  siteId                 String                 @default("site_txpuro_com")
+  clientId               String
+  brandId                String
+  siteId                 String
   siteMarketId           String?
   title                  String
   body                   String
@@ -123,9 +123,9 @@ model ContentAsset {
 
 model GeoRun {
   id              String        @id
-  clientId        String        @default("client_wing_heng")
-  brandId         String        @default("brand_txpuro")
-  siteId          String        @default("site_txpuro_com")
+  clientId        String
+  brandId         String
+  siteId          String
   siteMarketId    String?
   projectId       String
   contentAssetId  String?
@@ -158,9 +158,9 @@ model GeoRun {
 
 model ChannelVariant {
   id             String          @id
-  clientId       String          @default("client_wing_heng")
-  brandId        String          @default("brand_txpuro")
-  siteId         String          @default("site_txpuro_com")
+  clientId       String
+  brandId        String
+  siteId         String
   siteMarketId   String?
   contentAssetId String
   contentAsset   ContentAsset    @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
@@ -190,9 +190,9 @@ model ChannelVariant {
 
 model GeoFlowTaskLink {
   id                String            @id @default(cuid())
-  clientId          String            @default("client_wing_heng")
-  brandId           String            @default("brand_txpuro")
-  siteId            String            @default("site_txpuro_com")
+  clientId          String
+  brandId           String
+  siteId            String
   siteMarketId      String?
   contentAssetId    String
   contentAsset      ContentAsset      @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
@@ -225,9 +225,9 @@ model GeoFlowTaskLink {
 
 model GeoFlowSyncRun {
   id           String      @id @default(cuid())
-  clientId     String      @default("client_wing_heng")
-  brandId      String      @default("brand_txpuro")
-  siteId       String      @default("site_txpuro_com")
+  clientId     String
+  brandId      String
+  siteId       String
   siteMarketId String?
   startedAt    DateTime    @default(now())
   finishedAt   DateTime?
@@ -248,9 +248,9 @@ model GeoFlowSyncRun {
 
 model AuditEvent {
   id           String      @id @default(cuid())
-  clientId     String      @default("client_wing_heng")
-  brandId      String      @default("brand_txpuro")
-  siteId       String      @default("site_txpuro_com")
+  clientId     String
+  brandId      String
+  siteId       String
   siteMarketId String?
   actor        String
   action       String
@@ -279,9 +279,9 @@ model AuditEvent {
 
 model TrendTopic {
   id           String         @id @default(cuid())
-  clientId     String         @default("client_wing_heng")
-  brandId      String         @default("brand_txpuro")
-  siteId       String         @default("site_txpuro_com")
+  clientId     String
+  brandId      String
+  siteId       String
   siteMarketId String?
   keyword      String
   platform     String
@@ -298,7 +298,7 @@ model TrendTopic {
   siteMarket   SiteMarket?    @relation("TrendTopicSiteMarket", fields: [siteMarketId], references: [id], onDelete: Restrict)
   assets       ContentAsset[]
 
-  @@unique([keyword, platform])
+  @@unique([clientId, keyword, platform])
   @@index([status])
   @@index([platform])
   @@index([capturedAt])
@@ -310,9 +310,9 @@ model TrendTopic {
 
 model VariantMetric {
   id               String         @id @default(cuid())
-  clientId         String         @default("client_wing_heng")
-  brandId          String         @default("brand_txpuro")
-  siteId           String         @default("site_txpuro_com")
+  clientId         String
+  brandId          String
+  siteId           String
   siteMarketId     String?
   channelVariantId String
   channelVariant   ChannelVariant @relation(fields: [channelVariantId], references: [id], onDelete: Cascade)
@@ -335,9 +335,9 @@ model VariantMetric {
 
 model SeoAudit {
   id           String      @id @default(cuid())
-  clientId     String      @default("client_wing_heng")
-  brandId      String      @default("brand_txpuro")
-  siteId       String      @default("site_txpuro_com")
+  clientId     String
+  brandId      String
+  siteId       String
   siteMarketId String?
   url          String
   score        Int
@@ -359,9 +359,9 @@ model SeoAudit {
 
 model KeywordRanking {
   id           String      @id @default(cuid())
-  clientId     String      @default("client_wing_heng")
-  brandId      String      @default("brand_txpuro")
-  siteId       String      @default("site_txpuro_com")
+  clientId     String
+  brandId      String
+  siteId       String
   siteMarketId String?
   keyword      String
   url          String
@@ -386,9 +386,9 @@ model KeywordRanking {
 
 model ExportPackage {
   id                     String                 @id @default(cuid())
-  clientId               String                 @default("client_wing_heng")
-  brandId                String                 @default("brand_txpuro")
-  siteId                 String                 @default("site_txpuro_com")
+  clientId               String
+  brandId                String
+  siteId                 String
   siteMarketId           String?
   contentAssetId         String
   contentAsset           ContentAsset           @relation(fields: [contentAssetId], references: [id], onDelete: Cascade)
@@ -418,9 +418,9 @@ model ExportPackage {
 
 model DistributionDispatch {
   id              String                     @id @default(cuid())
-  clientId        String                     @default("client_wing_heng")
-  brandId         String                     @default("brand_txpuro")
-  siteId          String                     @default("site_txpuro_com")
+  clientId        String
+  brandId         String
+  siteId          String
   siteMarketId    String?
   exportPackageId String
   exportPackage   ExportPackage              @relation(fields: [exportPackageId], references: [id], onDelete: Cascade)
@@ -451,9 +451,9 @@ model DistributionDispatch {
 
 model EventDelivery {
   id            String              @id @default(cuid())
-  clientId      String              @default("client_wing_heng")
-  brandId       String              @default("brand_txpuro")
-  siteId        String              @default("site_txpuro_com")
+  clientId      String
+  brandId       String
+  siteId        String
   siteMarketId  String?
   eventName     String
   entityType    String

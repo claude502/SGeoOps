@@ -775,7 +775,12 @@ export async function listTxpuroPublicAssets() {
 export async function initializeTxpuroWorkspace() {
   const assets = txpuroStarterAssets();
   if (isDatabaseConfigured()) {
-    const repository = new PrismaGeoFlowBridgeRepository();
+    const repository = new PrismaGeoFlowBridgeRepository({
+      clientId: "client_wing_heng",
+      brandId: "brand_txpuro",
+      siteId: "site_txpuro_com",
+      siteMarketId: null,
+    });
     await repository.seedContentAssets(assets);
   }
   return {

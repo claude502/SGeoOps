@@ -1,14 +1,17 @@
 import { GeoFlowClient, GeoFlowHttpError } from "@/lib/geoflow/client";
 import { readGeoFlowConfig } from "@/lib/geoflow/config";
 import { GeoFlowBridgeService } from "@/lib/geoflow/bridge-service";
-import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import {
+  PrismaGeoFlowBridgeRepository,
+  type GeoFlowBridgeRepository,
+} from "@/lib/geoflow/repository";
 import { isDatabaseConfigured } from "@/lib/prisma";
 
 export class IntegrationConfigError extends Error {
   constructor(
     message: string,
     public readonly missing: string[],
-    public readonly status = 503,
+    public readonly status = 500,
   ) {
     super(message);
     this.name = "IntegrationConfigError";
@@ -23,7 +26,9 @@ export function assertDatabaseReady() {
   }
 }
 
-export function createGeoFlowBridgeService() {
+export function createGeoFlowBridgeService(
+  repository: GeoFlowBridgeRepository = new PrismaGeoFlowBridgeRepository(),
+) {
   assertDatabaseReady();
   const configResult = readGeoFlowConfig();
   if (!configResult.ok || !configResult.config) {
@@ -34,7 +39,7 @@ export function createGeoFlowBridgeService() {
   }
 
   return new GeoFlowBridgeService(
-    new PrismaGeoFlowBridgeRepository(),
+    repository,
     new GeoFlowClient(configResult.config),
     configResult.config,
   );
@@ -51,11 +56,10 @@ export function integrationErrorResponse(error: unknown) {
   if (error instanceof GeoFlowHttpError) {
     return {
       body: {
-        error: error.message,
+        error: "GEOFlow integration request failed.",
         code: error.code,
-        details: error.details ?? null,
       },
-      status: error.status >= 400 ? error.status : 502,
+      status: error.status === 409 ? 409 : 500,
     };
   }
 

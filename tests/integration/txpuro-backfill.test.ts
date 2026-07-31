@@ -1223,7 +1223,7 @@ describe.skipIf(!integrationEnabled).sequential(
       const ownershipDefaults = await client.query<{
         table_name: string;
         column_name: string;
-        column_default: string;
+        column_default: string | null;
       }>(`
         SELECT table_name, column_name, column_default
         FROM information_schema.columns
@@ -1232,18 +1232,21 @@ describe.skipIf(!integrationEnabled).sequential(
           AND column_name = ANY(ARRAY['clientId', 'brandId', 'siteId'])
         ORDER BY table_name, column_name
       `, [legacyTables]);
-      // Task 9 must remove these compatibility defaults from both PostgreSQL
-      // and Prisma in the same migration; Task 4 intentionally keeps them.
-      const expectedDefaults: Record<string, string> = {
-        clientId: "'client_wing_heng'::text",
-        brandId: "'brand_txpuro'::text",
-        siteId: "'site_txpuro_com'::text",
-      };
       expect(ownershipDefaults.rows).toHaveLength(legacyTables.length * 3);
       for (const column of ownershipDefaults.rows) {
         expect(column.column_default, `${column.table_name}.${column.column_name}`)
-          .toBe(expectedDefaults[column.column_name]);
+          .toBeNull();
       }
+
+      await expect(
+        client.query(`
+          INSERT INTO "TrendTopic" (
+            "keyword", "platform", "score", "sourceType", "capturedAt"
+          ) VALUES (
+            'must have ownership', 'manual', 50, 'manual', CURRENT_TIMESTAMP
+          )
+        `),
+      ).rejects.toMatchObject({ code: "23502" });
 
       const foreignKeys = await client.query<{
         table_name: string;
@@ -1332,24 +1335,6 @@ describe.skipIf(!integrationEnabled).sequential(
         expect(trigger?.is_deferrable, table).toBe(false);
         expect(trigger?.is_initially_deferred, table).toBe(false);
       }
-
-      await client.query(`
-        INSERT INTO "GeoFlowSyncRun" ("id") VALUES ('sync_default_scope')
-      `);
-      const defaultScope = await client.query(`
-        SELECT "clientId", "brandId", "siteId", "siteMarketId"
-        FROM "GeoFlowSyncRun"
-        WHERE "id" = 'sync_default_scope'
-      `);
-      expect(defaultScope.rows[0]).toEqual({
-        clientId: fixedOwnership.clientId,
-        brandId: fixedOwnership.brandId,
-        siteId: fixedOwnership.siteId,
-        siteMarketId: null,
-      });
-      await client.query(`
-        DELETE FROM "GeoFlowSyncRun" WHERE "id" = 'sync_default_scope'
-      `);
 
       await expectPgError(
         () =>
@@ -3006,8 +2991,13 @@ describe.skipIf(!integrationEnabled).sequential(
         });
 
         await target.query(`
-          INSERT INTO "GeoFlowSyncRun" ("id")
-          VALUES ('write_after_enforce')
+          INSERT INTO "GeoFlowSyncRun" (
+            "id", "clientId", "brandId", "siteId"
+          )
+          VALUES (
+            'write_after_enforce', 'client_wing_heng',
+            'brand_txpuro', 'site_txpuro_com'
+          )
         `);
       });
     });

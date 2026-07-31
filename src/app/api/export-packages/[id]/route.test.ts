@@ -2,11 +2,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFindUnique = vi.fn();
 
-vi.mock("@/lib/prisma", () => ({
-  db: {
-    contentAsset: {
-      findUnique: mockFindUnique,
-    },
+vi.mock("@/lib/authorization", () => ({
+  AuthorizationError: class AuthorizationError extends Error {},
+  requireAccessScope: vi.fn().mockResolvedValue({
+    actorId: "viewer_a",
+    workspaceId: "workspace_internal",
+    role: "Viewer",
+    clientIds: ["client_a"],
+  }),
+  requireRole: vi.fn(),
+}));
+
+vi.mock("@/lib/business/repository", () => ({
+  PrismaBusinessRepository: class {
+    getExportAsset() {
+      return mockFindUnique();
+    }
   },
 }));
 

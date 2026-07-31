@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { recordAuditEvent } from "@/lib/audit-log";
+import { requireAccessScope, requireRole } from "@/lib/authorization";
+import { businessRouteError } from "@/lib/business/http";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
 import { generateChannelVariants } from "@/lib/geo-engine";
-import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
-import { saveChannelVariants } from "@/lib/geo-persistence";
-import { addVariants, getAsset } from "@/lib/geo-store";
 import { handoffVariantsToPostiz } from "@/lib/postiz-handoff";
-import { isDatabaseConfigured } from "@/lib/prisma";
 import { channelPlatforms } from "@/types/geo";
 
 const variantSchema = z.object({
@@ -20,84 +18,86 @@ const variantSchema = z.object({
       brandEntity: z.string().min(1),
     })
     .optional(),
+  siteId: z.string().min(1).optional(),
   platforms: z.array(z.enum(channelPlatforms)).optional(),
   accountPrefix: z.string().optional(),
   handoffToPostiz: z.boolean().optional(),
 });
 
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
-  const parsed = variantSchema.safeParse(body);
+  try {
+    const scope = await requireAccessScope(request);
+    requireRole(scope, ["Admin", "Operator"]);
+    const body = await request.json().catch(() => null);
+    const parsed = variantSchema.safeParse(body);
 
-  if (!parsed.success) {
-    await recordAuditEvent({
-      request,
-      action: "geo.variant",
-      entityType: "ChannelVariant",
-      outcome: "failure",
-      metadata: { reason: "invalid_payload" },
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Invalid variant payload", issues: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+
+    const resolvedAssetId = parsed.data.contentAssetId ?? parsed.data.assetId;
+    const repository = new PrismaBusinessRepository();
+
+    const asset = resolvedAssetId
+      ? await repository.findContentAsset(scope, resolvedAssetId)
+      : parsed.data.content && parsed.data.siteId
+        ? { id: "ad_hoc_asset", ...parsed.data.content }
+        : null;
+
+    if (!asset) {
+      if (resolvedAssetId) {
+        return NextResponse.json(
+          { error: "Content asset not found" },
+          { status: 404 },
+        );
+      }
+      return NextResponse.json(
+        {
+          error:
+            "Provide an owned contentAssetId, or inline content with siteId.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const variants = generateChannelVariants({
+      asset,
+      platforms:
+        parsed.data.platforms ?? [
+          "Knowledge Site",
+          "LinkedIn",
+          "X",
+          "WeChat",
+        ],
+      accountPrefix: parsed.data.accountPrefix,
     });
-    return NextResponse.json(
-      { error: "Invalid variant payload", issues: parsed.error.flatten() },
-      { status: 400 },
-    );
-  }
 
-  const resolvedAssetId = parsed.data.contentAssetId ?? parsed.data.assetId;
-
-  const asset = resolvedAssetId
-    ? isDatabaseConfigured()
-      ? await new PrismaGeoFlowBridgeRepository().findContentAsset(resolvedAssetId)
-      : getAsset(resolvedAssetId)
-    : parsed.data.content
-      ? { id: "ad_hoc_asset", ...parsed.data.content }
-      : null;
-
-  if (!asset) {
-    await recordAuditEvent({
+    if (!resolvedAssetId) {
+      return NextResponse.json(
+        { error: "Inline content persistence requires a content asset." },
+        { status: 422 },
+      );
+    }
+    const savedVariants = await repository.saveChannelVariants(
+      scope,
+      resolvedAssetId,
+      variants,
       request,
-      action: "geo.variant",
-      entityType: "ChannelVariant",
-      outcome: "failure",
-      metadata: { reason: "missing_content", contentAssetId: resolvedAssetId ?? null },
-    });
-    return NextResponse.json(
-      { error: "Provide contentAssetId or assetId for an existing asset, or an inline content object." },
-      { status: 400 },
     );
+
+    const handoff = parsed.data.handoffToPostiz
+      ? await handoffVariantsToPostiz(savedVariants)
+      : {
+          status: "not-configured" as const,
+          message: "Variants were saved locally and are ready for review.",
+          variants: savedVariants,
+        };
+
+    return NextResponse.json({ variants: savedVariants, handoff });
+  } catch (error) {
+    return businessRouteError(error);
   }
-
-  const variants = generateChannelVariants({
-    asset,
-    platforms: parsed.data.platforms ?? ["Knowledge Site", "LinkedIn", "X", "WeChat"],
-    accountPrefix: parsed.data.accountPrefix,
-  });
-
-  const savedVariants =
-    isDatabaseConfigured() && resolvedAssetId
-      ? await saveChannelVariants(variants)
-      : (addVariants(variants), variants);
-
-  const handoff = parsed.data.handoffToPostiz
-    ? await handoffVariantsToPostiz(savedVariants)
-    : {
-        status: "not-configured" as const,
-        message: "Variants were saved locally and are ready for review.",
-        variants: savedVariants,
-      };
-
-  await recordAuditEvent({
-    request,
-    action: "geo.variant",
-    entityType: resolvedAssetId ? "ContentAsset" : "ChannelVariant",
-    entityId: resolvedAssetId ?? savedVariants[0]?.id,
-    outcome: "success",
-    metadata: {
-      variantCount: savedVariants.length,
-      platforms: savedVariants.map((variant) => variant.platform),
-      handoffStatus: handoff.status,
-    },
-  });
-
-  return NextResponse.json({ variants: savedVariants, handoff });
 }

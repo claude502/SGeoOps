@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
-import { db } from "@/lib/prisma";
+import { requireAccessScope, requireRole } from "@/lib/authorization";
+import { businessRouteError } from "@/lib/business/http";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -12,40 +14,16 @@ export async function GET(request: Request) {
     : 20;
 
   try {
-    const assets = await db.contentAsset.findMany({
-      where: {
-        isPublic: true,
-        status: "Ready",
-        ...(platform ? { variants: { some: { platform } } } : {}),
+    const scope = await requireAccessScope(request);
+    requireRole(scope, ["Admin", "Operator", "Reviewer", "Viewer"]);
+    const assets = await new PrismaBusinessRepository().listContentPackages(
+      scope,
+      {
+        platform,
+        cursor,
+        limit,
       },
-      select: {
-        id: true,
-        title: true,
-        summary: true,
-        geoScore: true,
-        seoScore: true,
-        locale: true,
-        assetType: true,
-        publishedAt: true,
-        updatedAt: true,
-        variants: {
-          where: platform ? { platform } : undefined,
-          select: {
-            id: true,
-            platform: true,
-            copy: true,
-            mediaAssets: true,
-            status: true,
-            scheduledAt: true,
-            metrics: { orderBy: { recordedAt: "desc" }, take: 1 },
-          },
-        },
-        trendTopic: { select: { keyword: true, platform: true, score: true } },
-      },
-      orderBy: { updatedAt: "desc" },
-      take: limit + 1,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    });
+    );
 
     const hasMore = assets.length > limit;
     const items = hasMore ? assets.slice(0, limit) : assets;
@@ -56,10 +34,6 @@ export async function GET(request: Request) {
       hasMore,
     });
   } catch (err) {
-    console.error("[/api/content/packages] DB error:", err);
-    return NextResponse.json(
-      { error: "Failed to load content packages. Please try again." },
-      { status: 503 },
-    );
+    return businessRouteError(err);
   }
 }

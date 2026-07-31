@@ -1,38 +1,31 @@
 import { NextResponse } from "next/server";
-import { recordAuditEvent } from "@/lib/audit-log";
-import { initializeTxpuroWorkspace } from "@/lib/txpuro";
+import { requireAccessScope, requireRole } from "@/lib/authorization";
+import { businessRouteError } from "@/lib/business/http";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
+import {
+  txpuroProject,
+  txpuroPrompts,
+  txpuroStarterAssets,
+} from "@/lib/txpuro";
 
 export async function POST(request: Request) {
   try {
-    const result = await initializeTxpuroWorkspace();
-    await recordAuditEvent({
+    const scope = await requireAccessScope(request);
+    requireRole(scope, ["Admin"]);
+    const assets = txpuroStarterAssets();
+    await new PrismaBusinessRepository().seedOwnedContentAssets(
+      scope,
+      "site_txpuro_com",
+      assets,
       request,
-      action: "workspace.txpuro.init",
-      entityType: "Workspace",
-      entityId: result.project.id,
-      outcome: "success",
-      metadata: {
-        promptCount: result.prompts.length,
-        assetCount: result.assets.length,
-      },
-    });
+    );
 
     return NextResponse.json({
-      project: result.project,
-      prompts: result.prompts,
-      assets: result.assets,
+      project: txpuroProject,
+      prompts: txpuroPrompts,
+      assets,
     });
   } catch (error) {
-    await recordAuditEvent({
-      request,
-      action: "workspace.txpuro.init",
-      entityType: "Workspace",
-      entityId: "proj_txpuro_workspace",
-      outcome: "failure",
-      metadata: {
-        reason: error instanceof Error ? error.message : "unknown_error",
-      },
-    });
-    return NextResponse.json({ error: "Txpuro workspace initialization failed." }, { status: 500 });
+    return businessRouteError(error);
   }
 }

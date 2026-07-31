@@ -2,11 +2,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFindMany = vi.fn();
 
-vi.mock("@/lib/prisma", () => ({
-  db: {
-    contentAsset: {
-      findMany: mockFindMany,
-    },
+vi.mock("@/lib/authorization", () => ({
+  AuthorizationError: class AuthorizationError extends Error {},
+  requireAccessScope: vi.fn().mockResolvedValue({
+    actorId: "viewer_a",
+    workspaceId: "workspace_internal",
+    role: "Viewer",
+    clientIds: ["client_a"],
+  }),
+  requireRole: vi.fn(),
+}));
+
+vi.mock("@/lib/business/repository", () => ({
+  PrismaBusinessRepository: class {
+    listExportAssets() {
+      return mockFindMany();
+    }
   },
 }));
 

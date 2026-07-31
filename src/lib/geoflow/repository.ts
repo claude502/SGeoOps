@@ -1,5 +1,12 @@
+import type { Prisma, PrismaClient } from "@prisma/client";
+import { createAuditEvent } from "@/lib/audit-log";
+import type { AccessScope } from "@/lib/authorization";
+import type { OwnedContext } from "@/lib/business/repository";
+import { legacyScopeWhere, PrismaBusinessRepository } from "@/lib/business/repository";
+import { ScopedBusinessError } from "@/lib/business/http";
+import { createOutboxEvent } from "@/lib/events/outbox";
 import type { ContentAsset, GeoFlowTaskLinkView, GeoFlowTaskStatus } from "@/types/geo";
-import { getPrisma, isDatabaseConfigured } from "@/lib/prisma";
+import { db, getPrisma, isDatabaseConfigured } from "@/lib/prisma";
 
 export interface GeoFlowTaskLinkRecord extends GeoFlowTaskLinkView {
   taskPayload: unknown;
@@ -97,6 +104,15 @@ function mapContentStatus(status: ContentAsset["status"]) {
   return status;
 }
 
+function normalizeOwnership(ownership: OwnedContext): OwnedContext {
+  return {
+    clientId: ownership.clientId,
+    brandId: ownership.brandId,
+    siteId: ownership.siteId,
+    siteMarketId: ownership.siteMarketId,
+  };
+}
+
 function mapAsset(asset: {
   id: string;
   title: string;
@@ -158,70 +174,80 @@ function mapAsset(asset: {
 }
 
 export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
+  private readonly ownership?: OwnedContext;
+
+  constructor(ownership?: OwnedContext) {
+    this.ownership = ownership
+      ? normalizeOwnership(ownership)
+      : undefined;
+  }
+
+  private requireOwnership() {
+    if (!this.ownership) {
+      throw new Error(
+        "Explicit ownership is required for GEOFlow persistence.",
+      );
+    }
+    return this.ownership;
+  }
+
   async ensureContentAsset(asset: ContentAsset) {
     const prisma = getPrisma();
-    await prisma.contentAsset.upsert({
-      where: { id: asset.id },
-      create: {
-        id: asset.id,
-        title: asset.title,
-        body: asset.body,
-        summary: asset.summary,
-        brandEntity: asset.brandEntity,
-        sourceUrl: asset.sourceUrl,
-        targetKeywords: asset.targetKeywords,
-        canonicalUrl: asset.canonicalUrl,
-        status: mapContentStatus(asset.status),
-        geoScore: asset.geoScore,
-        owner: asset.owner,
-        sourceSystem: asset.sourceSystem ?? "geo_ops",
-        externalUrl: asset.externalUrl ?? null,
-        publishedAt: toDate(asset.publishedAt),
-        slug: asset.slug ?? null,
-        locale: asset.locale ?? "zh-CN",
-        assetType: asset.assetType ?? "guide-page",
-        audience: asset.audience ?? null,
-        seoTitle: asset.seoTitle ?? null,
-        metaDescription: asset.metaDescription ?? null,
-        faqs: (asset.faqs ?? []) as object[],
-        schemaType: asset.schemaType ?? "article",
-        ctaMode: asset.ctaMode ?? "self_signup",
-        publishTarget: asset.publishTarget ?? "geo_ops_internal",
-        isPublic: asset.isPublic ?? false,
-        publishedPath: asset.publishedPath ?? null,
-      },
-      update: {
-        title: asset.title,
-        body: asset.body,
-        summary: asset.summary,
-        brandEntity: asset.brandEntity,
-        sourceUrl: asset.sourceUrl,
-        targetKeywords: asset.targetKeywords,
-        canonicalUrl: asset.canonicalUrl,
-        status: mapContentStatus(asset.status),
-        geoScore: asset.geoScore,
-        owner: asset.owner,
-        sourceSystem: asset.sourceSystem ?? "geo_ops",
-        externalUrl: asset.externalUrl ?? null,
-        publishedAt: toDate(asset.publishedAt),
-        slug: asset.slug ?? null,
-        locale: asset.locale ?? "zh-CN",
-        assetType: asset.assetType ?? "guide-page",
-        audience: asset.audience ?? null,
-        seoTitle: asset.seoTitle ?? null,
-        metaDescription: asset.metaDescription ?? null,
-        faqs: (asset.faqs ?? []) as object[],
-        schemaType: asset.schemaType ?? "article",
-        ctaMode: asset.ctaMode ?? "self_signup",
-        publishTarget: asset.publishTarget ?? "geo_ops_internal",
-        isPublic: asset.isPublic ?? false,
-        publishedPath: asset.publishedPath ?? null,
-      },
+    const ownership = this.requireOwnership();
+    const existing = await prisma.contentAsset.findFirst({
+      where: { id: asset.id, ...ownership },
+      select: { id: true },
     });
+    const data = {
+      title: asset.title,
+      body: asset.body,
+      summary: asset.summary,
+      brandEntity: asset.brandEntity,
+      sourceUrl: asset.sourceUrl,
+      targetKeywords: asset.targetKeywords,
+      canonicalUrl: asset.canonicalUrl,
+      status: mapContentStatus(asset.status),
+      geoScore: asset.geoScore,
+      owner: asset.owner,
+      sourceSystem: asset.sourceSystem ?? "geo_ops",
+      externalUrl: asset.externalUrl ?? null,
+      publishedAt: toDate(asset.publishedAt),
+      slug: asset.slug ?? null,
+      locale: asset.locale ?? "zh-CN",
+      assetType: asset.assetType ?? "guide-page",
+      audience: asset.audience ?? null,
+      seoTitle: asset.seoTitle ?? null,
+      metaDescription: asset.metaDescription ?? null,
+      faqs: (asset.faqs ?? []) as object[],
+      schemaType: asset.schemaType ?? "article",
+      ctaMode: asset.ctaMode ?? "self_signup",
+      publishTarget: asset.publishTarget ?? "geo_ops_internal",
+      isPublic: asset.isPublic ?? false,
+      publishedPath: asset.publishedPath ?? null,
+    };
+    if (existing) {
+      const updated = await prisma.contentAsset.updateMany({
+        where: { id: asset.id, ...ownership },
+        data,
+      });
+      if (updated.count !== 1) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+    } else {
+      await prisma.contentAsset.create({
+        data: {
+          ...ownership,
+          ...data,
+          id: asset.id,
+        },
+      });
+    }
   }
 
   async findContentAsset(contentAssetId: string) {
-    const asset = await getPrisma().contentAsset.findUnique({ where: { id: contentAssetId } });
+    const asset = await getPrisma().contentAsset.findFirst({
+      where: { id: contentAssetId, ...this.requireOwnership() },
+    });
     return asset ? mapAsset(asset) : null;
   }
 
@@ -251,13 +277,17 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
   }
 
   async findLinkByIdempotencyKey(idempotencyKey: string) {
-    const link = await getPrisma().geoFlowTaskLink.findUnique({ where: { idempotencyKey } });
+    const link = await getPrisma().geoFlowTaskLink.findFirst({
+      where: { idempotencyKey, ...this.requireOwnership() },
+    });
     return link ? mapLink(link) : null;
   }
 
   async createLink(input: CreateGeoFlowTaskLinkInput) {
+    const ownership = this.requireOwnership();
     const link = await getPrisma().geoFlowTaskLink.create({
       data: {
+        ...ownership,
         contentAssetId: input.contentAssetId,
         idempotencyKey: input.idempotencyKey,
         status: input.status,
@@ -268,8 +298,10 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
   }
 
   async updateLink(id: string, input: UpdateGeoFlowTaskLinkInput) {
-    const link = await getPrisma().geoFlowTaskLink.update({
-      where: { id },
+    const prisma = getPrisma();
+    const ownership = this.requireOwnership();
+    const updated = await prisma.geoFlowTaskLink.updateMany({
+      where: { id, ...ownership },
       data: {
         ...(input.geoFlowTaskId !== undefined ? { geoFlowTaskId: input.geoFlowTaskId } : {}),
         ...(input.geoFlowJobId !== undefined ? { geoFlowJobId: input.geoFlowJobId } : {}),
@@ -282,12 +314,26 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
         ...(input.lastError !== undefined ? { lastError: input.lastError } : {}),
       },
     });
+    if (updated.count !== 1) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
+    const link = await prisma.geoFlowTaskLink.findFirst({
+      where: { id, ...ownership },
+    });
+    if (!link) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
     return mapLink(link);
   }
 
   async listSyncableLinks() {
+    const ownership = this.requireOwnership();
     const links = await getPrisma().geoFlowTaskLink.findMany({
-      where: { geoFlowTaskId: { not: null }, status: { not: "published" } },
+      where: {
+        geoFlowTaskId: { not: null },
+        status: { not: "published" },
+        ...ownership,
+      },
       orderBy: { updatedAt: "desc" },
     });
     return links.map(mapLink);
@@ -309,8 +355,8 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
     contentAssetId: string,
     publication: { externalUrl: string; canonicalUrl: string; publishedAt: string | Date },
   ) {
-    await getPrisma().contentAsset.update({
-      where: { id: contentAssetId },
+    const updated = await getPrisma().contentAsset.updateMany({
+      where: { id: contentAssetId, ...this.requireOwnership() },
       data: {
         externalUrl: publication.externalUrl,
         canonicalUrl: publication.canonicalUrl,
@@ -318,10 +364,15 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
         sourceSystem: "geoflow",
       },
     });
+    if (updated.count !== 1) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
   }
 
   async createSyncRun() {
-    const run = await getPrisma().geoFlowSyncRun.create({ data: {} });
+    const run = await getPrisma().geoFlowSyncRun.create({
+      data: this.requireOwnership(),
+    });
     return { id: run.id };
   }
 
@@ -329,14 +380,388 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
     id: string,
     result: { successCount: number; failureCount: number; errorSummary?: string | null },
   ) {
-    await getPrisma().geoFlowSyncRun.update({
-      where: { id },
+    const updated = await getPrisma().geoFlowSyncRun.updateMany({
+      where: { id, ...this.requireOwnership() },
       data: {
         finishedAt: new Date(),
         successCount: result.successCount,
         failureCount: result.failureCount,
         errorSummary: result.errorSummary ?? null,
       },
+    });
+    if (updated.count !== 1) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
+  }
+}
+
+function safeErrorSummary(value: string | null | undefined) {
+  if (!value) {
+    return value ?? null;
+  }
+  return value
+    .replace(
+      /\b(authorization|api[-_ ]?key|token|secret|password)\b\s*[:=]\s*\S+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\s+/g, " ")
+    .slice(0, 500);
+}
+
+export class ScopedPrismaGeoFlowBridgeRepository
+  implements GeoFlowBridgeRepository
+{
+  private readonly business: PrismaBusinessRepository;
+  private readonly syncOwnership?: OwnedContext;
+
+  constructor(
+    private readonly scope: AccessScope,
+    private readonly request?: Request,
+    syncOwnership?: OwnedContext,
+    private readonly database: PrismaClient = db,
+  ) {
+    this.syncOwnership = syncOwnership
+      ? normalizeOwnership(syncOwnership)
+      : undefined;
+    this.business = new PrismaBusinessRepository(database);
+  }
+
+  private async requiredEvents(
+    tx: Prisma.TransactionClient,
+    ownership: OwnedContext,
+    action: string,
+    entityType: string,
+    entityId: string,
+    eventType: string,
+    payload: Record<string, unknown>,
+  ) {
+    await createAuditEvent(tx, {
+      actorId: this.scope.actorId,
+      workspaceId: this.scope.workspaceId,
+      ...ownership,
+      action,
+      entityType,
+      entityId,
+      outcome: "success",
+      request: this.request,
+      metadata: payload,
+    });
+    await createOutboxEvent(tx, {
+      aggregateType: entityType,
+      aggregateId: entityId,
+      eventType,
+      payload,
+    });
+  }
+
+  async ensureContentAsset(asset: ContentAsset) {
+    const existing = await this.business.findContentAsset(this.scope, asset.id);
+    if (!existing) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
+  }
+
+  async findContentAsset(contentAssetId: string) {
+    return this.business.findContentAsset(this.scope, contentAssetId);
+  }
+
+  async findPublicContentAsset(
+    slug: string,
+    locale: string,
+    publishTarget = "txpuro",
+  ) {
+    const asset = await this.database.contentAsset.findFirst({
+      where: {
+        slug,
+        locale,
+        publishTarget,
+        isPublic: true,
+        ...legacyScopeWhere(this.scope),
+      },
+    });
+    return asset
+      ? this.business.findContentAsset(this.scope, asset.id)
+      : null;
+  }
+
+  async listContentAssets(options?: ListContentAssetsOptions) {
+    if (options?.cursor) {
+      const cursor = await this.business.findContentAsset(
+        this.scope,
+        options.cursor,
+      );
+      if (!cursor) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+    }
+    const assets = await this.database.contentAsset.findMany({
+      where: legacyScopeWhere(this.scope),
+      orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
+      take: options?.take ?? 100,
+      ...(options?.cursor
+        ? { cursor: { id: options.cursor }, skip: 1 }
+        : {}),
+      select: { id: true },
+    });
+    return Promise.all(
+      assets.map(async ({ id }) => {
+        const asset = await this.business.findContentAsset(this.scope, id);
+        if (!asset) {
+          throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+        }
+        return asset;
+      }),
+    );
+  }
+
+  async seedContentAssets() {
+    throw new Error("Scoped GEOFlow repository does not seed content assets.");
+  }
+
+  async findLinkByIdempotencyKey(idempotencyKey: string) {
+    const link = await this.database.geoFlowTaskLink.findFirst({
+      where: { idempotencyKey, ...legacyScopeWhere(this.scope) },
+    });
+    return link ? mapLink(link) : null;
+  }
+
+  async createLink(input: CreateGeoFlowTaskLinkInput) {
+    return this.database.$transaction(async (tx) => {
+      const asset = await tx.contentAsset.findFirst({
+        where: {
+          id: input.contentAssetId,
+          ...legacyScopeWhere(this.scope),
+        },
+        select: {
+          clientId: true,
+          brandId: true,
+          siteId: true,
+          siteMarketId: true,
+        },
+      });
+      if (!asset) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      const link = await tx.geoFlowTaskLink.create({
+        data: {
+          ...asset,
+          contentAssetId: input.contentAssetId,
+          idempotencyKey: input.idempotencyKey,
+          status: input.status,
+          taskPayload: input.taskPayload as Prisma.InputJsonValue,
+        },
+      });
+      await this.requiredEvents(
+        tx,
+        asset,
+        "geoflow.task.create",
+        "GeoFlowTaskLink",
+        link.id,
+        "geoflow.task.created",
+        { geoFlowTaskLinkId: link.id, contentAssetId: link.contentAssetId },
+      );
+      return mapLink(link);
+    });
+  }
+
+  async updateLink(id: string, input: UpdateGeoFlowTaskLinkInput) {
+    return this.database.$transaction(async (tx) => {
+      const existing = await tx.geoFlowTaskLink.findFirst({
+        where: { id, ...legacyScopeWhere(this.scope) },
+      });
+      if (!existing) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      const updated = await tx.geoFlowTaskLink.updateMany({
+        where: { id, ...legacyScopeWhere(this.scope) },
+        data: {
+          ...(input.geoFlowTaskId !== undefined
+            ? { geoFlowTaskId: input.geoFlowTaskId }
+            : {}),
+          ...(input.geoFlowJobId !== undefined
+            ? { geoFlowJobId: input.geoFlowJobId }
+            : {}),
+          ...(input.geoFlowArticleId !== undefined
+            ? { geoFlowArticleId: input.geoFlowArticleId }
+            : {}),
+          ...(input.geoFlowArticleUrl !== undefined
+            ? { geoFlowArticleUrl: input.geoFlowArticleUrl }
+            : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.lastSyncedAt !== undefined
+            ? { lastSyncedAt: toDate(input.lastSyncedAt) }
+            : {}),
+          ...(input.lastError !== undefined
+            ? { lastError: safeErrorSummary(input.lastError) }
+            : {}),
+        },
+      });
+      if (updated.count !== 1) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      const link = await tx.geoFlowTaskLink.findFirst({
+        where: { id, ...legacyScopeWhere(this.scope) },
+      });
+      if (!link) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      const ownership = {
+        clientId: link.clientId,
+        brandId: link.brandId,
+        siteId: link.siteId,
+        siteMarketId: link.siteMarketId,
+      };
+      await this.requiredEvents(
+        tx,
+        ownership,
+        "geoflow.task.update",
+        "GeoFlowTaskLink",
+        link.id,
+        "geoflow.task.updated",
+        {
+          geoFlowTaskLinkId: link.id,
+          contentAssetId: link.contentAssetId,
+          status: link.status,
+        },
+      );
+      return mapLink(link);
+    });
+  }
+
+  async listSyncableLinks() {
+    const links = await this.database.geoFlowTaskLink.findMany({
+      where: {
+        geoFlowTaskId: { not: null },
+        status: { not: "published" },
+        ...legacyScopeWhere(this.scope),
+        ...(this.syncOwnership
+          ? { siteId: this.syncOwnership.siteId }
+          : {}),
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+    return links.map(mapLink);
+  }
+
+  async listLinks() {
+    const links = await this.database.geoFlowTaskLink.findMany({
+      where: legacyScopeWhere(this.scope),
+      orderBy: { updatedAt: "desc" },
+      take: 100,
+    });
+    return links.map(mapLink);
+  }
+
+  async updateContentAssetPublication(
+    contentAssetId: string,
+    publication: {
+      externalUrl: string;
+      canonicalUrl: string;
+      publishedAt: string | Date;
+    },
+  ) {
+    await this.database.$transaction(async (tx) => {
+      const asset = await tx.contentAsset.findFirst({
+        where: { id: contentAssetId, ...legacyScopeWhere(this.scope) },
+        select: {
+          id: true,
+          clientId: true,
+          brandId: true,
+          siteId: true,
+          siteMarketId: true,
+        },
+      });
+      if (!asset) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      const updated = await tx.contentAsset.updateMany({
+        where: { id: contentAssetId, ...legacyScopeWhere(this.scope) },
+        data: {
+          externalUrl: publication.externalUrl,
+          canonicalUrl: publication.canonicalUrl,
+          publishedAt: toDate(publication.publishedAt),
+          sourceSystem: "geoflow",
+        },
+      });
+      if (updated.count !== 1) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      await this.requiredEvents(
+        tx,
+        asset,
+        "content_asset.publish",
+        "ContentAsset",
+        asset.id,
+        "content_asset.published",
+        { contentAssetId: asset.id, siteId: asset.siteId },
+      );
+    });
+  }
+
+  async createSyncRun() {
+    if (!this.syncOwnership) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
+    const ownership = this.syncOwnership;
+    return this.database.$transaction(async (tx) => {
+      const run = await tx.geoFlowSyncRun.create({
+        data: ownership,
+      });
+      await this.requiredEvents(
+        tx,
+        ownership,
+        "geoflow.sync.start",
+        "GeoFlowSyncRun",
+        run.id,
+        "geoflow.sync.started",
+        { geoFlowSyncRunId: run.id, siteId: run.siteId },
+      );
+      return { id: run.id };
+    });
+  }
+
+  async finishSyncRun(
+    id: string,
+    result: {
+      successCount: number;
+      failureCount: number;
+      errorSummary?: string | null;
+    },
+  ) {
+    if (!this.syncOwnership) {
+      throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+    }
+    const ownership = this.syncOwnership;
+    await this.database.$transaction(async (tx) => {
+      const updated = await tx.geoFlowSyncRun.updateMany({
+        where: {
+          id,
+          siteId: ownership.siteId,
+          ...legacyScopeWhere(this.scope),
+        },
+        data: {
+          finishedAt: new Date(),
+          successCount: result.successCount,
+          failureCount: result.failureCount,
+          errorSummary: safeErrorSummary(result.errorSummary),
+        },
+      });
+      if (updated.count !== 1) {
+        throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+      }
+      await this.requiredEvents(
+        tx,
+        ownership,
+        "geoflow.sync.finish",
+        "GeoFlowSyncRun",
+        id,
+        "geoflow.sync.finished",
+        {
+          geoFlowSyncRunId: id,
+          successCount: result.successCount,
+          failureCount: result.failureCount,
+        },
+      );
     });
   }
 }

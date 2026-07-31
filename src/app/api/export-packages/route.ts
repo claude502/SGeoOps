@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 
+import { requireAccessScope, requireRole } from "@/lib/authorization";
+import { businessRouteError } from "@/lib/business/http";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
 import { toExportPackageSummary } from "@/lib/export-packages";
-import { db } from "@/lib/prisma";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -14,53 +16,20 @@ export async function GET(request: Request) {
     ? Math.min(Math.max(requestedLimit, 1), 100)
     : 20;
 
-  if (status !== "ready") {
-    return NextResponse.json({
-      items: [],
-      nextCursor: null,
-      hasMore: false,
-    });
-  }
-
   try {
-    const assets = await db.contentAsset.findMany({
-      where: {
-        isPublic: true,
-        status: "Ready",
-        ...(language ? { locale: language } : {}),
-        ...(platform ? { variants: { some: { platform } } } : {}),
-      },
-      select: {
-        id: true,
-        title: true,
-        summary: true,
-        body: true,
-        canonicalUrl: true,
-        sourceUrl: true,
-        publishedPath: true,
-        geoScore: true,
-        seoScore: true,
-        locale: true,
-        assetType: true,
-        targetKeywords: true,
-        faqs: true,
-        createdAt: true,
-        updatedAt: true,
-        variants: {
-          where: platform ? { platform } : undefined,
-          select: {
-            platform: true,
-            copy: true,
-            mediaAssets: true,
-            metrics: { orderBy: { recordedAt: "desc" }, take: 1 },
-          },
-        },
-        trendTopic: { select: { keyword: true, platform: true, score: true } },
-      },
-      orderBy: { updatedAt: "desc" },
-      take: limit + 1,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    });
+    const scope = await requireAccessScope(request);
+    requireRole(scope, ["Admin", "Operator", "Reviewer", "Viewer"]);
+    if (status !== "ready") {
+      return NextResponse.json({
+        items: [],
+        nextCursor: null,
+        hasMore: false,
+      });
+    }
+    const assets = await new PrismaBusinessRepository().listExportAssets(
+      scope,
+      { platform, language, cursor, limit },
+    );
 
     const hasMore = assets.length > limit;
     const items = (hasMore ? assets.slice(0, limit) : assets).map(
@@ -73,10 +42,6 @@ export async function GET(request: Request) {
       hasMore,
     });
   } catch (err) {
-    console.error("[/api/export-packages] DB error:", err);
-    return NextResponse.json(
-      { error: "Failed to load export packages. Please try again." },
-      { status: 503 },
-    );
+    return businessRouteError(err);
   }
 }

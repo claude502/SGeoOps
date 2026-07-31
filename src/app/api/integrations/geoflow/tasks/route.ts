@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { recordAuditEvent } from "@/lib/audit-log";
-import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import { requireAccessScope, requireRole } from "@/lib/authorization";
+import { businessRouteError } from "@/lib/business/http";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
+import { ScopedPrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
 import { createGeoFlowBridgeService, integrationErrorResponse } from "@/lib/geoflow/server";
-import { getAsset } from "@/lib/geo-store";
-import { isDatabaseConfigured } from "@/lib/prisma";
 
 const geoBriefSchema = z.object({
   title: z.string().min(1),
@@ -25,71 +25,46 @@ const sendTaskSchema = z.object({
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
-  const parsed = sendTaskSchema.safeParse(body);
-
-  if (!parsed.success) {
-    await recordAuditEvent({
-      request,
-      action: "geoflow.task.send",
-      entityType: "GeoFlowTaskLink",
-      outcome: "failure",
-      metadata: { reason: "invalid_payload" },
-    });
-    return NextResponse.json(
-      { error: "Invalid GEOFlow task payload", issues: parsed.error.flatten() },
-      { status: 400 },
-    );
-  }
-
-  const asset = isDatabaseConfigured()
-    ? (await new PrismaGeoFlowBridgeRepository()
-        .findContentAsset(parsed.data.contentAssetId)
-      .catch(() => null)) ?? getAsset(parsed.data.contentAssetId)
-    : getAsset(parsed.data.contentAssetId);
-  if (!asset) {
-    await recordAuditEvent({
-      request,
-      action: "geoflow.task.send",
-      entityType: "ContentAsset",
-      entityId: parsed.data.contentAssetId,
-      outcome: "failure",
-      metadata: { reason: "content_asset_not_found" },
-    });
-    return NextResponse.json({ error: "Content asset not found" }, { status: 404 });
-  }
-
   try {
-    const result = await createGeoFlowBridgeService().sendToGeoFlow({
+    const scope = await requireAccessScope(request);
+    requireRole(scope, ["Admin", "Operator"]);
+    const body = await request.json().catch(() => null);
+    const parsed = sendTaskSchema.safeParse(body);
+
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          error: "Invalid GEOFlow task payload",
+          issues: parsed.error.flatten(),
+        },
+        { status: 400 },
+      );
+    }
+
+    const asset = await new PrismaBusinessRepository().findContentAsset(
+      scope,
+      parsed.data.contentAssetId,
+    );
+    if (!asset) {
+      return NextResponse.json(
+        { error: "Content asset not found" },
+        { status: 404 },
+      );
+    }
+
+    const result = await createGeoFlowBridgeService(
+      new ScopedPrismaGeoFlowBridgeRepository(scope, request),
+    ).sendToGeoFlow({
       asset,
       brief: parsed.data.brief ?? null,
     });
 
-    await recordAuditEvent({
-      request,
-      action: "geoflow.task.send",
-      entityType: "GeoFlowTaskLink",
-      entityId: result.link.id,
-      outcome: "success",
-      metadata: {
-        contentAssetId: asset.id,
-        geoFlowTaskId: result.link.geoFlowTaskId,
-        status: result.link.status,
-        reused: result.reused,
-      },
-    });
-
     return NextResponse.json(result, { status: result.reused ? 200 : 201 });
   } catch (error) {
-    await recordAuditEvent({
-      request,
-      action: "geoflow.task.send",
-      entityType: "ContentAsset",
-      entityId: asset.id,
-      outcome: "failure",
-      metadata: { reason: error instanceof Error ? error.message : "geoflow_task_failed" },
-    });
     const response = integrationErrorResponse(error);
+    if (response.status === 500) {
+      return businessRouteError(error);
+    }
     return NextResponse.json(response.body, { status: response.status });
   }
 }

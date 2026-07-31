@@ -1,5 +1,6 @@
 import type { ChannelVariant, GEORun, GeoRecommendation } from "@/types/geo";
 import type { Prisma } from "@prisma/client";
+import type { OwnedContext } from "@/lib/business/repository";
 import { getPrisma, isDatabaseConfigured } from "@/lib/prisma";
 import { addRuns, addVariants } from "@/lib/geo-store";
 
@@ -95,63 +96,86 @@ export async function listPersistentGeoRuns(projectId: string) {
   return runs.map(mapGeoRun);
 }
 
-export async function saveGeoRuns(runs: GEORun[], contentAssetId?: string | null) {
+export async function saveGeoRuns(
+  runs: GEORun[],
+  contentAssetId?: string | null,
+  ownership?: OwnedContext,
+) {
   if (!isDatabaseConfigured()) {
     addRuns(runs);
     return runs;
+  }
+  if (!ownership) {
+    throw new Error("Explicit ownership is required to persist GEO runs.");
   }
 
   const prisma = getPrisma();
   const nextRuns = runs.map((run) => ({ ...run, contentAssetId: contentAssetId ?? null }));
 
-  await prisma.$transaction(
-    nextRuns.map((run) =>
-      prisma.geoRun.upsert({
-        where: { id: run.id },
-        create: {
-          id: run.id,
-          projectId: run.projectId,
-          contentAssetId: run.contentAssetId,
-          prompt: run.prompt,
-          provider: run.provider,
-          locale: run.locale,
-          competitors: run.competitors,
-          modelAnswer: run.modelAnswer,
-          brandMentioned: run.brandMentioned,
-          citedDomains: run.citedDomains,
-          score: run.score,
-          recommendations: jsonRecommendations(run.recommendations),
-          createdAt: new Date(run.createdAt),
-          mode: run.mode,
-        },
-        update: {
-          contentAssetId: run.contentAssetId,
-          prompt: run.prompt,
-          provider: run.provider,
-          locale: run.locale,
-          competitors: run.competitors,
-          modelAnswer: run.modelAnswer,
-          brandMentioned: run.brandMentioned,
-          citedDomains: run.citedDomains,
-          score: run.score,
-          recommendations: jsonRecommendations(run.recommendations),
-          createdAt: new Date(run.createdAt),
-          mode: run.mode,
-        },
-      }),
-    ),
-  );
+  await prisma.$transaction(async (tx) => {
+    if (contentAssetId) {
+      const asset = await tx.contentAsset.findFirst({
+        where: { id: contentAssetId, ...ownership },
+        select: { id: true },
+      });
+      if (!asset) {
+        throw new Error("Owned content asset not found.");
+      }
+    }
 
-  if (contentAssetId) {
-    const aggregate = await prisma.geoRun.aggregate({
-      _avg: { score: true },
-      where: { contentAssetId },
-    });
-    await prisma.contentAsset.update({
-      where: { id: contentAssetId },
-      data: { geoScore: Math.round(aggregate._avg.score ?? 0) },
-    });
-  }
+    for (const run of nextRuns) {
+      const data = {
+        projectId: run.projectId,
+        contentAssetId: run.contentAssetId,
+        prompt: run.prompt,
+        provider: run.provider,
+        locale: run.locale,
+        competitors: run.competitors,
+        modelAnswer: run.modelAnswer,
+        brandMentioned: run.brandMentioned,
+        citedDomains: run.citedDomains,
+        score: run.score,
+        recommendations: jsonRecommendations(run.recommendations),
+        createdAt: new Date(run.createdAt),
+        mode: run.mode,
+      };
+      const existing = await tx.geoRun.findFirst({
+        where: { id: run.id, ...ownership },
+        select: { id: true },
+      });
+      if (existing) {
+        const updated = await tx.geoRun.updateMany({
+          where: { id: run.id, ...ownership },
+          data,
+        });
+        if (updated.count !== 1) {
+          throw new Error("Owned GEO run not found.");
+        }
+      } else {
+        await tx.geoRun.create({
+          data: {
+            ...ownership,
+            id: run.id,
+            ...data,
+          },
+        });
+      }
+    }
+
+    if (contentAssetId) {
+      const aggregate = await tx.geoRun.aggregate({
+        _avg: { score: true },
+        where: { contentAssetId, ...ownership },
+      });
+      const updated = await tx.contentAsset.updateMany({
+        where: { id: contentAssetId, ...ownership },
+        data: { geoScore: Math.round(aggregate._avg.score ?? 0) },
+      });
+      if (updated.count !== 1) {
+        throw new Error("Owned content asset not found.");
+      }
+    }
+  });
 
   return nextRuns;
 }
@@ -169,38 +193,62 @@ export async function listPersistentChannelVariants(contentAssetIds: string[]) {
   return variants.map(mapChannelVariant);
 }
 
-export async function saveChannelVariants(variants: ChannelVariant[]) {
+export async function saveChannelVariants(
+  variants: ChannelVariant[],
+  ownership?: OwnedContext,
+) {
   if (!isDatabaseConfigured()) {
     addVariants(variants);
     return variants;
   }
+  if (!ownership) {
+    throw new Error(
+      "Explicit ownership is required to persist channel variants.",
+    );
+  }
 
   const prisma = getPrisma();
-  await prisma.$transaction(
-    variants.map((variant) =>
-      prisma.channelVariant.upsert({
-        where: { id: variant.id },
-        create: {
-          id: variant.id,
-          contentAssetId: variant.contentAssetId,
-          platform: variant.platform,
-          accountId: variant.accountId,
-          copy: variant.copy,
-          mediaAssets: variant.mediaAssets,
-          scheduledAt: toDate(variant.scheduledAt),
-          status: variant.status,
-        },
-        update: {
-          platform: variant.platform,
-          accountId: variant.accountId,
-          copy: variant.copy,
-          mediaAssets: variant.mediaAssets,
-          scheduledAt: toDate(variant.scheduledAt),
-          status: variant.status,
-        },
-      }),
-    ),
-  );
+  await prisma.$transaction(async (tx) => {
+    for (const variant of variants) {
+      const asset = await tx.contentAsset.findFirst({
+        where: { id: variant.contentAssetId, ...ownership },
+        select: { id: true },
+      });
+      if (!asset) {
+        throw new Error("Owned content asset not found.");
+      }
+      const data = {
+        contentAssetId: variant.contentAssetId,
+        platform: variant.platform,
+        accountId: variant.accountId,
+        copy: variant.copy,
+        mediaAssets: variant.mediaAssets,
+        scheduledAt: toDate(variant.scheduledAt),
+        status: variant.status,
+      };
+      const existing = await tx.channelVariant.findFirst({
+        where: { id: variant.id, ...ownership },
+        select: { id: true },
+      });
+      if (existing) {
+        const updated = await tx.channelVariant.updateMany({
+          where: { id: variant.id, ...ownership },
+          data,
+        });
+        if (updated.count !== 1) {
+          throw new Error("Owned channel variant not found.");
+        }
+      } else {
+        await tx.channelVariant.create({
+          data: {
+            ...ownership,
+            id: variant.id,
+            ...data,
+          },
+        });
+      }
+    }
+  });
 
   return variants;
 }

@@ -1,33 +1,47 @@
 import { NextResponse } from "next/server";
-import { recordAuditEvent } from "@/lib/audit-log";
+import { z } from "zod";
+import { requireAccessScope, requireRole } from "@/lib/authorization";
+import { businessRouteError } from "@/lib/business/http";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
+import { ScopedPrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
 import { createGeoFlowBridgeService, integrationErrorResponse } from "@/lib/geoflow/server";
 
 export const dynamic = "force-dynamic";
 
+const schema = z.object({
+  siteId: z.string().min(1),
+});
+
 export async function POST(request: Request) {
   try {
-    const result = await createGeoFlowBridgeService().sync();
-    await recordAuditEvent({
-      request,
-      action: "geoflow.sync",
-      entityType: "GeoFlowSyncRun",
-      outcome: "success",
-      metadata: {
-        successCount: result.successCount,
-        failureCount: result.failureCount,
-        linkCount: result.links.length,
-      },
-    });
+    const scope = await requireAccessScope(request);
+    requireRole(scope, ["Admin", "Operator"]);
+    const parsed = schema.safeParse(
+      await request.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Invalid GEOFlow sync payload", issues: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const ownership = await new PrismaBusinessRepository().getSiteContext(
+      scope,
+      parsed.data.siteId,
+    );
+    const result = await createGeoFlowBridgeService(
+      new ScopedPrismaGeoFlowBridgeRepository(
+        scope,
+        request,
+        ownership,
+      ),
+    ).sync();
     return NextResponse.json(result);
   } catch (error) {
-    await recordAuditEvent({
-      request,
-      action: "geoflow.sync",
-      entityType: "GeoFlowSyncRun",
-      outcome: "failure",
-      metadata: { reason: error instanceof Error ? error.message : "geoflow_sync_failed" },
-    });
     const response = integrationErrorResponse(error);
+    if (response.status === 500) {
+      return businessRouteError(error);
+    }
     return NextResponse.json(response.body, { status: response.status });
   }
 }

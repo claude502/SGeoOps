@@ -2,34 +2,21 @@ import { NextResponse } from "next/server";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 
+import { businessRouteError } from "@/lib/business/http";
+import type { OwnedContext } from "@/lib/business/repository";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
 import { generateChannelVariants } from "@/lib/geo-engine";
-import { saveChannelVariants } from "@/lib/geo-persistence";
-import { db } from "@/lib/prisma";
+import { verifySignedInternalRequest } from "@/lib/internal-auth";
 import { scoreDualContent } from "@/lib/seo/dual-optimizer";
 import { buildTemplatePrompt, VIRAL_TEMPLATES } from "@/lib/viral/templates";
 import { buildLeveragePrompt, isSafeKeyword } from "@/lib/viral/trend-leverage";
-import type { GeoProject, Provider } from "@/types/geo";
+import type { ContentAsset, GeoProject, Provider } from "@/types/geo";
 
 const schema = z.object({
   topicId: z.string().min(1),
-  keyword: z.string().min(1),
-  platform: z.string().min(1),
+  keyword: z.string().min(1).optional(),
+  platform: z.string().min(1).optional(),
 });
-
-function getTxpuroProject(): GeoProject {
-  const canonicalDomain = process.env.TXPURO_PUBLIC_HOST ?? "txpuro.com";
-
-  return {
-    id: "proj_txpuro_trend_engine",
-    name: "Txpuro Trend Engine",
-    brand: "Txpuro",
-    product: "Txpuro E-Invoice System",
-    locale: "zh-CN",
-    competitors: ["MyInvois Portal", "manual process", "custom integration"],
-    targetKeywords: ["Malaysia e-Invoice", "LHDN e-Invoice deadline", "MyInvois"],
-    canonicalDomain,
-  };
-}
 
 function pickTemplate(platform: string) {
   return (
@@ -42,176 +29,160 @@ function pickTemplate(platform: string) {
   );
 }
 
-async function ensureVariantsForAsset(asset: {
-  id: string;
-  title?: string | null;
-  summary?: string | null;
-  body?: string | null;
-  brandEntity?: string | null;
-}) {
-  const existingVariantCount = await db.channelVariant.count({
-    where: { contentAssetId: asset.id },
-  });
-
-  if (existingVariantCount > 0) {
-    return existingVariantCount;
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  if (!(await verifySignedInternalRequest(request, rawBody))) {
+    return NextResponse.json(
+      { error: "Internal authentication required" },
+      { status: 401 },
+    );
   }
 
-  const variants = generateChannelVariants({
-    asset: {
-      id: asset.id,
-      title: asset.title ?? "Trend content",
-      summary: asset.summary ?? "",
-      body: asset.body ?? "",
-      brandEntity: asset.brandEntity ?? "Txpuro",
-    },
-    platforms: ["Knowledge Site", "LinkedIn", "WeChat", "Xiaohongshu"],
-    accountPrefix: "trend-engine",
-  });
-
-  await saveChannelVariants(variants);
-  return variants.length;
-}
-
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
+  let body: unknown = null;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid content-generate payload" },
+      { status: 400 },
+    );
+  }
   const parsed = schema.safeParse(body);
-
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Invalid content-generate payload", issues: parsed.error.flatten() },
+      {
+        error: "Invalid content-generate payload",
+        issues: parsed.error.flatten(),
+      },
       { status: 400 },
     );
   }
 
-  if (!isSafeKeyword(parsed.data.keyword)) {
+  const repository = new PrismaBusinessRepository();
+  let trend;
+  try {
+    trend = await repository.findInternalTrend(parsed.data.topicId);
+  } catch (error) {
+    return businessRouteError(error);
+  }
+  if (!trend) {
+    return NextResponse.json(
+      { error: "Trend topic not found" },
+      { status: 404 },
+    );
+  }
+
+  if (!isSafeKeyword(trend.keyword)) {
     return NextResponse.json(
       { error: "Keyword is unsafe for automated content generation." },
       { status: 400 },
     );
   }
 
-  const trend = await db.trendTopic.findUnique({
-    where: { id: parsed.data.topicId },
-  });
-
-  if (!trend) {
-    return NextResponse.json({ error: "Trend topic not found" }, { status: 404 });
-  }
-
-  const project = getTxpuroProject();
+  const ownership: OwnedContext = {
+    clientId: trend.clientId,
+    brandId: trend.brandId,
+    siteId: trend.siteId,
+    siteMarketId: trend.siteMarketId,
+  };
+  const project: GeoProject = {
+    id: trend.siteId,
+    name: `${trend.site.name} Trend Engine`,
+    brand: trend.site.brand.name,
+    product: `${trend.site.brand.name} content system`,
+    locale: "zh-CN",
+    competitors: [],
+    targetKeywords: [trend.keyword],
+    canonicalDomain: trend.site.canonicalHost,
+  };
   const provider: Provider = "ChatGPT";
-  const template = pickTemplate(parsed.data.platform);
+  const template = pickTemplate(trend.platform);
   const publishedPath = `/guides/trend/${trend.id}`;
   const canonicalUrl = `https://${project.canonicalDomain}${publishedPath}`;
-
-  const existingAsset = await db.contentAsset.findFirst({
-    where: {
-      trendTopicId: parsed.data.topicId,
-      sourceSystem: "trend_engine",
-      templateId: template.id,
-    },
-    select: {
-      id: true,
-      title: true,
-      summary: true,
-      body: true,
-      brandEntity: true,
-      geoScore: true,
-      seoScore: true,
-    },
-  });
-
-  if (existingAsset) {
-    const variantCount = await ensureVariantsForAsset(existingAsset);
-
-    return NextResponse.json(
-      {
-        contentAssetId: existingAsset.id,
-        variantCount,
-        geoScore: existingAsset.geoScore ?? 0,
-        seoScore: existingAsset.seoScore ?? 0,
-        reused: true,
-      },
-      { status: 200 },
-    );
-  }
-
   const leverageBlock = buildLeveragePrompt({
-    keyword: parsed.data.keyword,
+    keyword: trend.keyword,
     productName: project.product,
     brand: project.brand,
-    platform: parsed.data.platform,
+    platform: trend.platform,
   });
   const templateBlock = buildTemplatePrompt(template, {
     productName: project.brand,
-    keyword: parsed.data.keyword,
-    platform: parsed.data.platform,
+    keyword: trend.keyword,
+    platform: trend.platform,
   });
-
-  const title = `${parsed.data.keyword} | ${project.brand} trend response`;
+  const title = `${trend.keyword} | ${project.brand} trend response`;
   const bodyText = [
-    `${project.brand} can respond to the trend topic "${parsed.data.keyword}" with a compliance-first, SME-friendly angle.`,
+    `${project.brand} can respond to the trend topic "${trend.keyword}" with a compliance-first, customer-friendly angle.`,
     "This generated draft ties current demand to a productized workflow, highlights practical evaluation criteria, and gives a clean handoff into guides or downstream distribution.",
     leverageBlock,
     templateBlock,
   ].join("\n\n");
-  const summary = `Trend-driven content draft for ${parsed.data.keyword} on ${parsed.data.platform}.`;
+  const summary = `Trend-driven content draft for ${trend.keyword} on ${trend.platform}.`;
   const scores = scoreDualContent({
     title,
     body: bodyText,
-    targetKeywords: [parsed.data.keyword, ...project.targetKeywords],
+    targetKeywords: [trend.keyword],
     project,
-    prompt: parsed.data.keyword,
+    prompt: trend.keyword,
     provider,
   });
+  const assetId = `asset_${nanoid(12)}`;
+  const asset: ContentAsset & { seoScore: number } = {
+    id: assetId,
+    title,
+    body: bodyText,
+    summary,
+    brandEntity: project.brand,
+    sourceUrl: canonicalUrl,
+    targetKeywords: [trend.keyword],
+    canonicalUrl,
+    status: "Ready",
+    geoScore: scores.geoScore,
+    seoScore: scores.seoScore,
+    updatedAt: new Date().toISOString(),
+    owner: "geo-worker",
+    sourceSystem: "trend_engine",
+    externalUrl: null,
+    publishedAt: null,
+    slug: `trend/${trend.id}`,
+    locale: "zh-CN",
+    assetType: "guide-page",
+    audience: null,
+    seoTitle: title,
+    metaDescription: summary,
+    faqs: [],
+    schemaType: "article",
+    ctaMode: "self_signup",
+    publishTarget: "txpuro",
+    isPublic: true,
+    publishedPath,
+  };
+  const variants = generateChannelVariants({
+    asset,
+    platforms: ["Knowledge Site", "LinkedIn", "WeChat", "Xiaohongshu"],
+    accountPrefix: "trend-engine",
+  });
 
-  const asset = await db.contentAsset.create({
-    data: {
-      id: `asset_${nanoid(12)}`,
-      title,
-      body: bodyText,
-      summary,
-      brandEntity: project.brand,
-      sourceUrl: canonicalUrl,
-      targetKeywords: [parsed.data.keyword, ...project.targetKeywords],
-      canonicalUrl,
-      status: "Ready",
-      geoScore: scores.geoScore,
-      seoScore: scores.seoScore,
-      owner: "geo-worker",
-      sourceSystem: "trend_engine",
-      locale: project.locale,
-      assetType: "guide-page",
-      seoTitle: title,
-      metaDescription: summary,
-      faqs: [],
-      schemaType: "article",
-      ctaMode: "self_signup",
-      publishTarget: "txpuro",
-      isPublic: true,
-      publishedPath,
-      trendTopicId: parsed.data.topicId,
+  try {
+    const result = await repository.generateContentForTrend({
+      trendId: trend.id,
+      ownership,
       templateId: template.id,
-    },
-    select: { id: true, title: true, summary: true, body: true, brandEntity: true },
-  });
-
-  const variantCount = await ensureVariantsForAsset({
-    id: asset.id,
-    title: asset.title ?? title,
-    summary: asset.summary ?? summary,
-    body: asset.body ?? bodyText,
-    brandEntity: asset.brandEntity ?? project.brand,
-  });
-
-  return NextResponse.json(
-    {
-      contentAssetId: asset.id,
-      variantCount,
-      geoScore: scores.geoScore,
-      seoScore: scores.seoScore,
-    },
-    { status: 201 },
-  );
+      asset,
+      variants,
+      request,
+    });
+    return NextResponse.json(
+      {
+        contentAssetId: result.asset.id,
+        variantCount: result.variantCount,
+        geoScore: result.asset.geoScore,
+        seoScore: result.seoScore,
+        ...(result.reused ? { reused: true } : {}),
+      },
+      { status: result.reused ? 200 : 201 },
+    );
+  } catch (error) {
+    return businessRouteError(error);
+  }
 }

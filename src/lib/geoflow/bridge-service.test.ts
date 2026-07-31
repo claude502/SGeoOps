@@ -3,6 +3,7 @@ import { GeoFlowBridgeService, type GeoFlowApi } from "@/lib/geoflow/bridge-serv
 import { GeoFlowClient, GeoFlowHttpError } from "@/lib/geoflow/client";
 import { readGeoFlowConfig, type GeoFlowConfig } from "@/lib/geoflow/config";
 import { InMemoryGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
+import { integrationErrorResponse } from "@/lib/geoflow/server";
 import { seedAssets } from "@/lib/sample-data";
 
 const config: GeoFlowConfig = {
@@ -125,6 +126,27 @@ describe("readGeoFlowConfig", () => {
         "GEOFLOW_AI_MODEL_ID",
       ]),
     );
+  });
+});
+
+describe("integrationErrorResponse", () => {
+  it("maps upstream authentication failures to a safe internal failure", () => {
+    const response = integrationErrorResponse(
+      new GeoFlowHttpError(
+        "authorization=top-secret",
+        401,
+        "geoflow_auth_failed",
+        { responseBody: "full upstream content" },
+      ),
+    );
+
+    expect(response).toEqual({
+      body: {
+        error: "GEOFlow integration request failed.",
+        code: "geoflow_auth_failed",
+      },
+      status: 500,
+    });
   });
 });
 

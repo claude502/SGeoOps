@@ -12,11 +12,13 @@ import {
 } from "vitest";
 
 import type { AccessScope } from "../../src/lib/authorization";
+import { PrismaBusinessRepository } from "../../src/lib/business/repository";
 import { PrismaIntegrationRepository } from "../../src/lib/integrations/repository";
 import {
   PrismaOrganizationRepository,
   ScopedOrganizationError,
 } from "../../src/lib/organization/repository";
+import type { ContentAsset } from "../../src/types/geo";
 
 const integrationEnabled = process.env.SGEO_DATABASE_INTEGRATION === "1";
 const databaseUrl = process.env.TEST_DATABASE_URL ?? "";
@@ -40,6 +42,7 @@ let prisma: PrismaClient;
 let schema = "";
 let organizations: PrismaOrganizationRepository;
 let integrations: PrismaIntegrationRepository;
+let business: PrismaBusinessRepository;
 
 function quoteIdentifier(identifier: string) {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(identifier)) {
@@ -145,7 +148,60 @@ async function seedOwnership() {
         'https://cms-b.example.com', ARRAY['publish'], '1.0.0',
         'file:client-b/webflow-token', CURRENT_TIMESTAMP
       );
+
+    INSERT INTO "ContentAsset" (
+      "id", "clientId", "brandId", "siteId", "title", "body", "summary",
+      "brandEntity", "sourceUrl", "targetKeywords", "canonicalUrl", "status",
+      "geoScore", "owner", "sourceSystem", "locale", "assetType",
+      "schemaType", "ctaMode", "publishTarget", "isPublic", "updatedAt"
+    ) VALUES
+      (
+        'asset_a', 'client_a', 'brand_a', 'site_a', 'Asset A', 'Body A',
+        'Summary A', 'Brand A', 'https://site-a.example.com/a',
+        ARRAY['a'], 'https://site-a.example.com/a', 'Ready', 80,
+        'operator_a', 'geo_ops', 'en', 'guide-page', 'article',
+        'self_signup', 'geo_ops_internal', true, CURRENT_TIMESTAMP
+      ),
+      (
+        'asset_b', 'client_b', 'brand_b', 'site_b', 'Asset B', 'Body B',
+        'Summary B', 'Brand B', 'https://site-b.example.com/b',
+        ARRAY['b'], 'https://site-b.example.com/b', 'Ready', 80,
+        'operator_b', 'geo_ops', 'en', 'guide-page', 'article',
+        'self_signup', 'geo_ops_internal', true, CURRENT_TIMESTAMP
+      );
   `);
+}
+
+function newAsset(id: string): ContentAsset {
+  return {
+    id,
+    title: "Atomic asset",
+    body: "Atomic body",
+    summary: "Atomic summary",
+    brandEntity: "Brand A",
+    sourceUrl: "https://site-a.example.com/atomic",
+    targetKeywords: ["atomic"],
+    canonicalUrl: "https://site-a.example.com/atomic",
+    status: "Draft",
+    geoScore: 0,
+    updatedAt: new Date().toISOString(),
+    owner: "operator_a",
+    sourceSystem: "geo_ops",
+    externalUrl: null,
+    publishedAt: null,
+    slug: "atomic",
+    locale: "en",
+    assetType: "guide-page",
+    audience: null,
+    seoTitle: "Atomic asset",
+    metaDescription: "Atomic summary",
+    faqs: [],
+    schemaType: "article",
+    ctaMode: "self_signup",
+    publishTarget: "geo_ops_internal",
+    isPublic: false,
+    publishedPath: "/atomic",
+  };
 }
 
 describe.skipIf(!integrationEnabled).sequential(
@@ -278,6 +334,77 @@ describe.skipIf(!integrationEnabled).sequential(
           "updatedAt" TIMESTAMP(3) NOT NULL,
           UNIQUE ("siteId", "siteMarketId", "type")
         );
+
+        CREATE TYPE "ContentStatus" AS ENUM (
+          'Draft', 'Review', 'Ready', 'Published', 'Paused'
+        );
+
+        CREATE TABLE "ContentAsset" (
+          "id" TEXT PRIMARY KEY,
+          "clientId" TEXT NOT NULL REFERENCES "Client"("id"),
+          "brandId" TEXT NOT NULL REFERENCES "Brand"("id"),
+          "siteId" TEXT NOT NULL REFERENCES "Site"("id"),
+          "siteMarketId" TEXT REFERENCES "SiteMarket"("id"),
+          "title" TEXT NOT NULL,
+          "body" TEXT NOT NULL,
+          "summary" TEXT NOT NULL,
+          "brandEntity" TEXT NOT NULL,
+          "sourceUrl" TEXT NOT NULL,
+          "targetKeywords" TEXT[] NOT NULL,
+          "canonicalUrl" TEXT NOT NULL,
+          "status" "ContentStatus" NOT NULL DEFAULT 'Draft',
+          "geoScore" INTEGER NOT NULL DEFAULT 0,
+          "owner" TEXT NOT NULL,
+          "sourceSystem" TEXT NOT NULL DEFAULT 'geo_ops',
+          "externalUrl" TEXT,
+          "publishedAt" TIMESTAMP(3),
+          "slug" TEXT,
+          "locale" TEXT NOT NULL DEFAULT 'zh-CN',
+          "assetType" TEXT NOT NULL DEFAULT 'guide-page',
+          "audience" TEXT,
+          "seoTitle" TEXT,
+          "metaDescription" TEXT,
+          "faqs" JSONB,
+          "schemaType" TEXT NOT NULL DEFAULT 'article',
+          "ctaMode" TEXT NOT NULL DEFAULT 'self_signup',
+          "publishTarget" TEXT NOT NULL DEFAULT 'geo_ops_internal',
+          "isPublic" BOOLEAN NOT NULL DEFAULT false,
+          "publishedPath" TEXT,
+          "seoScore" INTEGER,
+          "trendTopicId" TEXT,
+          "templateId" TEXT,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" TIMESTAMP(3) NOT NULL
+        );
+
+        CREATE TABLE "AuditEvent" (
+          "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          "clientId" TEXT NOT NULL REFERENCES "Client"("id"),
+          "brandId" TEXT NOT NULL REFERENCES "Brand"("id"),
+          "siteId" TEXT NOT NULL REFERENCES "Site"("id"),
+          "siteMarketId" TEXT REFERENCES "SiteMarket"("id"),
+          "actor" TEXT NOT NULL,
+          "action" TEXT NOT NULL,
+          "entityType" TEXT NOT NULL,
+          "entityId" TEXT,
+          "outcome" TEXT NOT NULL,
+          "requestId" TEXT,
+          "metadata" JSONB,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE "OutboxEvent" (
+          "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          "aggregateType" TEXT NOT NULL,
+          "aggregateId" TEXT NOT NULL,
+          "eventType" TEXT NOT NULL,
+          "payload" JSONB NOT NULL,
+          "status" TEXT NOT NULL DEFAULT 'pending',
+          "attemptCount" INTEGER NOT NULL DEFAULT 0,
+          "availableAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "sentAt" TIMESTAMP(3),
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
       `);
 
       prisma = new PrismaClient({
@@ -285,6 +412,7 @@ describe.skipIf(!integrationEnabled).sequential(
       });
       organizations = new PrismaOrganizationRepository(prisma);
       integrations = new PrismaIntegrationRepository(prisma);
+      business = new PrismaBusinessRepository(prisma);
     });
 
     afterAll(async () => {
@@ -324,6 +452,60 @@ describe.skipIf(!integrationEnabled).sequential(
           code: "RESOURCE_NOT_FOUND",
         });
       }
+    });
+
+    it("returns identical null results for a Client B asset and a missing asset", async () => {
+      await expect(
+        business.findContentAsset(scopeA, "asset_a"),
+      ).resolves.toMatchObject({
+        id: "asset_a",
+        clientId: "client_a",
+        siteId: "site_a",
+      });
+      await expect(
+        business.findContentAsset(scopeA, "asset_b"),
+      ).resolves.toBeNull();
+      await expect(
+        business.findContentAsset(scopeA, "asset_missing"),
+      ).resolves.toBeNull();
+    });
+
+    it("rolls back the business write and audit when outbox creation fails", async () => {
+      await adminClient.query(`
+        CREATE FUNCTION fail_task9_outbox()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'forced outbox failure';
+        END
+        $$;
+        CREATE TRIGGER fail_task9_outbox
+        BEFORE INSERT ON "OutboxEvent"
+        FOR EACH ROW EXECUTE FUNCTION fail_task9_outbox();
+      `);
+
+      await expect(
+        business.createContentAsset(
+          scopeA,
+          "site_a",
+          newAsset("asset_atomic_rollback"),
+        ),
+      ).rejects.toThrow("forced outbox failure");
+
+      const [assetCount, auditCount] = await Promise.all([
+        prisma.contentAsset.count({
+          where: { id: "asset_atomic_rollback" },
+        }),
+        prisma.auditEvent.count({
+          where: { entityId: "asset_atomic_rollback" },
+        }),
+      ]);
+      expect(assetCount).toBe(0);
+      expect(auditCount).toBe(0);
+
+      await adminClient.query(`
+        DROP TRIGGER fail_task9_outbox ON "OutboxEvent";
+        DROP FUNCTION fail_task9_outbox();
+      `);
     });
 
     it("cannot create brands, sites, or markets below Client B", async () => {

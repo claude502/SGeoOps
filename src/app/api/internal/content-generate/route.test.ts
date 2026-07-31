@@ -5,6 +5,7 @@ const mockFindFirst = vi.fn();
 const mockCreate = vi.fn();
 const mockCount = vi.fn();
 const mockSaveChannelVariants = vi.fn();
+const mockVerifySignedInternalRequest = vi.fn();
 
 vi.mock("@/lib/prisma", () => ({
   db: {
@@ -19,6 +20,62 @@ vi.mock("@/lib/geo-persistence", () => ({
   saveChannelVariants: mockSaveChannelVariants,
 }));
 
+vi.mock("@/lib/internal-auth", () => ({
+  verifySignedInternalRequest: mockVerifySignedInternalRequest,
+}));
+
+vi.mock("@/lib/business/repository", () => ({
+  PrismaBusinessRepository: class {
+    async findInternalTrend(topicId: string) {
+      const trend = await mockFindUnique({ where: { id: topicId } });
+      return trend
+        ? {
+            clientId: "client_wing_heng",
+            brandId: "brand_txpuro",
+            siteId: "site_txpuro_com",
+            siteMarketId: null,
+            ...trend,
+            site: {
+              id: "site_txpuro_com",
+              canonicalHost: "txpuro.com",
+              brand: {
+                id: "brand_txpuro",
+                name: "Txpuro",
+                client: {
+                  id: "client_wing_heng",
+                  workspaceId: "workspace_internal",
+                },
+              },
+            },
+          }
+        : null;
+    }
+
+    async generateContentForTrend(input: {
+      asset: { id: string; geoScore: number; seoScore: number };
+      variants: unknown[];
+    }) {
+      const existing = await mockFindFirst();
+      if (existing) {
+        return {
+          asset: existing,
+          variantCount: await mockCount(),
+          reused: true,
+          seoScore: existing.seoScore ?? 0,
+        };
+      }
+      const created = await mockCreate({ data: input.asset });
+      await mockSaveChannelVariants(input.variants);
+      return {
+        asset: { ...input.asset, ...created },
+        variantCount: input.variants.length,
+        reused: false,
+        seoScore: input.asset.seoScore,
+      };
+    }
+  },
+}));
+
 describe("POST /api/internal/content-generate", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -27,6 +84,8 @@ describe("POST /api/internal/content-generate", () => {
     mockCreate.mockReset();
     mockCount.mockReset();
     mockSaveChannelVariants.mockReset();
+    mockVerifySignedInternalRequest.mockReset();
+    mockVerifySignedInternalRequest.mockResolvedValue(true);
     mockFindFirst.mockResolvedValue(null);
     mockCount.mockResolvedValue(0);
     mockSaveChannelVariants.mockResolvedValue([]);
@@ -45,15 +104,50 @@ describe("POST /api/internal/content-generate", () => {
     expect(response.status).toBe(400);
   });
 
-  it("returns 400 for unsafe keywords", async () => {
+  it("returns 401 for an unsigned otherwise-valid service request", async () => {
+    mockVerifySignedInternalRequest.mockResolvedValue(false);
+    mockFindUnique.mockResolvedValue({
+      id: "topic_unsigned",
+      keyword: "LHDN e-Invoice deadline",
+      platform: "linkedin",
+      score: 80,
+      region: "MY",
+    });
+    mockCreate.mockResolvedValue({ id: "asset_unsigned" });
+
     const { POST } = await import("./route");
     const response = await POST(
       new Request("http://localhost/api/internal/content-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          topicId: "topic_1",
-          keyword: "政变 新闻",
+          topicId: "topic_unsigned",
+          keyword: "LHDN e-Invoice deadline",
+          platform: "linkedin",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(mockFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for unsafe keywords", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "topic_unsafe",
+      keyword: "政变 新闻",
+      platform: "weibo",
+      score: 80,
+      region: "MY",
+    });
+    const { POST } = await import("./route");
+    const response = await POST(
+      new Request("http://localhost/api/internal/content-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topicId: "topic_unsafe",
+          keyword: "caller supplied safe keyword",
           platform: "weibo",
         }),
       }),
@@ -162,5 +256,29 @@ describe("POST /api/internal/content-generate", () => {
     });
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockSaveChannelVariants).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when generated content conflicts with an existing write", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "topic_conflict",
+      keyword: "LHDN e-Invoice deadline",
+      platform: "linkedin",
+      score: 80,
+      region: "MY",
+    });
+    mockCreate.mockRejectedValue(
+      Object.assign(new Error("unique conflict"), { code: "P2002" }),
+    );
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      new Request("http://localhost/api/internal/content-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topicId: "topic_conflict" }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
   });
 });

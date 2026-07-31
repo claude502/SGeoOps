@@ -55,19 +55,18 @@ describe("platform Prisma schema", () => {
     }
   });
 
-  it("expresses enforced legacy ownership and reverse FK indexes", async () => {
+  it("expresses enforced legacy ownership without tenant defaults", async () => {
     const schema = await readFile("prisma/schema.prisma", "utf8");
 
     for (const model of legacyOwnedModels) {
       const block = modelBlock(schema, model);
-      for (const [field, defaultId] of Object.entries({
-        clientId: "client_wing_heng",
-        brandId: "brand_txpuro",
-        siteId: "site_txpuro_com",
-      })) {
+      for (const field of ["clientId", "brandId", "siteId"]) {
         expect(block, `${model}.${field}`).toMatch(
+          new RegExp(`\\n\\s+${field}\\s+String\\s*\\n`),
+        );
+        expect(block, `${model}.${field} tenant default`).not.toMatch(
           new RegExp(
-            `\\n\\s+${field}\\s+String\\s+@default\\("${defaultId}"\\)\\s*\\n`,
+            `\\n\\s+${field}\\s+String\\s+@default\\("(?:client_wing_heng|brand_txpuro|site_txpuro_com)"\\)`,
           ),
         );
       }
