@@ -5,8 +5,7 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const integrationEnabled = process.env.SGEO_DATABASE_INTEGRATION === "1";
-const databaseUrl =
-  process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
+const databaseUrl = process.env.TEST_DATABASE_URL ?? "";
 
 const legacyMigrationPaths = [
   "prisma/migrations/20260504120000_geoflow_bridge_init/migration.sql",
@@ -50,6 +49,97 @@ const fixedOwnership = {
   zhMarketId: "site_market_txpuro_my_zh_cn",
   enMarketId: "site_market_txpuro_my_en",
 } as const;
+
+const backfillRelationshipCases = [
+  {
+    label: "ContentAsset to TrendTopic",
+    mutation: `
+      UPDATE "TrendTopic"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'trend_txpuro'
+    `,
+  },
+  {
+    label: "GeoRun to ContentAsset",
+    mutation: `
+      UPDATE "GeoRun"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'geo_run_txpuro_linked'
+    `,
+  },
+  {
+    label: "ChannelVariant to ContentAsset",
+    mutation: `
+      UPDATE "ChannelVariant"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'variant_txpuro'
+    `,
+  },
+  {
+    label: "GeoFlowTaskLink to ContentAsset",
+    mutation: `
+      UPDATE "GeoFlowTaskLink"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'geoflow_link_txpuro'
+    `,
+  },
+  {
+    label: "VariantMetric to ChannelVariant",
+    mutation: `
+      UPDATE "VariantMetric"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'metric_txpuro'
+    `,
+  },
+  {
+    label: "ExportPackage to ContentAsset",
+    mutation: `
+      UPDATE "ExportPackage"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'export_txpuro'
+    `,
+  },
+  {
+    label: "DistributionDispatch to both parents",
+    mutation: `
+      UPDATE "DistributionDispatch"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'dispatch_txpuro'
+    `,
+  },
+  {
+    label: "AuditEvent polymorphic parent",
+    mutation: `
+      UPDATE "AuditEvent"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'audit_txpuro'
+    `,
+  },
+  {
+    label: "EventDelivery polymorphic parent",
+    mutation: `
+      UPDATE "EventDelivery"
+      SET "siteMarketId" = 'site_market_txpuro_my_en'
+      WHERE "id" = 'delivery_txpuro'
+    `,
+  },
+] as const;
+
+const polymorphicParents = [
+  ["ContentAsset", "asset_txpuro_zh", "content-assets"],
+  ["GeoRun", "geo_run_txpuro_linked", "GEORUN"],
+  ["ChannelVariant", "variant_txpuro", "channel_variants"],
+  ["GeoFlowTaskLink", "geoflow_link_txpuro", "GeoFlowTaskLink"],
+  ["GeoFlowSyncRun", "sync_txpuro", "geoflow-sync-runs"],
+  ["AuditEvent", "audit_txpuro", "audit_events"],
+  ["TrendTopic", "trend_txpuro", "TrendTopic"],
+  ["VariantMetric", "metric_txpuro", "variant-metrics"],
+  ["SeoAudit", "seo_audit_txpuro", "SEOAUDIT"],
+  ["KeywordRanking", "ranking_txpuro", "keyword_rankings"],
+  ["ExportPackage", "export_txpuro", "export-packages"],
+  ["DistributionDispatch", "dispatch_txpuro", "distribution_dispatches"],
+  ["EventDelivery", "delivery_txpuro", "EventDelivery"],
+] as const;
 
 type PgError = Error & { code?: string };
 type UrlSnapshot = Record<string, Array<Record<string, unknown>>>;
@@ -339,6 +429,84 @@ async function prepareExpandedLegacyFixture(target: Client): Promise<void> {
   await applyLegacyMigrations(target);
   await seedLegacyTxpuroRows(target);
   await applyMigration(target, expandMigrationPath);
+}
+
+async function prepareBackfilledFreshSchema(target: Client): Promise<void> {
+  await prepareExpandedLegacyFixture(target);
+  await applyMigration(target, backfillMigrationPath);
+}
+
+async function prepareEnforcedFreshSchema(target: Client): Promise<void> {
+  await prepareBackfilledFreshSchema(target);
+  await applyMigration(target, enforceMigrationPath);
+}
+
+async function openSchemaClient(
+  schema: string,
+  applicationName: string,
+): Promise<Client> {
+  const target = new Client({
+    connectionString: pgConnectionString,
+    application_name: applicationName,
+  });
+  await target.connect();
+  await setSearchPath(target, schema);
+  return target;
+}
+
+async function waitForPgCondition(
+  target: Client,
+  sql: string,
+  params: unknown[] = [],
+  timeoutMs = 3_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await target.query<{ matched: boolean }>(sql, params);
+    if (result.rows[0]?.matched) return true;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+  }
+  return false;
+}
+
+async function cloneAuditEvent(
+  target: Client,
+  changes: Record<string, unknown>,
+): Promise<void> {
+  await target.query(
+    `
+      INSERT INTO "AuditEvent"
+      SELECT (
+        jsonb_populate_record(
+          NULL::"AuditEvent",
+          to_jsonb(seed) || $1::jsonb
+        )
+      ).*
+      FROM "AuditEvent" seed
+      WHERE "id" = 'audit_txpuro'
+    `,
+    [JSON.stringify(changes)],
+  );
+}
+
+async function cloneEventDelivery(
+  target: Client,
+  changes: Record<string, unknown>,
+): Promise<void> {
+  await target.query(
+    `
+      INSERT INTO "EventDelivery"
+      SELECT (
+        jsonb_populate_record(
+          NULL::"EventDelivery",
+          to_jsonb(seed) || $1::jsonb
+        )
+      ).*
+      FROM "EventDelivery" seed
+      WHERE "id" = 'delivery_txpuro'
+    `,
+    [JSON.stringify(changes)],
+  );
 }
 
 async function seedLegacyContentProbe(
@@ -980,6 +1148,8 @@ describe.skipIf(!integrationEnabled).sequential(
           AND column_name = ANY(ARRAY['clientId', 'brandId', 'siteId'])
         ORDER BY table_name, column_name
       `, [legacyTables]);
+      // Task 9 must remove these compatibility defaults from both PostgreSQL
+      // and Prisma in the same migration; Task 4 intentionally keeps them.
       const expectedDefaults: Record<string, string> = {
         clientId: "'client_wing_heng'::text",
         brandId: "'brand_txpuro'::text",
@@ -1033,6 +1203,8 @@ describe.skipIf(!integrationEnabled).sequential(
         "Opportunity_siteId_idx",
         "OpportunityRecommendation_recommendationId_idx",
         "Competitor_siteMarketId_idx",
+        "AuditEvent_entityId_idx",
+        "EventDelivery_entityId_idx",
         "Competitor_brandId_name_null_market_key",
         "Integration_siteId_type_null_market_key",
       ];
@@ -1049,10 +1221,14 @@ describe.skipIf(!integrationEnabled).sequential(
       const triggerDefinitions = await client.query<{
         trigger_name: string;
         definition: string;
+        is_deferrable: boolean;
+        is_initially_deferred: boolean;
       }>(`
         SELECT
           t.tgname AS trigger_name,
-          pg_get_triggerdef(t.oid) AS definition
+          pg_get_triggerdef(t.oid) AS definition,
+          t.tgdeferrable AS is_deferrable,
+          t.tginitdeferred AS is_initially_deferred
         FROM pg_trigger t
         WHERE NOT t.tgisinternal
           AND t.tgrelid = ANY(
@@ -1069,7 +1245,8 @@ describe.skipIf(!integrationEnabled).sequential(
         expect(trigger?.definition, table).toContain(
           "AFTER INSERT OR UPDATE",
         );
-        expect(trigger?.definition, table).toContain("DEFERRABLE");
+        expect(trigger?.is_deferrable, table).toBe(false);
+        expect(trigger?.is_initially_deferred, table).toBe(false);
       }
 
       await client.query(`
@@ -1102,17 +1279,13 @@ describe.skipIf(!integrationEnabled).sequential(
 
       await client.query("BEGIN");
       try {
-        await client.query(
-          `SET CONSTRAINTS "ownership_scope_ContentAsset" DEFERRED`,
-        );
         await expectPgError(
           () =>
-            client.query(`
-              UPDATE "ContentAsset" SET "brandId" = 'brand_missing'
-              WHERE "id" = 'asset_txpuro_zh'
-            `),
-          "23503",
-          /ContentAsset_brandId_fkey/,
+            client.query(
+              `SET CONSTRAINTS "ownership_scope_ContentAsset" DEFERRED`,
+            ),
+          "42809",
+          /constraint.*(is not deferrable|wrong object type)/i,
         );
       } finally {
         await client.query("ROLLBACK");
@@ -1131,10 +1304,14 @@ describe.skipIf(!integrationEnabled).sequential(
       };
 
       for (const table of legacyTables) {
+        const ownershipError = new RegExp(
+          `(tenant ownership mismatch.*${table}|polymorphic ownership mismatch.*${table})`,
+          "i",
+        );
         await expectPgError(
           () => insertLegacyMismatch(client, table),
           "23514",
-          new RegExp(`tenant ownership mismatch.*${table}`, "i"),
+          ownershipError,
         );
         await expectPgError(
           () =>
@@ -1151,7 +1328,7 @@ describe.skipIf(!integrationEnabled).sequential(
               `,
             ),
           "23514",
-          new RegExp(`tenant ownership mismatch.*${table}`, "i"),
+          ownershipError,
         );
         expect(legacyUniqueChanges[table] ?? "id").toBeTruthy();
       }
@@ -2148,6 +2325,617 @@ describe.skipIf(!integrationEnabled).sequential(
           SELECT count(*)::int AS count FROM "Workspace"
         `);
         expect(roots.rows[0]?.count).toBe(0);
+      });
+    });
+
+    it("accepts every valid legacy relationship in an independent backfill", async () => {
+      await withFreshSchema("backfill_relationships_positive", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        const owned = await target.query(`
+          SELECT count(*)::int AS count
+          FROM (
+            SELECT "id" FROM "ContentAsset" WHERE "trendTopicId" IS NOT NULL
+            UNION ALL
+            SELECT "id" FROM "GeoRun" WHERE "contentAssetId" IS NOT NULL
+            UNION ALL
+            SELECT "id" FROM "ChannelVariant"
+            UNION ALL
+            SELECT "id" FROM "GeoFlowTaskLink"
+            UNION ALL
+            SELECT "id" FROM "VariantMetric"
+            UNION ALL
+            SELECT "id" FROM "ExportPackage"
+            UNION ALL
+            SELECT "id" FROM "DistributionDispatch"
+            UNION ALL
+            SELECT "id" FROM "AuditEvent" WHERE "entityId" IS NOT NULL
+            UNION ALL
+            SELECT "id" FROM "EventDelivery" WHERE "entityId" IS NOT NULL
+          ) relationships
+        `);
+        expect(owned.rows[0]?.count).toBe(9);
+      });
+    });
+
+    it.each(backfillRelationshipCases)(
+      "rejects $label mismatch before backfill commits",
+      async ({ label, mutation }) => {
+        await withFreshSchema(
+          `backfill_relation_${label.replaceAll(/[^a-zA-Z0-9]/g, "_")}`,
+          async (target) => {
+            await prepareExpandedLegacyFixture(target);
+            await target.query(mutation);
+
+            await expectPgError(
+              () => applyMigration(target, backfillMigrationPath),
+              "P0001",
+              /legacy relationship ownership mismatch/i,
+            );
+            const roots = await target.query(`
+              SELECT count(*)::int AS count FROM "Workspace"
+            `);
+            expect(roots.rows[0]?.count).toBe(0);
+          },
+        );
+      },
+    );
+
+    it("blocks legacy writes between backfill and successful enforce", async () => {
+      await withFreshSchema("write_gate_lifecycle", async (target) => {
+        await prepareBackfilledFreshSchema(target);
+
+        const installed = await target.query<{ count: number }>(`
+          SELECT count(*)::int AS count
+          FROM pg_trigger
+          WHERE NOT tgisinternal
+            AND tgname LIKE 'ownership_backfill_write_gate_%'
+        `);
+        expect(installed.rows[0]?.count).toBe(legacyTables.length);
+        await expectPgError(
+          () =>
+            target.query(`
+              INSERT INTO "GeoFlowSyncRun" ("id")
+              VALUES ('write_during_migration_gap')
+            `),
+          "55000",
+          /ownership migration write gate.*GeoFlowSyncRun/i,
+        );
+
+        await applyMigration(target, enforceMigrationPath);
+        const removed = await target.query<{ triggers: number; functions: number }>(`
+          SELECT
+            (
+              SELECT count(*)::int
+              FROM pg_trigger
+              WHERE NOT tgisinternal
+                AND tgname LIKE 'ownership_backfill_write_gate_%'
+            ) AS triggers,
+            (
+              SELECT count(*)::int
+              FROM pg_proc
+              WHERE pronamespace = current_schema()::regnamespace
+                AND proname = 'block_legacy_writes_until_enforced'
+            ) AS functions
+        `);
+        expect(removed.rows[0]).toEqual({ triggers: 0, functions: 0 });
+
+        await target.query(`
+          INSERT INTO "GeoFlowSyncRun" ("id")
+          VALUES ('write_after_enforce')
+        `);
+      });
+    });
+
+    it("keeps the committed write gate when enforce rolls back", async () => {
+      await withFreshSchema("write_gate_enforce_failure", async (target) => {
+        await prepareBackfilledFreshSchema(target);
+        await seedOtherOwnershipRoot(target);
+        await target.query(`
+          INSERT INTO "AnalysisRun" (
+            "id", "clientId", "brandId", "siteId", "siteMarketId",
+            "kind", "source", "sourceVersion", "adapterVersion", "status",
+            "inputHash", "idempotencyKey", "trigger"
+          ) VALUES (
+            'analysis_invalid_before_enforce',
+            'client_wing_heng', 'brand_other', 'site_other_com',
+            'site_market_other_my_en', 'audit', 'test', '1', '1',
+            'queued', 'invalid-input', 'invalid-enforce', 'manual'
+          )
+        `);
+
+        await expectPgError(
+          () => applyMigration(target, enforceMigrationPath),
+          "23514",
+          /tenant ownership mismatch.*AnalysisRun/i,
+        );
+        const installed = await target.query<{ count: number }>(`
+          SELECT count(*)::int AS count
+          FROM pg_trigger
+          WHERE NOT tgisinternal
+            AND tgname LIKE 'ownership_backfill_write_gate_%'
+        `);
+        expect(installed.rows[0]?.count).toBe(legacyTables.length);
+        await expectPgError(
+          () =>
+            target.query(`
+              DELETE FROM "GeoFlowSyncRun" WHERE "id" = 'sync_txpuro'
+            `),
+          "55000",
+          /ownership migration write gate.*GeoFlowSyncRun/i,
+        );
+      });
+    });
+
+    it("serializes a concurrent evil insert across scan, backfill, and gate", async () => {
+      await withFreshSchema("write_gate_concurrency", async (target, schema) => {
+        await prepareExpandedLegacyFixture(target);
+        const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
+        const backfillApp = `sgeo-task4-backfill-${suffix}`;
+        const writerApp = `sgeo-task4-writer-${suffix}`;
+        const backfillClient = await openSchemaClient(schema, backfillApp);
+        const writerClient = await openSchemaClient(schema, writerApp);
+        const advisoryKey = Math.floor(Math.random() * 1_000_000_000);
+        let advisoryHeld = false;
+
+        try {
+          await target.query("SELECT pg_advisory_lock($1)", [advisoryKey]);
+          advisoryHeld = true;
+          const backfillSql = await readFile(resolve(backfillMigrationPath), "utf8");
+          const pausedBackfillSql = backfillSql.replace(
+            'UPDATE "SeoAudit"\nSET',
+            `SELECT pg_advisory_lock(${advisoryKey});
+             SELECT pg_advisory_unlock(${advisoryKey});
+
+             UPDATE "SeoAudit"
+             SET`,
+          );
+          expect(pausedBackfillSql).not.toBe(backfillSql);
+
+          const backfillResult = backfillClient
+            .query(pausedBackfillSql)
+            .then(() => ({ error: undefined }))
+            .catch((error: PgError) => ({ error }));
+          const reachedPostScanPause = await waitForPgCondition(
+            target,
+            `
+              SELECT EXISTS (
+                SELECT 1
+                FROM pg_stat_activity
+                WHERE application_name = $1
+                  AND wait_event_type = 'Lock'
+                  AND wait_event = 'advisory'
+              ) AS matched
+            `,
+            [backfillApp],
+          );
+          expect(reachedPostScanPause).toBe(true);
+
+          const writerResult = writerClient
+            .query(`
+              INSERT INTO "SeoAudit" (
+                "id", "url", "score", "issues", "auditedAt"
+              ) VALUES (
+                'seo_concurrent_evil',
+                'https://evil.example/guides/en/race',
+                1, '[]'::jsonb, CURRENT_TIMESTAMP
+              )
+            `)
+            .then(() => ({ error: undefined }))
+            .catch((error: PgError) => ({ error }));
+          const writerBlocked = await waitForPgCondition(
+            target,
+            `
+              SELECT EXISTS (
+                SELECT 1
+                FROM pg_stat_activity
+                WHERE application_name = $1
+                  AND wait_event_type = 'Lock'
+              ) AS matched
+            `,
+            [writerApp],
+            1_000,
+          );
+
+          await target.query("SELECT pg_advisory_unlock($1)", [advisoryKey]);
+          advisoryHeld = false;
+          const [backfillOutcome, writerOutcome] = await Promise.all([
+            backfillResult,
+            writerResult,
+          ]);
+          expect(writerBlocked).toBe(true);
+          expect(backfillOutcome.error).toBeUndefined();
+          expect(writerOutcome.error?.code).toBe("55000");
+          expect(writerOutcome.error?.message).toMatch(
+            /ownership migration write gate.*SeoAudit/i,
+          );
+
+          const evil = await target.query(`
+            SELECT count(*)::int AS count
+            FROM "SeoAudit" WHERE "id" = 'seo_concurrent_evil'
+          `);
+          expect(evil.rows[0]?.count).toBe(0);
+        } finally {
+          if (advisoryHeld) {
+            await target
+              .query("SELECT pg_advisory_unlock($1)", [advisoryKey])
+              .catch(() => undefined);
+          }
+          await Promise.allSettled([
+            backfillClient.query("ROLLBACK"),
+            writerClient.query("ROLLBACK"),
+          ]);
+          await Promise.all([backfillClient.end(), writerClient.end()]);
+        }
+      });
+    });
+
+    it("resolves all legacy polymorphic parent names and permits unknown types", async () => {
+      await withFreshSchema("polymorphic_types", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+
+        for (const [table, parentId, entityType] of polymorphicParents) {
+          const parent = await target.query<{
+            clientId: string;
+            brandId: string;
+            siteId: string;
+            siteMarketId: string | null;
+          }>(
+            `
+              SELECT "clientId", "brandId", "siteId", "siteMarketId"
+              FROM ${quoteIdentifier(table)}
+              WHERE "id" = $1
+            `,
+            [parentId],
+          );
+          expect(parent.rows[0], `${table} parent fixture`).toBeDefined();
+          await cloneAuditEvent(target, {
+            id: `audit_poly_${table}`,
+            entityType,
+            entityId: parentId,
+            ...parent.rows[0],
+          });
+        }
+
+        await seedOtherOwnershipRoot(target);
+        await cloneAuditEvent(target, {
+          id: "audit_unknown_type",
+          entityType: "GeoBrief",
+          entityId: "brief_without_table",
+          clientId: "client_other",
+          brandId: "brand_other",
+          siteId: "site_other_com",
+          siteMarketId: null,
+        });
+        await cloneEventDelivery(target, {
+          id: "delivery_unknown_type",
+          entityType: "Workspace",
+          entityId: "workspace_other",
+          clientId: "client_other",
+          brandId: "brand_other",
+          siteId: "site_other_com",
+          siteMarketId: null,
+        });
+
+        const catalog = await target.query<{
+          child_triggers: number;
+          parent_update_triggers: number;
+          parent_delete_triggers: number;
+          reverse_indexes: number;
+        }>(`
+          SELECT
+            (
+              SELECT count(*)::int FROM pg_trigger
+              WHERE NOT tgisinternal
+                AND tgname LIKE 'ownership_poly_child_%'
+                AND tgrelid IN (
+                  SELECT format('%I.%I', current_schema(), table_name)::regclass
+                  FROM information_schema.tables
+                  WHERE table_schema = current_schema()
+                )
+            ) AS child_triggers,
+            (
+              SELECT count(*)::int FROM pg_trigger
+              WHERE NOT tgisinternal
+                AND tgname LIKE 'ownership_poly_parent_update_%'
+                AND tgrelid IN (
+                  SELECT format('%I.%I', current_schema(), table_name)::regclass
+                  FROM information_schema.tables
+                  WHERE table_schema = current_schema()
+                )
+            ) AS parent_update_triggers,
+            (
+              SELECT count(*)::int FROM pg_trigger
+              WHERE NOT tgisinternal
+                AND tgname LIKE 'ownership_poly_parent_delete_%'
+                AND tgrelid IN (
+                  SELECT format('%I.%I', current_schema(), table_name)::regclass
+                  FROM information_schema.tables
+                  WHERE table_schema = current_schema()
+                )
+            ) AS parent_delete_triggers,
+            (
+              SELECT count(*)::int FROM pg_indexes
+              WHERE schemaname = current_schema()
+                AND indexname IN (
+                  'AuditEvent_entityId_idx',
+                  'EventDelivery_entityId_idx'
+                )
+            ) AS reverse_indexes
+        `);
+        expect(catalog.rows[0]).toEqual({
+          child_triggers: 2,
+          parent_update_triggers: legacyTables.length,
+          parent_delete_triggers: legacyTables.length,
+          reverse_indexes: 2,
+        });
+      });
+    });
+
+    it("rejects polymorphic child inserts and updates with invalid provenance", async () => {
+      await withFreshSchema("polymorphic_children", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        await seedOtherOwnershipRoot(target);
+
+        await expectPgError(
+          () =>
+            cloneAuditEvent(target, {
+              id: "audit_cross_tenant_parent",
+              entityType: "content_assets",
+              entityId: "asset_txpuro_zh",
+              clientId: "client_other",
+              brandId: "brand_other",
+              siteId: "site_other_com",
+              siteMarketId: "site_market_other_my_en",
+            }),
+          "23514",
+          /polymorphic ownership mismatch.*AuditEvent.*ContentAsset/i,
+        );
+        await expectPgError(
+          () =>
+            cloneEventDelivery(target, {
+              id: "delivery_cross_tenant_parent",
+              entityType: "ContentAsset",
+              entityId: "asset_txpuro_zh",
+              clientId: "client_other",
+              brandId: "brand_other",
+              siteId: "site_other_com",
+              siteMarketId: "site_market_other_my_en",
+            }),
+          "23514",
+          /polymorphic ownership mismatch.*EventDelivery.*ContentAsset/i,
+        );
+        await expectPgError(
+          () =>
+            cloneAuditEvent(target, {
+              id: "audit_missing_parent",
+              entityType: "cOnTeNtAsSeT",
+              entityId: "asset_missing",
+            }),
+          "23514",
+          /polymorphic parent missing.*ContentAsset.*asset_missing/i,
+        );
+        await expectPgError(
+          () =>
+            cloneEventDelivery(target, {
+              id: "delivery_missing_parent",
+              entityType: "seo_audits",
+              entityId: "seo_missing",
+            }),
+          "23514",
+          /polymorphic parent missing.*SeoAudit.*seo_missing/i,
+        );
+
+        await cloneAuditEvent(target, {
+          id: "audit_update_provenance",
+          entityType: "ContentAsset",
+          entityId: "asset_txpuro_zh",
+        });
+        await expectPgError(
+          () =>
+            target.query(`
+              UPDATE "AuditEvent"
+              SET
+                "clientId" = 'client_other',
+                "brandId" = 'brand_other',
+                "siteId" = 'site_other_com',
+                "siteMarketId" = 'site_market_other_my_en'
+              WHERE "id" = 'audit_update_provenance'
+            `),
+          "23514",
+          /polymorphic ownership mismatch.*AuditEvent.*ContentAsset/i,
+        );
+      });
+    });
+
+    it("rejects ownership updates of referenced polymorphic parents", async () => {
+      await withFreshSchema("polymorphic_parent_update", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        await seedOtherOwnershipRoot(target);
+        await cloneAuditEvent(target, {
+          id: "audit_references_seo",
+          entityType: "SeoAudit",
+          entityId: "seo_audit_txpuro",
+          siteMarketId: "site_market_txpuro_my_en",
+        });
+        await cloneEventDelivery(target, {
+          id: "delivery_references_seo",
+          entityType: "seo_audits",
+          entityId: "seo_audit_txpuro",
+          siteMarketId: "site_market_txpuro_my_en",
+        });
+
+        await expectPgError(
+          () =>
+            target.query(`
+              UPDATE "SeoAudit"
+              SET
+                "clientId" = 'client_other',
+                "brandId" = 'brand_other',
+                "siteId" = 'site_other_com',
+                "siteMarketId" = 'site_market_other_my_en'
+              WHERE "id" = 'seo_audit_txpuro'
+            `),
+          "23514",
+          /polymorphic ownership mismatch.*(AuditEvent|EventDelivery).*SeoAudit/i,
+        );
+      });
+    });
+
+    it("restricts deletion of referenced polymorphic parents", async () => {
+      await withFreshSchema("polymorphic_parent_delete", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        await cloneAuditEvent(target, {
+          id: "audit_restricts_seo_delete",
+          entityType: "SEOAUDIT",
+          entityId: "seo_audit_txpuro",
+          siteMarketId: "site_market_txpuro_my_en",
+        });
+
+        await expectPgError(
+          () =>
+            target.query(`
+              DELETE FROM "SeoAudit" WHERE "id" = 'seo_audit_txpuro'
+            `),
+          "23514",
+          /polymorphic parent delete restricted.*SeoAudit.*seo_audit_txpuro/i,
+        );
+      });
+    });
+
+    it("installs immediate non-deferrable ownership constraint triggers", async () => {
+      await withFreshSchema("immediate_trigger_catalog", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        const triggers = await target.query<{
+          tgname: string;
+          tgdeferrable: boolean;
+          tginitdeferred: boolean;
+        }>(`
+          SELECT tgname, tgdeferrable, tginitdeferred
+          FROM pg_trigger
+          WHERE NOT tgisinternal
+            AND tgconstraint <> 0
+            AND tgrelid IN (
+              SELECT format('%I.%I', current_schema(), table_name)::regclass
+              FROM information_schema.tables
+              WHERE table_schema = current_schema()
+            )
+        `);
+        expect(triggers.rows.length).toBeGreaterThan(0);
+        expect(
+          triggers.rows.every(
+            (trigger) => !trigger.tgdeferrable && !trigger.tginitdeferred,
+          ),
+        ).toBe(true);
+      });
+    });
+
+    it("allows one-statement reparent and rejects a deferred two-step reparent", async () => {
+      await withFreshSchema("immediate_reparent_behavior", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        await seedOtherOwnershipRoot(target);
+        await target.query(`
+          INSERT INTO "ContentAsset"
+          SELECT (
+            jsonb_populate_record(
+              NULL::"ContentAsset",
+              to_jsonb(seed) || jsonb_build_object(
+                'id', 'asset_other',
+                'clientId', 'client_other',
+                'brandId', 'brand_other',
+                'siteId', 'site_other_com',
+                'siteMarketId', 'site_market_other_my_en',
+                'title', 'Other asset',
+                'slug', 'other-asset',
+                'trendTopicId', NULL
+              )
+            )
+          ).*
+          FROM "ContentAsset" seed
+          WHERE "id" = 'asset_txpuro_en'
+        `);
+
+        await target.query(`
+          UPDATE "GeoRun"
+          SET
+            "contentAssetId" = 'asset_other',
+            "clientId" = 'client_other',
+            "brandId" = 'brand_other',
+            "siteId" = 'site_other_com',
+            "siteMarketId" = 'site_market_other_my_en'
+          WHERE "id" = 'geo_run_txpuro_linked'
+        `);
+        const moved = await target.query(`
+          SELECT "contentAssetId", "clientId", "siteId"
+          FROM "GeoRun" WHERE "id" = 'geo_run_txpuro_linked'
+        `);
+        expect(moved.rows[0]).toEqual({
+          contentAssetId: "asset_other",
+          clientId: "client_other",
+          siteId: "site_other_com",
+        });
+
+        await target.query(`
+          UPDATE "GeoRun"
+          SET
+            "contentAssetId" = 'asset_txpuro_zh',
+            "clientId" = 'client_wing_heng',
+            "brandId" = 'brand_txpuro',
+            "siteId" = 'site_txpuro_com',
+            "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+          WHERE "id" = 'geo_run_txpuro_linked'
+        `);
+        await target.query("BEGIN");
+        try {
+          await target.query("SET CONSTRAINTS ALL DEFERRED");
+          await expectPgError(
+            () =>
+              target.query(`
+                UPDATE "GeoRun"
+                SET "contentAssetId" = 'asset_other'
+                WHERE "id" = 'geo_run_txpuro_linked'
+              `),
+            "23514",
+            /referenced ownership mismatch.*GeoRun.*ContentAsset/i,
+          );
+        } finally {
+          await target.query("ROLLBACK");
+        }
+      });
+    });
+
+    it("guards Client workspace reparenting but permits display updates", async () => {
+      await withFreshSchema("client_workspace_guard", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        await target.query(`
+          INSERT INTO "Workspace" (
+            "id", "name", "slug", "createdAt", "updatedAt"
+          ) VALUES (
+            'workspace_guard_other', 'Other Workspace', 'guard-other',
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          )
+        `);
+
+        await expectPgError(
+          () =>
+            target.query(`
+              UPDATE "Client"
+              SET "workspaceId" = 'workspace_guard_other'
+              WHERE "id" = 'client_wing_heng'
+            `),
+          "23514",
+          /tenant parent reassignment.*Client.*client_wing_heng/i,
+        );
+        await target.query(`
+          UPDATE "Client"
+          SET "name" = 'Wing Heng Technology Display'
+          WHERE "id" = 'client_wing_heng';
+          UPDATE "Workspace"
+          SET "name" = 'Internal GEO SEO Operations Display'
+          WHERE "id" = 'workspace_internal';
+        `);
       });
     });
 

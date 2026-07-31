@@ -14,6 +14,8 @@ BEGIN
     'DistributionDispatch', 'EventDelivery'
   ]
   LOOP
+    -- Task 9 must remove these compatibility defaults from both PostgreSQL
+    -- and Prisma in the same migration. Task 4 intentionally keeps them.
     EXECUTE format(
       'SELECT "id" FROM %I
        WHERE "clientId" IS NULL OR "brandId" IS NULL OR "siteId" IS NULL
@@ -148,6 +150,10 @@ CREATE INDEX "Opportunity_siteId_idx"
   ON "Opportunity"("siteId");
 CREATE INDEX "OpportunityRecommendation_recommendationId_idx"
   ON "OpportunityRecommendation"("recommendationId");
+CREATE INDEX "AuditEvent_entityId_idx"
+  ON "AuditEvent"("entityId");
+CREATE INDEX "EventDelivery_entityId_idx"
+  ON "EventDelivery"("entityId");
 
 -- Prisma cannot express partial indexes. Keep the nullable compound uniques
 -- from the expand migration and close their NULL-scope uniqueness gap here.
@@ -499,6 +505,116 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION "resolve_legacy_entity_table"(entity_type text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+RETURN CASE
+  regexp_replace(lower(btrim(entity_type)), '[^a-z0-9]', '', 'g')
+  WHEN 'contentasset' THEN 'ContentAsset'
+  WHEN 'contentassets' THEN 'ContentAsset'
+  WHEN 'georun' THEN 'GeoRun'
+  WHEN 'georuns' THEN 'GeoRun'
+  WHEN 'channelvariant' THEN 'ChannelVariant'
+  WHEN 'channelvariants' THEN 'ChannelVariant'
+  WHEN 'geoflowtasklink' THEN 'GeoFlowTaskLink'
+  WHEN 'geoflowtasklinks' THEN 'GeoFlowTaskLink'
+  WHEN 'geoflowsyncrun' THEN 'GeoFlowSyncRun'
+  WHEN 'geoflowsyncruns' THEN 'GeoFlowSyncRun'
+  WHEN 'auditevent' THEN 'AuditEvent'
+  WHEN 'auditevents' THEN 'AuditEvent'
+  WHEN 'trendtopic' THEN 'TrendTopic'
+  WHEN 'trendtopics' THEN 'TrendTopic'
+  WHEN 'variantmetric' THEN 'VariantMetric'
+  WHEN 'variantmetrics' THEN 'VariantMetric'
+  WHEN 'seoaudit' THEN 'SeoAudit'
+  WHEN 'seoaudits' THEN 'SeoAudit'
+  WHEN 'keywordranking' THEN 'KeywordRanking'
+  WHEN 'keywordrankings' THEN 'KeywordRanking'
+  WHEN 'exportpackage' THEN 'ExportPackage'
+  WHEN 'exportpackages' THEN 'ExportPackage'
+  WHEN 'distributiondispatch' THEN 'DistributionDispatch'
+  WHEN 'distributiondispatches' THEN 'DistributionDispatch'
+  WHEN 'eventdelivery' THEN 'EventDelivery'
+  WHEN 'eventdeliveries' THEN 'EventDelivery'
+  ELSE NULL
+END;
+
+CREATE FUNCTION "assert_polymorphic_reference_scope"(
+  scope_client_id text,
+  scope_brand_id text,
+  scope_site_id text,
+  scope_market_id text,
+  entity_type text,
+  entity_id text,
+  scope_context text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path FROM CURRENT
+AS $$
+DECLARE
+  parent_table text;
+  parent_client_id text;
+  parent_brand_id text;
+  parent_site_id text;
+  parent_market_id text;
+  matched_rows bigint;
+BEGIN
+  parent_table := "resolve_legacy_entity_table"(entity_type);
+  IF parent_table IS NULL OR entity_id IS NULL THEN
+    RETURN;
+  END IF;
+
+  EXECUTE format(
+    'SELECT "clientId", "brandId", "siteId", "siteMarketId"
+     FROM %I
+     WHERE "id" = $1
+     FOR SHARE',
+    parent_table
+  )
+  INTO
+    parent_client_id,
+    parent_brand_id,
+    parent_site_id,
+    parent_market_id
+  USING entity_id;
+  GET DIAGNOSTICS matched_rows = ROW_COUNT;
+
+  IF matched_rows = 0 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23514',
+      MESSAGE = format(
+        'polymorphic parent missing for %s: %s row %s',
+        scope_context,
+        parent_table,
+        entity_id
+      );
+  END IF;
+
+  IF ROW(scope_client_id, scope_brand_id, scope_site_id)
+      IS DISTINCT FROM
+     ROW(parent_client_id, parent_brand_id, parent_site_id)
+    OR (
+      scope_market_id IS NOT NULL
+      AND parent_market_id IS NOT NULL
+      AND scope_market_id IS DISTINCT FROM parent_market_id
+    )
+  THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23514',
+      MESSAGE = format(
+        'polymorphic ownership mismatch for %s against %s row %s',
+        scope_context,
+        parent_table,
+        entity_id
+      );
+  END IF;
+END
+$$;
+
 -- Validate all pre-existing rows before triggers begin protecting new writes.
 DO $$
 DECLARE
@@ -707,6 +823,40 @@ BEGIN
       'DistributionDispatch row ' || owned_row."id"
     );
   END LOOP;
+
+  FOR owned_row IN
+    SELECT
+      "id", "clientId", "brandId", "siteId", "siteMarketId",
+      "entityType", "entityId"
+    FROM "AuditEvent"
+  LOOP
+    PERFORM "assert_polymorphic_reference_scope"(
+      owned_row."clientId",
+      owned_row."brandId",
+      owned_row."siteId",
+      owned_row."siteMarketId",
+      owned_row."entityType",
+      owned_row."entityId",
+      'AuditEvent row ' || owned_row."id"
+    );
+  END LOOP;
+
+  FOR owned_row IN
+    SELECT
+      "id", "clientId", "brandId", "siteId", "siteMarketId",
+      "entityType", "entityId"
+    FROM "EventDelivery"
+  LOOP
+    PERFORM "assert_polymorphic_reference_scope"(
+      owned_row."clientId",
+      owned_row."brandId",
+      owned_row."siteId",
+      owned_row."siteMarketId",
+      owned_row."entityType",
+      owned_row."entityId",
+      'EventDelivery row ' || owned_row."id"
+    );
+  END LOOP;
 END
 $$;
 
@@ -873,6 +1023,150 @@ BEGIN
       );
     END LOOP;
   END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION "enforce_polymorphic_reference_scope"()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path FROM CURRENT
+AS $$
+BEGIN
+  PERFORM "assert_polymorphic_reference_scope"(
+    NEW."clientId",
+    NEW."brandId",
+    NEW."siteId",
+    NEW."siteMarketId",
+    NEW."entityType",
+    NEW."entityId",
+    TG_TABLE_NAME || ' row ' || NEW."id"
+  );
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION "enforce_polymorphic_reference_dependents"()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path FROM CURRENT
+AS $$
+DECLARE
+  reference_row record;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    FOR reference_row IN
+      SELECT "id"
+      FROM "AuditEvent"
+      WHERE "entityId" = OLD."id"
+        AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+      FOR SHARE
+    LOOP
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = format(
+          'polymorphic parent delete restricted for %s row %s by AuditEvent row %s',
+          TG_TABLE_NAME,
+          OLD."id",
+          reference_row."id"
+        );
+    END LOOP;
+
+    FOR reference_row IN
+      SELECT "id"
+      FROM "EventDelivery"
+      WHERE "entityId" = OLD."id"
+        AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+      FOR SHARE
+    LOOP
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = format(
+          'polymorphic parent delete restricted for %s row %s by EventDelivery row %s',
+          TG_TABLE_NAME,
+          OLD."id",
+          reference_row."id"
+        );
+    END LOOP;
+    RETURN OLD;
+  END IF;
+
+  IF OLD."id" IS DISTINCT FROM NEW."id" THEN
+    FOR reference_row IN
+      SELECT "id"
+      FROM "AuditEvent"
+      WHERE "entityId" = OLD."id"
+        AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+      FOR SHARE
+    LOOP
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = format(
+          'polymorphic parent identity update restricted for %s row %s',
+          TG_TABLE_NAME,
+          OLD."id"
+        );
+    END LOOP;
+
+    FOR reference_row IN
+      SELECT "id"
+      FROM "EventDelivery"
+      WHERE "entityId" = OLD."id"
+        AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+      FOR SHARE
+    LOOP
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = format(
+          'polymorphic parent identity update restricted for %s row %s',
+          TG_TABLE_NAME,
+          OLD."id"
+        );
+    END LOOP;
+    RETURN NEW;
+  END IF;
+
+  FOR reference_row IN
+    SELECT
+      "id", "clientId", "brandId", "siteId", "siteMarketId",
+      "entityType", "entityId"
+    FROM "AuditEvent"
+    WHERE "entityId" = NEW."id"
+      AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+    FOR SHARE
+  LOOP
+    PERFORM "assert_polymorphic_reference_scope"(
+      reference_row."clientId",
+      reference_row."brandId",
+      reference_row."siteId",
+      reference_row."siteMarketId",
+      reference_row."entityType",
+      reference_row."entityId",
+      'AuditEvent row ' || reference_row."id"
+    );
+  END LOOP;
+
+  FOR reference_row IN
+    SELECT
+      "id", "clientId", "brandId", "siteId", "siteMarketId",
+      "entityType", "entityId"
+    FROM "EventDelivery"
+    WHERE "entityId" = NEW."id"
+      AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+    FOR SHARE
+  LOOP
+    PERFORM "assert_polymorphic_reference_scope"(
+      reference_row."clientId",
+      reference_row."brandId",
+      reference_row."siteId",
+      reference_row."siteMarketId",
+      reference_row."entityType",
+      reference_row."entityId",
+      'EventDelivery row ' || reference_row."id"
+    );
+  END LOOP;
   RETURN NEW;
 END
 $$;
@@ -1094,9 +1388,9 @@ BEGIN
 END
 $$;
 
--- Every owned legacy row and AnalysisRun receives the same deferrable
--- constraint trigger. It is immediate by default and can be deferred for a
--- transaction that creates its complete parent chain in one unit.
+-- Every owned legacy row and AnalysisRun is checked at statement completion.
+-- These constraint triggers are deliberately NOT DEFERRABLE: a write must
+-- submit its complete ownership tuple in one statement.
 DO $$
 DECLARE
   table_name text;
@@ -1112,10 +1406,62 @@ BEGIN
       'CREATE CONSTRAINT TRIGGER %I
        AFTER INSERT OR UPDATE OF "clientId", "brandId", "siteId", "siteMarketId"
        ON %I
-       DEFERRABLE INITIALLY IMMEDIATE
+       NOT DEFERRABLE INITIALLY IMMEDIATE
        FOR EACH ROW
        EXECUTE FUNCTION "enforce_owned_row_scope"()',
       'ownership_scope_' || table_name,
+      table_name
+    );
+  END LOOP;
+END
+$$;
+
+CREATE CONSTRAINT TRIGGER "ownership_poly_child_AuditEvent"
+AFTER INSERT OR UPDATE OF
+  "clientId", "brandId", "siteId", "siteMarketId", "entityType", "entityId"
+ON "AuditEvent"
+NOT DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION "enforce_polymorphic_reference_scope"();
+
+CREATE CONSTRAINT TRIGGER "ownership_poly_child_EventDelivery"
+AFTER INSERT OR UPDATE OF
+  "clientId", "brandId", "siteId", "siteMarketId", "entityType", "entityId"
+ON "EventDelivery"
+NOT DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION "enforce_polymorphic_reference_scope"();
+
+-- Known polymorphic parents have no ordinary FK. Reverse UPDATE checks and
+-- BEFORE DELETE guards provide the same lifecycle guarantees while retaining
+-- intentional unknown entity types as site-level provenance.
+DO $$
+DECLARE
+  table_name text;
+BEGIN
+  FOREACH table_name IN ARRAY ARRAY[
+    'ContentAsset', 'GeoRun', 'ChannelVariant', 'GeoFlowTaskLink',
+    'GeoFlowSyncRun', 'AuditEvent', 'TrendTopic', 'VariantMetric',
+    'SeoAudit', 'KeywordRanking', 'ExportPackage',
+    'DistributionDispatch', 'EventDelivery'
+  ]
+  LOOP
+    EXECUTE format(
+      'CREATE CONSTRAINT TRIGGER %I
+       AFTER UPDATE OF "id", "clientId", "brandId", "siteId", "siteMarketId"
+       ON %I
+       NOT DEFERRABLE INITIALLY IMMEDIATE
+       FOR EACH ROW
+       EXECUTE FUNCTION "enforce_polymorphic_reference_dependents"()',
+      'ownership_poly_parent_update_' || table_name,
+      table_name
+    );
+    EXECUTE format(
+      'CREATE TRIGGER %I
+       BEFORE DELETE ON %I
+       FOR EACH ROW
+       EXECUTE FUNCTION "enforce_polymorphic_reference_dependents"()',
+      'ownership_poly_parent_delete_' || table_name,
       table_name
     );
   END LOOP;
@@ -1126,7 +1472,7 @@ CREATE CONSTRAINT TRIGGER "ownership_zz_relationship_ContentAsset"
 AFTER INSERT OR UPDATE OF
   "clientId", "brandId", "siteId", "siteMarketId", "trendTopicId"
 ON "ContentAsset"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_scope"();
 
@@ -1134,7 +1480,7 @@ CREATE CONSTRAINT TRIGGER "ownership_zz_relationship_GeoRun"
 AFTER INSERT OR UPDATE OF
   "clientId", "brandId", "siteId", "siteMarketId", "contentAssetId"
 ON "GeoRun"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_scope"();
 
@@ -1142,7 +1488,7 @@ CREATE CONSTRAINT TRIGGER "ownership_zz_relationship_ChannelVariant"
 AFTER INSERT OR UPDATE OF
   "clientId", "brandId", "siteId", "siteMarketId", "contentAssetId"
 ON "ChannelVariant"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_scope"();
 
@@ -1150,7 +1496,7 @@ CREATE CONSTRAINT TRIGGER "ownership_zz_relationship_GeoFlowTaskLink"
 AFTER INSERT OR UPDATE OF
   "clientId", "brandId", "siteId", "siteMarketId", "contentAssetId"
 ON "GeoFlowTaskLink"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_scope"();
 
@@ -1158,7 +1504,7 @@ CREATE CONSTRAINT TRIGGER "ownership_zz_relationship_VariantMetric"
 AFTER INSERT OR UPDATE OF
   "clientId", "brandId", "siteId", "siteMarketId", "channelVariantId"
 ON "VariantMetric"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_scope"();
 
@@ -1166,7 +1512,7 @@ CREATE CONSTRAINT TRIGGER "ownership_zz_relationship_ExportPackage"
 AFTER INSERT OR UPDATE OF
   "clientId", "brandId", "siteId", "siteMarketId", "contentAssetId"
 ON "ExportPackage"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_scope"();
 
@@ -1175,96 +1521,103 @@ AFTER INSERT OR UPDATE OF
   "clientId", "brandId", "siteId", "siteMarketId",
   "contentAssetId", "exportPackageId"
 ON "DistributionDispatch"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_scope"();
 
 CREATE CONSTRAINT TRIGGER "ownership_zzz_dependents_TrendTopic"
 AFTER UPDATE OF "clientId", "brandId", "siteId", "siteMarketId"
 ON "TrendTopic"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_dependents"();
 
 CREATE CONSTRAINT TRIGGER "ownership_zzz_dependents_ContentAsset"
 AFTER UPDATE OF "clientId", "brandId", "siteId", "siteMarketId"
 ON "ContentAsset"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_dependents"();
 
 CREATE CONSTRAINT TRIGGER "ownership_zzz_dependents_ChannelVariant"
 AFTER UPDATE OF "clientId", "brandId", "siteId", "siteMarketId"
 ON "ChannelVariant"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_dependents"();
 
 CREATE CONSTRAINT TRIGGER "ownership_zzz_dependents_ExportPackage"
 AFTER UPDATE OF "clientId", "brandId", "siteId", "siteMarketId"
 ON "ExportPackage"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_legacy_reference_dependents"();
 
 CREATE CONSTRAINT TRIGGER "ownership_scope_Competitor"
 AFTER INSERT OR UPDATE OF "brandId", "siteMarketId"
 ON "Competitor"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_competitor_scope"();
 
 CREATE CONSTRAINT TRIGGER "ownership_scope_Integration"
 AFTER INSERT OR UPDATE OF "siteId", "siteMarketId"
 ON "Integration"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_integration_scope"();
 
 CREATE CONSTRAINT TRIGGER "ownership_scope_Recommendation"
 AFTER INSERT OR UPDATE OF "runId", "clientId", "siteId"
 ON "Recommendation"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_recommendation_scope"();
 
 CREATE CONSTRAINT TRIGGER "ownership_scope_Opportunity"
 AFTER INSERT OR UPDATE OF "clientId", "siteId"
 ON "Opportunity"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_opportunity_scope"();
 
 CREATE CONSTRAINT TRIGGER "ownership_scope_RecommendationEvidence"
 AFTER INSERT OR UPDATE OF "recommendationId", "observationId"
 ON "RecommendationEvidence"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_recommendation_evidence_scope"();
 
 CREATE CONSTRAINT TRIGGER "ownership_scope_OpportunityRecommendation"
 AFTER INSERT OR UPDATE OF "opportunityId", "recommendationId"
 ON "OpportunityRecommendation"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_opportunity_recommendation_scope"();
 
 CREATE CONSTRAINT TRIGGER "ownership_zz_dependents_AnalysisRun"
 AFTER UPDATE OF "clientId", "brandId", "siteId", "siteMarketId"
 ON "AnalysisRun"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_analysis_run_dependents"();
 
 CREATE CONSTRAINT TRIGGER "ownership_zz_dependents_Observation"
 AFTER UPDATE OF "runId"
 ON "Observation"
-DEFERRABLE INITIALLY IMMEDIATE
+NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_observation_dependents"();
 
 -- Reparenting a platform ownership node can invalidate many child tuples
 -- without touching them. Require an explicit data migration instead.
+CREATE TRIGGER "tenant_parent_Client"
+BEFORE UPDATE OF "workspaceId"
+ON "Client"
+FOR EACH ROW
+WHEN (OLD."workspaceId" IS DISTINCT FROM NEW."workspaceId")
+EXECUTE FUNCTION "prevent_tenant_parent_reassignment"();
+
 CREATE TRIGGER "tenant_parent_Brand"
 BEFORE UPDATE OF "clientId"
 ON "Brand"
@@ -1285,5 +1638,30 @@ ON "SiteMarket"
 FOR EACH ROW
 WHEN (OLD."siteId" IS DISTINCT FROM NEW."siteId")
 EXECUTE FUNCTION "prevent_tenant_parent_reassignment"();
+
+-- This is the final handoff from the temporary migration gate to permanent
+-- constraints. If any enforce statement fails, transaction rollback leaves
+-- the committed backfill gates in place.
+DO $$
+DECLARE
+  table_name text;
+BEGIN
+  FOREACH table_name IN ARRAY ARRAY[
+    'ContentAsset', 'GeoRun', 'ChannelVariant', 'GeoFlowTaskLink',
+    'GeoFlowSyncRun', 'AuditEvent', 'TrendTopic', 'VariantMetric',
+    'SeoAudit', 'KeywordRanking', 'ExportPackage',
+    'DistributionDispatch', 'EventDelivery'
+  ]
+  LOOP
+    EXECUTE format(
+      'DROP TRIGGER %I ON %I',
+      'ownership_backfill_write_gate_' || table_name,
+      table_name
+    );
+  END LOOP;
+END
+$$;
+
+DROP FUNCTION "block_legacy_writes_until_enforced"();
 
 COMMIT;

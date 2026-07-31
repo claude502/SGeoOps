@@ -1,5 +1,48 @@
 BEGIN;
 
+-- SHARE ROW EXCLUSIVE conflicts with the ROW EXCLUSIVE lock taken by every
+-- INSERT/UPDATE/DELETE. Acquire all legacy tables in one fixed declaration
+-- order before any scan so concurrent writers cannot create a TOCTOU gap.
+LOCK TABLE
+  "ContentAsset",
+  "GeoRun",
+  "ChannelVariant",
+  "GeoFlowTaskLink",
+  "GeoFlowSyncRun",
+  "AuditEvent",
+  "TrendTopic",
+  "VariantMetric",
+  "SeoAudit",
+  "KeywordRanking",
+  "ExportPackage",
+  "DistributionDispatch",
+  "EventDelivery"
+IN SHARE ROW EXCLUSIVE MODE;
+
+-- A retry of this idempotent migration owns all table locks before removing
+-- the gate installed by its previous successful run.
+DO $$
+DECLARE
+  table_name text;
+BEGIN
+  FOREACH table_name IN ARRAY ARRAY[
+    'ContentAsset', 'GeoRun', 'ChannelVariant', 'GeoFlowTaskLink',
+    'GeoFlowSyncRun', 'AuditEvent', 'TrendTopic', 'VariantMetric',
+    'SeoAudit', 'KeywordRanking', 'ExportPackage',
+    'DistributionDispatch', 'EventDelivery'
+  ]
+  LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS %I ON %I',
+      'ownership_backfill_write_gate_' || table_name,
+      table_name
+    );
+  END LOOP;
+END
+$$;
+
+DROP FUNCTION IF EXISTS "block_legacy_writes_until_enforced"();
+
 -- Fixed platform root for the legacy Txpuro workload. These inserts are
 -- intentionally idempotent; assertions below reject conflicting fixed IDs.
 INSERT INTO "Workspace" (
@@ -795,6 +838,261 @@ BEGIN
         table_name, chain_mismatch_id;
     END IF;
     chain_mismatch_id := NULL;
+  END LOOP;
+END
+$$;
+
+-- Validate every concrete legacy relationship before the write gate is
+-- installed. Root ownership must match exactly; market scope may differ only
+-- when at least one endpoint is intentionally site-level.
+DO $$
+DECLARE
+  mismatch record;
+BEGIN
+  WITH relationship_pairs AS (
+    SELECT
+      'ContentAsset'::text AS child_table,
+      child."id" AS child_id,
+      'TrendTopic'::text AS parent_table,
+      parent."id" AS parent_id,
+      child."clientId" AS child_client_id,
+      child."brandId" AS child_brand_id,
+      child."siteId" AS child_site_id,
+      child."siteMarketId" AS child_market_id,
+      parent."clientId" AS parent_client_id,
+      parent."brandId" AS parent_brand_id,
+      parent."siteId" AS parent_site_id,
+      parent."siteMarketId" AS parent_market_id
+    FROM "ContentAsset" child
+    JOIN "TrendTopic" parent ON parent."id" = child."trendTopicId"
+    UNION ALL
+    SELECT
+      'GeoRun', child."id", 'ContentAsset', parent."id",
+      child."clientId", child."brandId", child."siteId", child."siteMarketId",
+      parent."clientId", parent."brandId", parent."siteId", parent."siteMarketId"
+    FROM "GeoRun" child
+    JOIN "ContentAsset" parent ON parent."id" = child."contentAssetId"
+    UNION ALL
+    SELECT
+      'ChannelVariant', child."id", 'ContentAsset', parent."id",
+      child."clientId", child."brandId", child."siteId", child."siteMarketId",
+      parent."clientId", parent."brandId", parent."siteId", parent."siteMarketId"
+    FROM "ChannelVariant" child
+    JOIN "ContentAsset" parent ON parent."id" = child."contentAssetId"
+    UNION ALL
+    SELECT
+      'GeoFlowTaskLink', child."id", 'ContentAsset', parent."id",
+      child."clientId", child."brandId", child."siteId", child."siteMarketId",
+      parent."clientId", parent."brandId", parent."siteId", parent."siteMarketId"
+    FROM "GeoFlowTaskLink" child
+    JOIN "ContentAsset" parent ON parent."id" = child."contentAssetId"
+    UNION ALL
+    SELECT
+      'VariantMetric', child."id", 'ChannelVariant', parent."id",
+      child."clientId", child."brandId", child."siteId", child."siteMarketId",
+      parent."clientId", parent."brandId", parent."siteId", parent."siteMarketId"
+    FROM "VariantMetric" child
+    JOIN "ChannelVariant" parent ON parent."id" = child."channelVariantId"
+    UNION ALL
+    SELECT
+      'ExportPackage', child."id", 'ContentAsset', parent."id",
+      child."clientId", child."brandId", child."siteId", child."siteMarketId",
+      parent."clientId", parent."brandId", parent."siteId", parent."siteMarketId"
+    FROM "ExportPackage" child
+    JOIN "ContentAsset" parent ON parent."id" = child."contentAssetId"
+    UNION ALL
+    SELECT
+      'DistributionDispatch', child."id", 'ContentAsset', parent."id",
+      child."clientId", child."brandId", child."siteId", child."siteMarketId",
+      parent."clientId", parent."brandId", parent."siteId", parent."siteMarketId"
+    FROM "DistributionDispatch" child
+    JOIN "ContentAsset" parent ON parent."id" = child."contentAssetId"
+    UNION ALL
+    SELECT
+      'DistributionDispatch', child."id", 'ExportPackage', parent."id",
+      child."clientId", child."brandId", child."siteId", child."siteMarketId",
+      parent."clientId", parent."brandId", parent."siteId", parent."siteMarketId"
+    FROM "DistributionDispatch" child
+    JOIN "ExportPackage" parent ON parent."id" = child."exportPackageId"
+  )
+  SELECT child_table, child_id, parent_table, parent_id
+  INTO mismatch
+  FROM relationship_pairs
+  WHERE ROW(child_client_id, child_brand_id, child_site_id)
+      IS DISTINCT FROM
+        ROW(parent_client_id, parent_brand_id, parent_site_id)
+     OR (
+       child_market_id IS NOT NULL
+       AND parent_market_id IS NOT NULL
+       AND child_market_id IS DISTINCT FROM parent_market_id
+     )
+  ORDER BY child_table, child_id, parent_table
+  LIMIT 1;
+
+  IF mismatch.child_id IS NOT NULL THEN
+    RAISE EXCEPTION
+      'legacy relationship ownership mismatch: % row % against % row %',
+      mismatch.child_table,
+      mismatch.child_id,
+      mismatch.parent_table,
+      mismatch.parent_id;
+  END IF;
+END
+$$;
+
+-- AuditEvent and EventDelivery use intentional polymorphic references. Known
+-- legacy entity types are strict provenance links; unknown types remain
+-- explicit site-level operations.
+DO $$
+DECLARE
+  reference_row record;
+  parent_table text;
+  parent_client_id text;
+  parent_brand_id text;
+  parent_site_id text;
+  parent_market_id text;
+  matched_rows bigint;
+BEGIN
+  FOR reference_row IN
+    SELECT
+      'AuditEvent'::text AS child_table,
+      "id" AS child_id,
+      "entityType" AS entity_type,
+      "entityId" AS entity_id,
+      "clientId" AS child_client_id,
+      "brandId" AS child_brand_id,
+      "siteId" AS child_site_id,
+      "siteMarketId" AS child_market_id
+    FROM "AuditEvent"
+    UNION ALL
+    SELECT
+      'EventDelivery', "id", "entityType", "entityId",
+      "clientId", "brandId", "siteId", "siteMarketId"
+    FROM "EventDelivery"
+  LOOP
+    parent_table := CASE
+      regexp_replace(
+        lower(btrim(reference_row.entity_type)), '[^a-z0-9]', '', 'g'
+      )
+      WHEN 'contentasset' THEN 'ContentAsset'
+      WHEN 'contentassets' THEN 'ContentAsset'
+      WHEN 'georun' THEN 'GeoRun'
+      WHEN 'georuns' THEN 'GeoRun'
+      WHEN 'channelvariant' THEN 'ChannelVariant'
+      WHEN 'channelvariants' THEN 'ChannelVariant'
+      WHEN 'geoflowtasklink' THEN 'GeoFlowTaskLink'
+      WHEN 'geoflowtasklinks' THEN 'GeoFlowTaskLink'
+      WHEN 'geoflowsyncrun' THEN 'GeoFlowSyncRun'
+      WHEN 'geoflowsyncruns' THEN 'GeoFlowSyncRun'
+      WHEN 'auditevent' THEN 'AuditEvent'
+      WHEN 'auditevents' THEN 'AuditEvent'
+      WHEN 'trendtopic' THEN 'TrendTopic'
+      WHEN 'trendtopics' THEN 'TrendTopic'
+      WHEN 'variantmetric' THEN 'VariantMetric'
+      WHEN 'variantmetrics' THEN 'VariantMetric'
+      WHEN 'seoaudit' THEN 'SeoAudit'
+      WHEN 'seoaudits' THEN 'SeoAudit'
+      WHEN 'keywordranking' THEN 'KeywordRanking'
+      WHEN 'keywordrankings' THEN 'KeywordRanking'
+      WHEN 'exportpackage' THEN 'ExportPackage'
+      WHEN 'exportpackages' THEN 'ExportPackage'
+      WHEN 'distributiondispatch' THEN 'DistributionDispatch'
+      WHEN 'distributiondispatches' THEN 'DistributionDispatch'
+      WHEN 'eventdelivery' THEN 'EventDelivery'
+      WHEN 'eventdeliveries' THEN 'EventDelivery'
+      ELSE NULL
+    END;
+
+    IF parent_table IS NULL OR reference_row.entity_id IS NULL THEN
+      CONTINUE;
+    END IF;
+
+    EXECUTE format(
+      'SELECT "clientId", "brandId", "siteId", "siteMarketId"
+       FROM %I
+       WHERE "id" = $1
+       FOR SHARE',
+      parent_table
+    )
+    INTO
+      parent_client_id,
+      parent_brand_id,
+      parent_site_id,
+      parent_market_id
+    USING reference_row.entity_id;
+    GET DIAGNOSTICS matched_rows = ROW_COUNT;
+
+    IF matched_rows = 0 THEN
+      RAISE EXCEPTION
+        'legacy polymorphic parent missing: % row % references % row %',
+        reference_row.child_table,
+        reference_row.child_id,
+        parent_table,
+        reference_row.entity_id;
+    END IF;
+
+    IF ROW(
+      reference_row.child_client_id,
+      reference_row.child_brand_id,
+      reference_row.child_site_id
+    ) IS DISTINCT FROM ROW(
+      parent_client_id,
+      parent_brand_id,
+      parent_site_id
+    ) OR (
+      reference_row.child_market_id IS NOT NULL
+      AND parent_market_id IS NOT NULL
+      AND reference_row.child_market_id IS DISTINCT FROM parent_market_id
+    ) THEN
+      RAISE EXCEPTION
+        'legacy relationship ownership mismatch: % row % against % row %',
+        reference_row.child_table,
+        reference_row.child_id,
+        parent_table,
+        reference_row.entity_id;
+    END IF;
+  END LOOP;
+END
+$$;
+
+-- Keep the backfill/enforce transaction boundary closed. The enforce
+-- migration removes these gates only after all permanent constraints and
+-- triggers have been installed successfully.
+CREATE FUNCTION "block_legacy_writes_until_enforced"()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path FROM CURRENT
+AS $$
+BEGIN
+  RAISE EXCEPTION USING
+    ERRCODE = '55000',
+    MESSAGE = format(
+      'ownership migration write gate active for %s',
+      TG_TABLE_NAME
+    );
+END
+$$;
+
+DO $$
+DECLARE
+  table_name text;
+BEGIN
+  FOREACH table_name IN ARRAY ARRAY[
+    'ContentAsset', 'GeoRun', 'ChannelVariant', 'GeoFlowTaskLink',
+    'GeoFlowSyncRun', 'AuditEvent', 'TrendTopic', 'VariantMetric',
+    'SeoAudit', 'KeywordRanking', 'ExportPackage',
+    'DistributionDispatch', 'EventDelivery'
+  ]
+  LOOP
+    EXECUTE format(
+      'CREATE TRIGGER %I
+       BEFORE INSERT OR UPDATE OR DELETE ON %I
+       FOR EACH STATEMENT
+       EXECUTE FUNCTION "block_legacy_writes_until_enforced"()',
+      'ownership_backfill_write_gate_' || table_name,
+      table_name
+    );
   END LOOP;
 END
 $$;
