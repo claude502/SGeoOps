@@ -174,6 +174,34 @@ describe("scoped organization routes", () => {
     });
   });
 
+  it("maps a host claim collision to 409 without leaking the existing site", async () => {
+    const { ScopedOrganizationError } = await import(
+      "@/lib/organization/repository"
+    );
+    mocks.createSite.mockRejectedValue(
+      new ScopedOrganizationError("HOST_CONFLICT"),
+    );
+    const { POST } = await import("./brands/[brandId]/sites/route");
+
+    const response = await POST(
+      jsonRequest("http://localhost/api/brands/brand_a/sites", {
+        name: "Site A Two",
+        canonicalHost: "claimed.example.com",
+        originHosts: [],
+        siteType: "content",
+        hostingMode: "hosted",
+        canonicalRules: {},
+        allowedPublishPaths: [],
+      }),
+      { params: Promise.resolve({ brandId: "brand_a" }) },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Host already claimed",
+    });
+  });
+
   it("allows Viewer to list safe integration summaries", async () => {
     mocks.requireAccessScope.mockResolvedValue({ ...operator, role: "Viewer" });
     mocks.listBySite.mockResolvedValue([

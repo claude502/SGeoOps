@@ -1,4 +1,12 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,19 +76,65 @@ describe("FileSecretResolver", () => {
       "SECRET_REFERENCE_INVALID",
     );
     await expect(resolver.resolve("file:outside-link")).rejects.toThrow(
-      "SECRET_OUTSIDE_ROOT",
+      "SECRET_SYMLINK_FORBIDDEN",
     );
   });
 
-  it("allows a symlink whose resolved regular file remains inside the root", async () => {
+  it("rejects target symlinks even when they resolve inside the root", async () => {
     const root = await temporaryDirectory("sgeo-secret-root-");
     await mkdir(join(root, "actual"));
     await writeFile(join(root, "actual", "token"), "inside\n");
     await symlink(join(root, "actual", "token"), join(root, "token-link"));
     const resolver = new FileSecretResolver({ SGEO_SECRET_ROOT: root });
 
-    await expect(resolver.resolve("file:token-link")).resolves.toBe("inside");
+    await expect(resolver.resolve("file:token-link")).rejects.toThrow(
+      "SECRET_SYMLINK_FORBIDDEN",
+    );
   });
+
+  it(
+    "never returns outside bytes while an intermediate directory is replaced",
+    async () => {
+      const parent = await temporaryDirectory("sgeo-secret-race-");
+      const root = join(parent, "root");
+      const live = join(root, "live");
+      const parked = join(root, "parked");
+      const outside = join(parent, "outside");
+      await mkdir(root);
+      await mkdir(live);
+      await mkdir(outside);
+      await writeFile(join(live, "token"), "inside-secret\n");
+      await writeFile(join(outside, "token"), "outside-secret\n");
+      const resolver = new FileSecretResolver({ SGEO_SECRET_ROOT: root });
+      const observed: string[] = [];
+
+      const attacker = async () => {
+        for (let attempt = 0; attempt < 600; attempt += 1) {
+          await rename(live, parked);
+          await symlink(outside, live);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          await unlink(live);
+          await rename(parked, live);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      };
+      const reader = async () => {
+        for (let attempt = 0; attempt < 600; attempt += 1) {
+          try {
+            observed.push(await resolver.resolve("file:live/token"));
+          } catch {
+            // Fail-closed errors are expected while the claim is changing.
+          }
+        }
+      };
+
+      await Promise.all([attacker(), reader(), reader(), reader(), reader()]);
+
+      expect(observed).not.toContain("outside-secret");
+      expect(observed.every((value) => value === "inside-secret")).toBe(true);
+    },
+    30_000,
+  );
 
   it("rejects missing paths and directories", async () => {
     const root = await temporaryDirectory("sgeo-secret-root-");

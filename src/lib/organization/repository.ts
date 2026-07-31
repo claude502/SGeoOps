@@ -17,7 +17,8 @@ import { db } from "@/lib/prisma";
 
 export type ScopedOrganizationErrorCode =
   | "RESOURCE_NOT_FOUND"
-  | "INVALID_HOST";
+  | "INVALID_HOST"
+  | "HOST_CONFLICT";
 
 export class ScopedOrganizationError extends Error {
   constructor(readonly code: ScopedOrganizationErrorCode) {
@@ -118,7 +119,7 @@ export interface OrganizationRepository {
 
 type OrganizationDatabase = Pick<
   PrismaClient,
-  "client" | "brand" | "site" | "siteMarket"
+  "client" | "brand" | "site" | "siteMarket" | "$transaction"
 >;
 
 const clientSelect = {
@@ -173,6 +174,34 @@ const siteMarketSelect = {
   updatedAt: true,
 } satisfies Prisma.SiteMarketSelect;
 
+const publicSiteSelect = {
+  id: true,
+  brandId: true,
+  name: true,
+  canonicalHost: true,
+  originHosts: true,
+  siteType: true,
+  hostingMode: true,
+  canonicalRules: true,
+  allowedPublishPaths: true,
+  active: true,
+  brand: {
+    select: {
+      clientId: true,
+      client: {
+        select: {
+          workspaceId: true,
+          active: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.SiteSelect;
+
+type PublicSiteRecord = Prisma.SiteGetPayload<{
+  select: typeof publicSiteSelect;
+}>;
+
 function nullableJson(value: Prisma.InputJsonValue | null) {
   return value === null ? Prisma.DbNull : value;
 }
@@ -182,6 +211,36 @@ function requireRecord<T>(record: T | null): T {
     throw new ScopedOrganizationError("RESOURCE_NOT_FOUND");
   }
   return record;
+}
+
+function hasPrismaCode(error: unknown, code: string) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
+function toResolvedPublicSite(
+  site: PublicSiteRecord,
+): ResolvedPublicSite | null {
+  if (!site.active || !site.brand.client.active) {
+    return null;
+  }
+  return {
+    workspaceId: site.brand.client.workspaceId,
+    clientId: site.brand.clientId,
+    brandId: site.brandId,
+    siteId: site.id,
+    name: site.name,
+    canonicalHost: site.canonicalHost,
+    originHosts: site.originHosts,
+    siteType: site.siteType,
+    hostingMode: site.hostingMode,
+    canonicalRules: site.canonicalRules,
+    allowedPublishPaths: site.allowedPublishPaths,
+  };
 }
 
 export class PrismaOrganizationRepository implements OrganizationRepository {
@@ -244,30 +303,59 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
     scope: AccessScope,
     input: CreateSiteInput,
   ): Promise<SiteSummary> {
-    requireRecord(
-      await this.database.brand.findFirst({
-        where: {
-          id: input.brandId,
-          client: scopedClientRelation(scope),
-        },
-        select: { id: true },
-      }),
-    );
+    try {
+      return await this.database.$transaction(async (transaction) => {
+        await transaction.$queryRaw`
+          SELECT pg_advisory_xact_lock(1936484701::bigint)::text AS locked
+        `;
 
-    return this.database.site.create({
-      data: {
-        brandId: input.brandId,
-        name: input.name,
-        canonicalHost: input.canonicalHost,
-        originHosts: input.originHosts,
-        siteType: input.siteType,
-        hostingMode: input.hostingMode,
-        canonicalRules: input.canonicalRules,
-        allowedPublishPaths: input.allowedPublishPaths,
-        active: input.active,
-      },
-      select: siteSelect,
-    });
+        requireRecord(
+          await transaction.brand.findFirst({
+            where: {
+              id: input.brandId,
+              client: scopedClientRelation(scope),
+            },
+            select: { id: true },
+          }),
+        );
+
+        const claims = [
+          ...new Set([input.canonicalHost, ...input.originHosts]),
+        ];
+        const conflictingSite = await transaction.site.findFirst({
+          where: {
+            OR: [
+              { canonicalHost: { in: claims } },
+              { originHosts: { hasSome: claims } },
+            ],
+          },
+          select: { id: true },
+        });
+        if (conflictingSite) {
+          throw new ScopedOrganizationError("HOST_CONFLICT");
+        }
+
+        return transaction.site.create({
+          data: {
+            brandId: input.brandId,
+            name: input.name,
+            canonicalHost: input.canonicalHost,
+            originHosts: input.originHosts,
+            siteType: input.siteType,
+            hostingMode: input.hostingMode,
+            canonicalRules: input.canonicalRules,
+            allowedPublishPaths: input.allowedPublishPaths,
+            active: input.active,
+          },
+          select: siteSelect,
+        });
+      });
+    } catch (error) {
+      if (hasPrismaCode(error, "P2002")) {
+        throw new ScopedOrganizationError("HOST_CONFLICT");
+      }
+      throw error;
+    }
   }
 
   async createSiteMarket(
@@ -317,51 +405,28 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
       throw new ScopedOrganizationError("INVALID_HOST");
     }
 
-    const site = await this.database.site.findFirst({
+    const canonicalSite = await this.database.site.findUnique({
+      where: { canonicalHost: normalizedHost },
+      select: publicSiteSelect,
+    });
+    if (canonicalSite) {
+      return toResolvedPublicSite(canonicalSite);
+    }
+
+    const aliases = await this.database.site.findMany({
       where: {
         active: true,
         brand: { client: { active: true } },
-        OR: [
-          { canonicalHost: normalizedHost },
-          { originHosts: { has: normalizedHost } },
-        ],
+        originHosts: { has: normalizedHost },
       },
-      select: {
-        id: true,
-        brandId: true,
-        name: true,
-        canonicalHost: true,
-        originHosts: true,
-        siteType: true,
-        hostingMode: true,
-        canonicalRules: true,
-        allowedPublishPaths: true,
-        brand: {
-          select: {
-            clientId: true,
-            client: { select: { workspaceId: true } },
-          },
-        },
-      },
+      select: publicSiteSelect,
+      orderBy: { id: "asc" },
+      take: 2,
     });
-
-    if (!site) {
+    if (aliases.length !== 1) {
       return null;
     }
-
-    return {
-      workspaceId: site.brand.client.workspaceId,
-      clientId: site.brand.clientId,
-      brandId: site.brandId,
-      siteId: site.id,
-      name: site.name,
-      canonicalHost: site.canonicalHost,
-      originHosts: site.originHosts,
-      siteType: site.siteType,
-      hostingMode: site.hostingMode,
-      canonicalRules: site.canonicalRules,
-      allowedPublishPaths: site.allowedPublishPaths,
-    };
+    return toResolvedPublicSite(aliases[0]);
   }
 }
 

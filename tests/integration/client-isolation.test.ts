@@ -28,6 +28,13 @@ const scopeA: AccessScope = {
   clientIds: ["client_a"],
 };
 
+const scopeB: AccessScope = {
+  actorId: "operator_b",
+  workspaceId: "workspace_internal",
+  role: "Operator",
+  clientIds: ["client_b"],
+};
+
 let adminClient: Client;
 let prisma: PrismaClient;
 let schema = "";
@@ -451,6 +458,95 @@ describe.skipIf(!integrationEnabled).sequential(
         secretConfigured: true,
       });
       expect(integration).not.toHaveProperty("secretRef");
+    });
+
+    it("prioritizes canonical claims and fails closed for ambiguous aliases", async () => {
+      await adminClient.query(`
+        UPDATE "Site"
+        SET "originHosts" = array_append(
+          "originHosts",
+          'site-b.example.com'
+        )
+        WHERE "id" = 'site_a';
+      `);
+      await expect(
+        organizations.resolveSiteByHost("site-b.example.com"),
+      ).resolves.toMatchObject({
+        clientId: "client_b",
+        siteId: "site_b",
+      });
+
+      await adminClient.query(`
+        UPDATE "Site"
+        SET "originHosts" = array_append(
+          "originHosts",
+          'shared.example.com'
+        )
+        WHERE "id" IN ('site_a', 'site_b');
+      `);
+      await expect(
+        organizations.resolveSiteByHost("shared.example.com"),
+      ).resolves.toBeNull();
+    });
+
+    it("rejects existing and concurrent host claim collisions", async () => {
+      await expect(
+        organizations.createSite(scopeA, {
+          brandId: "brand_a",
+          name: "Existing Alias Collision",
+          canonicalHost: "origin-a.example.com",
+          originHosts: [],
+          siteType: "content",
+          hostingMode: "hosted",
+          canonicalRules: {},
+          allowedPublishPaths: [],
+          active: true,
+        }),
+      ).rejects.toMatchObject({ code: "HOST_CONFLICT" });
+
+      const results = await Promise.allSettled([
+        organizations.createSite(scopeA, {
+          brandId: "brand_a",
+          name: "Race Site A",
+          canonicalHost: "race-a.example.com",
+          originHosts: ["race-shared.example.com"],
+          siteType: "content",
+          hostingMode: "hosted",
+          canonicalRules: {},
+          allowedPublishPaths: [],
+          active: true,
+        }),
+        organizations.createSite(scopeB, {
+          brandId: "brand_b",
+          name: "Race Site B",
+          canonicalHost: "race-b.example.com",
+          originHosts: ["race-shared.example.com"],
+          siteType: "content",
+          hostingMode: "external",
+          canonicalRules: {},
+          allowedPublishPaths: [],
+          active: true,
+        }),
+      ]);
+
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(
+        1,
+      );
+      const [rejected] = results.filter(
+        (result) => result.status === "rejected",
+      );
+      expect(rejected).toMatchObject({
+        reason: {
+          name: "ScopedOrganizationError",
+          code: "HOST_CONFLICT",
+        },
+      });
+      const claims = await adminClient.query<{ count: number }>(`
+        SELECT count(*)::int AS count
+        FROM "Site"
+        WHERE "originHosts" @> ARRAY['race-shared.example.com']::TEXT[]
+      `);
+      expect(claims.rows[0]?.count).toBe(1);
     });
 
     it("resolves normalized public hosts only through active ownership", async () => {

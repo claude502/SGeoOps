@@ -25,6 +25,16 @@ export function organizationRouteError(error: unknown) {
 
   if (
     error instanceof ScopedOrganizationError &&
+    error.code === "HOST_CONFLICT"
+  ) {
+    return NextResponse.json(
+      { error: "Host already claimed" },
+      { status: 409 },
+    );
+  }
+
+  if (
+    error instanceof ScopedOrganizationError &&
     error.code === "RESOURCE_NOT_FOUND"
   ) {
     return NextResponse.json(

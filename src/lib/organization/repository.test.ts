@@ -14,7 +14,7 @@ const scope: AccessScope = {
 };
 
 function organizationDatabase() {
-  return {
+  const database = {
     client: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -25,12 +25,44 @@ function organizationDatabase() {
       create: vi.fn(),
     },
     site: {
+      findUnique: vi.fn(),
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       create: vi.fn(),
     },
     siteMarket: {
       findFirst: vi.fn(),
       create: vi.fn(),
+    },
+    $queryRaw: vi.fn(),
+  };
+  return Object.assign(database, {
+    $transaction: vi.fn(
+      async (operation: (transaction: typeof database) => Promise<unknown>) =>
+        operation(database),
+    ),
+  });
+}
+
+function publicSiteRecord(id: string, canonicalHost: string) {
+  const suffix = id.replace(/^site_/, "");
+  return {
+    id,
+    brandId: `brand_${suffix}`,
+    name: `Site ${suffix.toUpperCase()}`,
+    canonicalHost,
+    originHosts: [`origin-${suffix}.example.com`],
+    siteType: "content",
+    hostingMode: "hosted",
+    canonicalRules: { https: true },
+    allowedPublishPaths: ["/guides"],
+    active: true,
+    brand: {
+      clientId: `client_${suffix}`,
+      client: {
+        workspaceId: "workspace_internal",
+        active: true,
+      },
     },
   };
 }
@@ -191,50 +223,114 @@ describe("PrismaOrganizationRepository", () => {
     });
   });
 
-  it("normalizes a public host and resolves only active ownership", async () => {
+  it("gives an exact canonical claim priority over every origin alias", async () => {
     const database = organizationDatabase();
-    database.site.findFirst.mockResolvedValue({
-      id: "site_a",
-      brandId: "brand_a",
-      name: "Site A",
-      canonicalHost: "example.com",
-      originHosts: ["origin.example.com"],
-      siteType: "content",
-      hostingMode: "hosted",
-      canonicalRules: { https: true },
-      allowedPublishPaths: ["/guides"],
-      active: true,
-      brand: {
-        id: "brand_a",
-        clientId: "client_a",
-        client: {
-          id: "client_a",
-          workspaceId: "workspace_internal",
-        },
-      },
-    });
+    database.site.findUnique.mockResolvedValue(
+      publicSiteRecord("site_b", "example.com"),
+    );
     const repository = new PrismaOrganizationRepository(database as never);
 
     await expect(
       repository.resolveSiteByHost("EXAMPLE.COM.:443"),
     ).resolves.toMatchObject({
       workspaceId: "workspace_internal",
-      clientId: "client_a",
-      brandId: "brand_a",
-      siteId: "site_a",
+      clientId: "client_b",
+      brandId: "brand_b",
+      siteId: "site_b",
     });
-    expect(database.site.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          active: true,
-          brand: { client: { active: true } },
-          OR: [
-            { canonicalHost: "example.com" },
-            { originHosts: { has: "example.com" } },
-          ],
-        },
+    expect(database.site.findUnique).toHaveBeenCalledWith({
+      where: { canonicalHost: "example.com" },
+      select: expect.any(Object),
+    });
+    expect(database.site.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns one active origin claim and fails closed for ambiguity", async () => {
+    const database = organizationDatabase();
+    database.site.findUnique.mockResolvedValue(null);
+    database.site.findMany
+      .mockResolvedValueOnce([publicSiteRecord("site_a", "site-a.example.com")])
+      .mockResolvedValueOnce([
+        publicSiteRecord("site_a", "site-a.example.com"),
+        publicSiteRecord("site_b", "site-b.example.com"),
+      ]);
+    const repository = new PrismaOrganizationRepository(database as never);
+
+    await expect(
+      repository.resolveSiteByHost("origin-a.example.com"),
+    ).resolves.toMatchObject({ siteId: "site_a" });
+    await expect(
+      repository.resolveSiteByHost("shared.example.com"),
+    ).resolves.toBeNull();
+    expect(database.site.findMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        active: true,
+        brand: { client: { active: true } },
+        originHosts: { has: "shared.example.com" },
+      },
+      select: expect.any(Object),
+      orderBy: { id: "asc" },
+      take: 2,
+    });
+  });
+
+  it("does not fall through an inactive canonical claim to an alias", async () => {
+    const database = organizationDatabase();
+    database.site.findUnique.mockResolvedValue({
+      ...publicSiteRecord("site_inactive", "claimed.example.com"),
+      active: false,
+    });
+    const repository = new PrismaOrganizationRepository(database as never);
+
+    await expect(
+      repository.resolveSiteByHost("claimed.example.com"),
+    ).resolves.toBeNull();
+    expect(database.site.findMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects site claims that collide with any canonical or origin host", async () => {
+    const database = organizationDatabase();
+    database.brand.findFirst.mockResolvedValue({ id: "brand_a" });
+    database.site.findFirst.mockResolvedValue({ id: "site_existing" });
+    const repository = new PrismaOrganizationRepository(database as never);
+
+    await expect(
+      repository.createSite(scope, {
+        brandId: "brand_a",
+        name: "Site New",
+        canonicalHost: "new.example.com",
+        originHosts: ["shared.example.com"],
+        siteType: "content",
+        hostingMode: "hosted",
+        canonicalRules: {},
+        allowedPublishPaths: [],
+        active: true,
       }),
-    );
+    ).rejects.toMatchObject({
+      name: "ScopedOrganizationError",
+      code: "HOST_CONFLICT",
+    });
+
+    expect(database.$transaction).toHaveBeenCalledOnce();
+    expect(database.$queryRaw).toHaveBeenCalledOnce();
+    expect(database.site.findFirst).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            canonicalHost: {
+              in: ["new.example.com", "shared.example.com"],
+            },
+          },
+          {
+            originHosts: {
+              hasSome: ["new.example.com", "shared.example.com"],
+            },
+          },
+        ],
+      },
+      select: { id: true },
+    });
+    expect(database.site.create).not.toHaveBeenCalled();
   });
 
   it.each([
