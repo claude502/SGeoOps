@@ -505,41 +505,24 @@ BEGIN
 END
 $$;
 
-CREATE FUNCTION "resolve_legacy_entity_table"(entity_type text)
-RETURNS text
-LANGUAGE sql
-IMMUTABLE
-PARALLEL SAFE
-RETURN CASE
-  regexp_replace(lower(btrim(entity_type)), '[^a-z0-9]', '', 'g')
-  WHEN 'contentasset' THEN 'ContentAsset'
-  WHEN 'contentassets' THEN 'ContentAsset'
-  WHEN 'georun' THEN 'GeoRun'
-  WHEN 'georuns' THEN 'GeoRun'
-  WHEN 'channelvariant' THEN 'ChannelVariant'
-  WHEN 'channelvariants' THEN 'ChannelVariant'
-  WHEN 'geoflowtasklink' THEN 'GeoFlowTaskLink'
-  WHEN 'geoflowtasklinks' THEN 'GeoFlowTaskLink'
-  WHEN 'geoflowsyncrun' THEN 'GeoFlowSyncRun'
-  WHEN 'geoflowsyncruns' THEN 'GeoFlowSyncRun'
-  WHEN 'auditevent' THEN 'AuditEvent'
-  WHEN 'auditevents' THEN 'AuditEvent'
-  WHEN 'trendtopic' THEN 'TrendTopic'
-  WHEN 'trendtopics' THEN 'TrendTopic'
-  WHEN 'variantmetric' THEN 'VariantMetric'
-  WHEN 'variantmetrics' THEN 'VariantMetric'
-  WHEN 'seoaudit' THEN 'SeoAudit'
-  WHEN 'seoaudits' THEN 'SeoAudit'
-  WHEN 'keywordranking' THEN 'KeywordRanking'
-  WHEN 'keywordrankings' THEN 'KeywordRanking'
-  WHEN 'exportpackage' THEN 'ExportPackage'
-  WHEN 'exportpackages' THEN 'ExportPackage'
-  WHEN 'distributiondispatch' THEN 'DistributionDispatch'
-  WHEN 'distributiondispatches' THEN 'DistributionDispatch'
-  WHEN 'eventdelivery' THEN 'EventDelivery'
-  WHEN 'eventdeliveries' THEN 'EventDelivery'
-  ELSE NULL
-END;
+-- The immediately preceding backfill migration installs the canonical alias
+-- resolver and retains it across the write-gated handoff. Enforce must not
+-- carry a second mapping that can drift.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_proc function
+    JOIN pg_namespace namespace ON namespace.oid = function.pronamespace
+    WHERE namespace.nspname = current_schema()
+      AND function.proname = 'resolve_legacy_entity_table'
+      AND pg_get_function_identity_arguments(function.oid) = 'entity_type text'
+  ) THEN
+    RAISE EXCEPTION
+      'ownership enforce requires resolve_legacy_entity_table(text) from backfill';
+  END IF;
+END
+$$;
 
 CREATE FUNCTION "assert_polymorphic_reference_scope"(
   scope_client_id text,
@@ -624,11 +607,7 @@ BEGIN
   IF ROW(scope_client_id, scope_brand_id, scope_site_id)
       IS DISTINCT FROM
      ROW(parent_client_id, parent_brand_id, parent_site_id)
-    OR (
-      scope_market_id IS NOT NULL
-      AND parent_market_id IS NOT NULL
-      AND scope_market_id IS DISTINCT FROM parent_market_id
-    )
+    OR scope_market_id IS DISTINCT FROM parent_market_id
   THEN
     RAISE EXCEPTION USING
       ERRCODE = '23514',
@@ -1198,6 +1177,45 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION "enforce_polymorphic_parent_truncate"()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path FROM CURRENT
+AS $$
+DECLARE
+  reference_row record;
+BEGIN
+  SELECT child_table, child_id
+  INTO reference_row
+  FROM (
+    SELECT 'AuditEvent'::text AS child_table, "id" AS child_id
+    FROM "AuditEvent"
+    WHERE "entityId" IS NOT NULL
+      AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+    UNION ALL
+    SELECT 'EventDelivery', "id"
+    FROM "EventDelivery"
+    WHERE "entityId" IS NOT NULL
+      AND "resolve_legacy_entity_table"("entityType") = TG_TABLE_NAME
+  ) known_reference
+  ORDER BY child_table, child_id
+  LIMIT 1;
+
+  IF reference_row.child_id IS NOT NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23514',
+      MESSAGE = format(
+        'polymorphic parent truncate restricted for %s by %s row %s',
+        TG_TABLE_NAME,
+        reference_row.child_table,
+        reference_row.child_id
+      );
+  END IF;
+  RETURN NULL;
+END
+$$;
+
 CREATE FUNCTION "enforce_competitor_scope"()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -1459,9 +1477,10 @@ NOT DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION "enforce_polymorphic_reference_scope"();
 
--- Known polymorphic parents have no ordinary FK. Reverse UPDATE checks and
--- BEFORE DELETE guards provide the same lifecycle guarantees while retaining
--- intentional unknown entity types as site-level provenance.
+-- Known polymorphic parents have no ordinary FK. Reverse UPDATE checks plus
+-- BEFORE DELETE row guards and BEFORE TRUNCATE statement guards provide the
+-- lifecycle guarantees while retaining intentional unknown entity types as
+-- site-level provenance.
 DO $$
 DECLARE
   table_name text;
@@ -1489,6 +1508,14 @@ BEGIN
        FOR EACH ROW
        EXECUTE FUNCTION "enforce_polymorphic_reference_dependents"()',
       'ownership_poly_parent_delete_' || table_name,
+      table_name
+    );
+    EXECUTE format(
+      'CREATE TRIGGER %I
+       BEFORE TRUNCATE ON %I
+       FOR EACH STATEMENT
+       EXECUTE FUNCTION "enforce_polymorphic_parent_truncate"()',
+      'ownership_poly_parent_truncate_' || table_name,
       table_name
     );
   END LOOP;
@@ -1683,6 +1710,11 @@ BEGIN
     EXECUTE format(
       'DROP TRIGGER %I ON %I',
       'ownership_backfill_write_gate_' || table_name,
+      table_name
+    );
+    EXECUTE format(
+      'DROP TRIGGER %I ON %I',
+      'ownership_backfill_truncate_gate_' || table_name,
       table_name
     );
   END LOOP;

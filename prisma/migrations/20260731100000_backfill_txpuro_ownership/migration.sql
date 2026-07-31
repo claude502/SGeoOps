@@ -1,8 +1,9 @@
 BEGIN;
 
 -- SHARE ROW EXCLUSIVE conflicts with the ROW EXCLUSIVE lock taken by every
--- INSERT/UPDATE/DELETE. Acquire all legacy tables in one fixed declaration
--- order before any scan so concurrent writers cannot create a TOCTOU gap.
+-- INSERT/UPDATE/DELETE and with the ACCESS EXCLUSIVE lock taken by TRUNCATE.
+-- Acquire all legacy tables in one fixed declaration order before any scan so
+-- concurrent writers cannot create a TOCTOU gap.
 LOCK TABLE
   "ContentAsset",
   "GeoRun",
@@ -37,11 +38,55 @@ BEGIN
       'ownership_backfill_write_gate_' || table_name,
       table_name
     );
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS %I ON %I',
+      'ownership_backfill_truncate_gate_' || table_name,
+      table_name
+    );
   END LOOP;
 END
 $$;
 
 DROP FUNCTION IF EXISTS "block_legacy_writes_until_enforced"();
+
+-- This stable resolver is the single alias definition used by both backfill
+-- and permanent ownership enforcement. It remains installed across the
+-- backfill/enforce transaction boundary.
+CREATE OR REPLACE FUNCTION "resolve_legacy_entity_table"(entity_type text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+RETURN CASE
+  regexp_replace(lower(btrim(entity_type)), '[^a-z0-9]', '', 'g')
+  WHEN 'contentasset' THEN 'ContentAsset'
+  WHEN 'contentassets' THEN 'ContentAsset'
+  WHEN 'georun' THEN 'GeoRun'
+  WHEN 'georuns' THEN 'GeoRun'
+  WHEN 'channelvariant' THEN 'ChannelVariant'
+  WHEN 'channelvariants' THEN 'ChannelVariant'
+  WHEN 'geoflowtasklink' THEN 'GeoFlowTaskLink'
+  WHEN 'geoflowtasklinks' THEN 'GeoFlowTaskLink'
+  WHEN 'geoflowsyncrun' THEN 'GeoFlowSyncRun'
+  WHEN 'geoflowsyncruns' THEN 'GeoFlowSyncRun'
+  WHEN 'auditevent' THEN 'AuditEvent'
+  WHEN 'auditevents' THEN 'AuditEvent'
+  WHEN 'trendtopic' THEN 'TrendTopic'
+  WHEN 'trendtopics' THEN 'TrendTopic'
+  WHEN 'variantmetric' THEN 'VariantMetric'
+  WHEN 'variantmetrics' THEN 'VariantMetric'
+  WHEN 'seoaudit' THEN 'SeoAudit'
+  WHEN 'seoaudits' THEN 'SeoAudit'
+  WHEN 'keywordranking' THEN 'KeywordRanking'
+  WHEN 'keywordrankings' THEN 'KeywordRanking'
+  WHEN 'exportpackage' THEN 'ExportPackage'
+  WHEN 'exportpackages' THEN 'ExportPackage'
+  WHEN 'distributiondispatch' THEN 'DistributionDispatch'
+  WHEN 'distributiondispatches' THEN 'DistributionDispatch'
+  WHEN 'eventdelivery' THEN 'EventDelivery'
+  WHEN 'eventdeliveries' THEN 'EventDelivery'
+  ELSE NULL
+END;
 
 -- Fixed platform root for the legacy Txpuro workload. These inserts are
 -- intentionally idempotent; assertions below reject conflicting fixed IDs.
@@ -717,7 +762,8 @@ SET
   "siteId" = scope."siteId",
   "siteMarketId" = COALESCE(audit."siteMarketId", scope."siteMarketId")
 FROM entity_scope scope
-WHERE lower(audit."entityType") = scope.entity_type
+WHERE lower("resolve_legacy_entity_table"(audit."entityType")) =
+      scope.entity_type
   AND audit."entityId" = scope."id"
   AND audit."clientId" IS NULL
   AND audit."brandId" IS NULL
@@ -776,7 +822,8 @@ SET
   "siteId" = scope."siteId",
   "siteMarketId" = COALESCE(delivery."siteMarketId", scope."siteMarketId")
 FROM entity_scope scope
-WHERE lower(delivery."entityType") = scope.entity_type
+WHERE lower("resolve_legacy_entity_table"(delivery."entityType")) =
+      scope.entity_type
   AND delivery."entityId" = scope."id"
   AND delivery."clientId" IS NULL
   AND delivery."brandId" IS NULL
@@ -973,38 +1020,7 @@ BEGIN
       "clientId", "brandId", "siteId", "siteMarketId"
     FROM "EventDelivery"
   LOOP
-    parent_table := CASE
-      regexp_replace(
-        lower(btrim(reference_row.entity_type)), '[^a-z0-9]', '', 'g'
-      )
-      WHEN 'contentasset' THEN 'ContentAsset'
-      WHEN 'contentassets' THEN 'ContentAsset'
-      WHEN 'georun' THEN 'GeoRun'
-      WHEN 'georuns' THEN 'GeoRun'
-      WHEN 'channelvariant' THEN 'ChannelVariant'
-      WHEN 'channelvariants' THEN 'ChannelVariant'
-      WHEN 'geoflowtasklink' THEN 'GeoFlowTaskLink'
-      WHEN 'geoflowtasklinks' THEN 'GeoFlowTaskLink'
-      WHEN 'geoflowsyncrun' THEN 'GeoFlowSyncRun'
-      WHEN 'geoflowsyncruns' THEN 'GeoFlowSyncRun'
-      WHEN 'auditevent' THEN 'AuditEvent'
-      WHEN 'auditevents' THEN 'AuditEvent'
-      WHEN 'trendtopic' THEN 'TrendTopic'
-      WHEN 'trendtopics' THEN 'TrendTopic'
-      WHEN 'variantmetric' THEN 'VariantMetric'
-      WHEN 'variantmetrics' THEN 'VariantMetric'
-      WHEN 'seoaudit' THEN 'SeoAudit'
-      WHEN 'seoaudits' THEN 'SeoAudit'
-      WHEN 'keywordranking' THEN 'KeywordRanking'
-      WHEN 'keywordrankings' THEN 'KeywordRanking'
-      WHEN 'exportpackage' THEN 'ExportPackage'
-      WHEN 'exportpackages' THEN 'ExportPackage'
-      WHEN 'distributiondispatch' THEN 'DistributionDispatch'
-      WHEN 'distributiondispatches' THEN 'DistributionDispatch'
-      WHEN 'eventdelivery' THEN 'EventDelivery'
-      WHEN 'eventdeliveries' THEN 'EventDelivery'
-      ELSE NULL
-    END;
+    parent_table := "resolve_legacy_entity_table"(reference_row.entity_type);
 
     IF parent_table IS NULL THEN
       IF reference_row.child_market_id IS NOT NULL THEN
@@ -1060,11 +1076,7 @@ BEGIN
       parent_client_id,
       parent_brand_id,
       parent_site_id
-    ) OR (
-      reference_row.child_market_id IS NOT NULL
-      AND parent_market_id IS NOT NULL
-      AND reference_row.child_market_id IS DISTINCT FROM parent_market_id
-    ) THEN
+    ) OR reference_row.child_market_id IS DISTINCT FROM parent_market_id THEN
       RAISE EXCEPTION
         'legacy relationship ownership mismatch: % row % against % row %',
         reference_row.child_table,
@@ -1112,6 +1124,14 @@ BEGIN
        FOR EACH STATEMENT
        EXECUTE FUNCTION "block_legacy_writes_until_enforced"()',
       'ownership_backfill_write_gate_' || table_name,
+      table_name
+    );
+    EXECUTE format(
+      'CREATE TRIGGER %I
+       BEFORE TRUNCATE ON %I
+       FOR EACH STATEMENT
+       EXECUTE FUNCTION "block_legacy_writes_until_enforced"()',
+      'ownership_backfill_truncate_gate_' || table_name,
       table_name
     );
   END LOOP;

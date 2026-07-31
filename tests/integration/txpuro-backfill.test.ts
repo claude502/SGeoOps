@@ -170,6 +170,45 @@ const polymorphicSiteLevelBackfillRejectCases = [
   },
 ] as const;
 
+const polymorphicExactMarketBackfillRejectCases = [
+  {
+    label: "market-scoped parent with site-level owned child",
+    mutation: `
+      UPDATE "AuditEvent"
+      SET
+        "clientId" = 'client_wing_heng',
+        "brandId" = 'brand_txpuro',
+        "siteId" = 'site_txpuro_com',
+        "siteMarketId" = NULL,
+        "entityType" = 'content-assets',
+        "entityId" = 'asset_txpuro_zh'
+      WHERE "id" = 'audit_txpuro'
+    `,
+  },
+  {
+    label: "site-level parent with market-scoped child",
+    mutation: `
+      UPDATE "AuditEvent"
+      SET
+        "siteMarketId" = 'site_market_txpuro_my_zh_cn',
+        "entityType" = 'geoflow_sync_runs',
+        "entityId" = 'sync_txpuro'
+      WHERE "id" = 'audit_txpuro'
+    `,
+  },
+  {
+    label: "parent and child in different markets",
+    mutation: `
+      UPDATE "AuditEvent"
+      SET
+        "siteMarketId" = 'site_market_txpuro_my_en',
+        "entityType" = 'CONTENT_ASSETS',
+        "entityId" = 'asset_txpuro_zh'
+      WHERE "id" = 'audit_txpuro'
+    `,
+  },
+] as const;
+
 const polymorphicParents = [
   ["ContentAsset", "asset_txpuro_zh", "content-assets"],
   ["GeoRun", "geo_run_txpuro_linked", "GEORUN"],
@@ -2462,6 +2501,86 @@ describe.skipIf(!integrationEnabled).sequential(
       },
     );
 
+    it.each(polymorphicExactMarketBackfillRejectCases)(
+      "rejects polymorphic $label before backfill commits",
+      async ({ label, mutation }) => {
+        await withFreshSchema(
+          `backfill_poly_exact_${label.replaceAll(/[^a-zA-Z0-9]/g, "_")}`,
+          async (target) => {
+            await prepareExpandedLegacyFixture(target);
+            await target.query(mutation);
+
+            await expectPgError(
+              () => applyMigration(target, backfillMigrationPath),
+              "P0001",
+              /legacy relationship ownership mismatch.*AuditEvent/i,
+            );
+            const roots = await target.query(`
+              SELECT count(*)::int AS count FROM "Workspace"
+            `);
+            expect(roots.rows[0]?.count).toBe(0);
+          },
+        );
+      },
+    );
+
+    it("normalizes every legacy polymorphic alias and inherits the exact parent market", async () => {
+      await withFreshSchema("backfill_poly_aliases", async (target) => {
+        await prepareExpandedLegacyFixture(target);
+        await target.query(`
+          UPDATE "EventDelivery"
+          SET "siteMarketId" = 'site_market_txpuro_my_zh_cn'
+          WHERE "id" = 'delivery_txpuro'
+        `);
+
+        for (const [table, parentId, entityType] of polymorphicParents) {
+          if (table === "AuditEvent") {
+            await cloneEventDelivery(target, {
+              id: `delivery_backfill_alias_${table}`,
+              entityType,
+              entityId: parentId,
+              siteMarketId: null,
+            });
+          } else {
+            await cloneAuditEvent(target, {
+              id: `audit_backfill_alias_${table}`,
+              entityType,
+              entityId: parentId,
+              siteMarketId: null,
+            });
+          }
+        }
+
+        await applyMigration(target, backfillMigrationPath);
+        await applyMigration(target, enforceMigrationPath);
+
+        for (const [table, parentId] of polymorphicParents) {
+          const childTable =
+            table === "AuditEvent" ? "EventDelivery" : "AuditEvent";
+          const childId =
+            table === "AuditEvent"
+              ? `delivery_backfill_alias_${table}`
+              : `audit_backfill_alias_${table}`;
+          const scopes = await target.query(
+            `
+              SELECT "clientId", "brandId", "siteId", "siteMarketId"
+              FROM ${quoteIdentifier(table)}
+              WHERE "id" = $1
+              UNION ALL
+              SELECT "clientId", "brandId", "siteId", "siteMarketId"
+              FROM ${quoteIdentifier(childTable)}
+              WHERE "id" = $2
+            `,
+            [parentId, childId],
+          );
+          expect(scopes.rows, `${table} normalized alias`).toHaveLength(2);
+          expect(scopes.rows[1], `${table} exact inherited scope`).toEqual(
+            scopes.rows[0],
+          );
+        }
+      });
+    });
+
     it("backfills site-level polymorphic provenance without inventing a market", async () => {
       await withFreshSchema("backfill_poly_site_level", async (target) => {
         await prepareExpandedLegacyFixture(target);
@@ -2535,13 +2654,24 @@ describe.skipIf(!integrationEnabled).sequential(
       await withFreshSchema("write_gate_lifecycle", async (target) => {
         await prepareBackfilledFreshSchema(target);
 
-        const installed = await target.query<{ count: number }>(`
-          SELECT count(*)::int AS count
+        const installed = await target.query<{
+          dmlTriggers: number;
+          truncateTriggers: number;
+        }>(`
+          SELECT
+            count(*) FILTER (
+              WHERE tgname LIKE 'ownership_backfill_write_gate_%'
+            )::int AS "dmlTriggers",
+            count(*) FILTER (
+              WHERE tgname LIKE 'ownership_backfill_truncate_gate_%'
+            )::int AS "truncateTriggers"
           FROM pg_trigger
           WHERE NOT tgisinternal
-            AND tgname LIKE 'ownership_backfill_write_gate_%'
         `);
-        expect(installed.rows[0]?.count).toBe(legacyTables.length);
+        expect(installed.rows[0]).toEqual({
+          dmlTriggers: legacyTables.length,
+          truncateTriggers: legacyTables.length,
+        });
         await expectPgError(
           () =>
             target.query(`
@@ -2551,16 +2681,31 @@ describe.skipIf(!integrationEnabled).sequential(
           "55000",
           /ownership migration write gate.*GeoFlowSyncRun/i,
         );
+        await expectPgError(
+          () => target.query(`TRUNCATE "GeoFlowSyncRun"`),
+          "55000",
+          /ownership migration write gate.*GeoFlowSyncRun/i,
+        );
 
         await applyMigration(target, enforceMigrationPath);
-        const removed = await target.query<{ triggers: number; functions: number }>(`
+        const removed = await target.query<{
+          dmlTriggers: number;
+          truncateTriggers: number;
+          functions: number;
+        }>(`
           SELECT
             (
               SELECT count(*)::int
               FROM pg_trigger
               WHERE NOT tgisinternal
                 AND tgname LIKE 'ownership_backfill_write_gate_%'
-            ) AS triggers,
+            ) AS "dmlTriggers",
+            (
+              SELECT count(*)::int
+              FROM pg_trigger
+              WHERE NOT tgisinternal
+                AND tgname LIKE 'ownership_backfill_truncate_gate_%'
+            ) AS "truncateTriggers",
             (
               SELECT count(*)::int
               FROM pg_proc
@@ -2568,7 +2713,11 @@ describe.skipIf(!integrationEnabled).sequential(
                 AND proname = 'block_legacy_writes_until_enforced'
             ) AS functions
         `);
-        expect(removed.rows[0]).toEqual({ triggers: 0, functions: 0 });
+        expect(removed.rows[0]).toEqual({
+          dmlTriggers: 0,
+          truncateTriggers: 0,
+          functions: 0,
+        });
 
         await target.query(`
           INSERT INTO "GeoFlowSyncRun" ("id")
@@ -2599,18 +2748,34 @@ describe.skipIf(!integrationEnabled).sequential(
           "23514",
           /tenant ownership mismatch.*AnalysisRun/i,
         );
-        const installed = await target.query<{ count: number }>(`
-          SELECT count(*)::int AS count
+        const installed = await target.query<{
+          dmlTriggers: number;
+          truncateTriggers: number;
+        }>(`
+          SELECT
+            count(*) FILTER (
+              WHERE tgname LIKE 'ownership_backfill_write_gate_%'
+            )::int AS "dmlTriggers",
+            count(*) FILTER (
+              WHERE tgname LIKE 'ownership_backfill_truncate_gate_%'
+            )::int AS "truncateTriggers"
           FROM pg_trigger
           WHERE NOT tgisinternal
-            AND tgname LIKE 'ownership_backfill_write_gate_%'
         `);
-        expect(installed.rows[0]?.count).toBe(legacyTables.length);
+        expect(installed.rows[0]).toEqual({
+          dmlTriggers: legacyTables.length,
+          truncateTriggers: legacyTables.length,
+        });
         await expectPgError(
           () =>
             target.query(`
               DELETE FROM "GeoFlowSyncRun" WHERE "id" = 'sync_txpuro'
             `),
+          "55000",
+          /ownership migration write gate.*GeoFlowSyncRun/i,
+        );
+        await expectPgError(
+          () => target.query(`TRUNCATE "GeoFlowSyncRun"`),
           "55000",
           /ownership migration write gate.*GeoFlowSyncRun/i,
         );
@@ -2771,6 +2936,7 @@ describe.skipIf(!integrationEnabled).sequential(
           child_triggers: number;
           parent_update_triggers: number;
           parent_delete_triggers: number;
+          parent_truncate_triggers: number;
           reverse_indexes: number;
         }>(`
           SELECT
@@ -2805,6 +2971,16 @@ describe.skipIf(!integrationEnabled).sequential(
                 )
             ) AS parent_delete_triggers,
             (
+              SELECT count(*)::int FROM pg_trigger
+              WHERE NOT tgisinternal
+                AND tgname LIKE 'ownership_poly_parent_truncate_%'
+                AND tgrelid IN (
+                  SELECT format('%I.%I', current_schema(), table_name)::regclass
+                  FROM information_schema.tables
+                  WHERE table_schema = current_schema()
+                )
+            ) AS parent_truncate_triggers,
+            (
               SELECT count(*)::int FROM pg_indexes
               WHERE schemaname = current_schema()
                 AND indexname IN (
@@ -2817,8 +2993,79 @@ describe.skipIf(!integrationEnabled).sequential(
           child_triggers: 2,
           parent_update_triggers: legacyTables.length,
           parent_delete_triggers: legacyTables.length,
+          parent_truncate_triggers: legacyTables.length,
           reverse_indexes: 2,
         });
+      });
+    });
+
+    it("requires exact markets for known polymorphic parents", async () => {
+      await withFreshSchema("polymorphic_exact_market", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+
+        await cloneAuditEvent(target, {
+          id: "audit_exact_zh",
+          entityType: "content-assets",
+          entityId: "asset_txpuro_zh",
+          siteMarketId: fixedOwnership.zhMarketId,
+        });
+        await cloneAuditEvent(target, {
+          id: "audit_exact_site_level",
+          entityType: "geoflow_sync_runs",
+          entityId: "sync_txpuro",
+          siteMarketId: null,
+        });
+
+        await expectPgError(
+          () =>
+            cloneAuditEvent(target, {
+              id: "audit_parent_zh_child_null",
+              entityType: "CONTENT_ASSETS",
+              entityId: "asset_txpuro_zh",
+              siteMarketId: null,
+            }),
+          "23514",
+          /polymorphic ownership mismatch.*AuditEvent.*ContentAsset/i,
+        );
+        await expectPgError(
+          () =>
+            cloneAuditEvent(target, {
+              id: "audit_parent_null_child_zh",
+              entityType: "geoflow-sync-runs",
+              entityId: "sync_txpuro",
+              siteMarketId: fixedOwnership.zhMarketId,
+            }),
+          "23514",
+          /polymorphic ownership mismatch.*AuditEvent.*GeoFlowSyncRun/i,
+        );
+        await expectPgError(
+          () =>
+            cloneAuditEvent(target, {
+              id: "audit_parent_zh_child_en",
+              entityType: "content_assets",
+              entityId: "asset_txpuro_zh",
+              siteMarketId: fixedOwnership.enMarketId,
+            }),
+          "23514",
+          /polymorphic ownership mismatch.*AuditEvent.*ContentAsset/i,
+        );
+
+        const exact = await target.query(`
+          SELECT "id", "siteMarketId"
+          FROM "AuditEvent"
+          WHERE "id" IN ('audit_exact_zh', 'audit_exact_site_level')
+          ORDER BY "id"
+        `);
+        expect(exact.rows).toEqual([
+          {
+            id: "audit_exact_site_level",
+            siteMarketId: null,
+          },
+          {
+            id: "audit_exact_zh",
+            siteMarketId: fixedOwnership.zhMarketId,
+          },
+        ]);
       });
     });
 
@@ -3074,6 +3321,49 @@ describe.skipIf(!integrationEnabled).sequential(
           "23514",
           /polymorphic parent delete restricted.*SeoAudit.*seo_audit_txpuro/i,
         );
+      });
+    });
+
+    it("restricts truncation of referenced polymorphic parents", async () => {
+      await withFreshSchema("polymorphic_parent_truncate", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+        await cloneAuditEvent(target, {
+          id: "audit_restricts_seo_truncate",
+          entityType: "seo_audits",
+          entityId: "seo_audit_txpuro",
+          siteMarketId: fixedOwnership.enMarketId,
+        });
+
+        for (const sql of [
+          `TRUNCATE "SeoAudit"`,
+          `TRUNCATE "SeoAudit" CASCADE`,
+        ]) {
+          await expectPgError(
+            () => target.query(sql),
+            "23514",
+            /polymorphic parent truncate restricted.*SeoAudit/i,
+          );
+          const preserved = await target.query(`
+            SELECT
+              (SELECT count(*)::int FROM "SeoAudit"
+                WHERE "id" = 'seo_audit_txpuro') AS parents,
+              (SELECT count(*)::int FROM "AuditEvent"
+                WHERE "id" = 'audit_restricts_seo_truncate') AS children
+          `);
+          expect(preserved.rows[0]).toEqual({ parents: 1, children: 1 });
+        }
+      });
+    });
+
+    it("allows truncation of a legacy parent with no polymorphic references", async () => {
+      await withFreshSchema("polymorphic_parent_truncate_empty", async (target) => {
+        await prepareEnforcedFreshSchema(target);
+
+        await target.query(`TRUNCATE "SeoAudit"`);
+        const remaining = await target.query(`
+          SELECT count(*)::int AS count FROM "SeoAudit"
+        `);
+        expect(remaining.rows[0]?.count).toBe(0);
       });
     });
 
