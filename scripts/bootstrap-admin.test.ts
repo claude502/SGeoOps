@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   bootstrapAdmin,
   readBootstrapAdminInput,
+  runBootstrapAdminCli,
   type BootstrapAdminInput,
   type BootstrapDependencies,
   type BootstrapTransaction,
@@ -153,5 +154,60 @@ describe("bootstrap admin transaction", () => {
       "MEMBERSHIP_WRITE_FAILED",
     );
     expect(committed).toEqual({ users: [], memberships: [] });
+  });
+});
+
+describe("bootstrap admin CLI", () => {
+  function cliEnvironment() {
+    return {
+      SGEO_BOOTSTRAP_ADMIN_EMAIL: "admin@example.com",
+      SGEO_BOOTSTRAP_ADMIN_NAME: "Platform Admin",
+      SGEO_BOOTSTRAP_ADMIN_PASSWORD: "a-secure-bootstrap-password",
+      SGEO_ALLOW_BOOTSTRAP_SIGNUP: "false",
+    };
+  }
+
+  it("disconnects Prisma after a successful bootstrap", async () => {
+    const environment = cliEnvironment();
+    const disconnect = vi.fn();
+    const dependencies: BootstrapDependencies = {
+      transaction: async (operation) =>
+        operation({
+          acquireBootstrapLock: vi.fn(),
+          countUsers: async () => 0,
+          findInternalWorkspace: async () => ({ id: "workspace_internal" }),
+          signUpEmail: async () => ({ user: { id: "user_admin" } }),
+          createMembership: vi.fn(),
+        }),
+    };
+    const loadRuntime = vi.fn(async () => {
+      expect(environment.SGEO_ALLOW_BOOTSTRAP_SIGNUP).toBe("true");
+      return {
+        prisma: { $disconnect: disconnect },
+        dependencies,
+      };
+    });
+
+    await expect(
+      runBootstrapAdminCli(environment, loadRuntime),
+    ).resolves.toEqual({ userId: "user_admin" });
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("disconnects Prisma when bootstrap fails", async () => {
+    const environment = cliEnvironment();
+    const disconnect = vi.fn();
+    const transaction: BootstrapDependencies["transaction"] = async () => {
+      throw new Error("BOOTSTRAP_FAILED");
+    };
+    const loadRuntime = vi.fn(async () => ({
+      prisma: { $disconnect: disconnect },
+      dependencies: { transaction },
+    }));
+
+    await expect(
+      runBootstrapAdminCli(environment, loadRuntime),
+    ).rejects.toThrow("BOOTSTRAP_FAILED");
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 });

@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import { createAuth } from "../../src/lib/auth";
 import {
   acquireBootstrapAdvisoryLock,
@@ -39,7 +46,17 @@ function input(email: string): BootstrapAdminInput {
   };
 }
 
-function createDependencies(): BootstrapDependencies {
+type MembershipData = Parameters<
+  BootstrapTransaction["createMembership"]
+>[0];
+
+function createDependencies(
+  createMembership: (
+    database: Prisma.TransactionClient,
+    data: MembershipData,
+  ) => Promise<unknown> = (database, data) =>
+    database.workspaceMember.create({ data }),
+): BootstrapDependencies {
   return {
     transaction: (operation) =>
       prisma.$transaction(async (database) =>
@@ -58,7 +75,7 @@ function createDependencies(): BootstrapDependencies {
               authEnvironment,
             ).api.signUpEmail({ body }),
           createMembership: (data) =>
-            database.workspaceMember.create({ data }),
+            createMembership(database, data),
         } as BootstrapTransaction),
       ),
   };
@@ -219,6 +236,14 @@ describe.skipIf(!integrationEnabled).sequential(
       await adminClient.end();
     });
 
+    beforeEach(async () => {
+      await adminClient.query(`
+        TRUNCATE TABLE
+          "WorkspaceMember", "Session", "Account", "User"
+        CASCADE
+      `);
+    });
+
     it("allows exactly one concurrent bootstrap", async () => {
       const dependencies = createDependencies();
       const results = await Promise.allSettled([
@@ -261,6 +286,58 @@ describe.skipIf(!integrationEnabled).sequential(
         users: 1,
         accounts: 1,
         adminMemberships: 1,
+      });
+    });
+
+    it("rolls back Better Auth records when membership insertion fails", async () => {
+      let recordsBeforeFailure:
+        | {
+            users: number;
+            accounts: number;
+            sessions: number;
+            memberships: number;
+          }
+        | undefined;
+      const dependencies = createDependencies(
+        async (database, data) => {
+          recordsBeforeFailure = {
+            users: await database.user.count(),
+            accounts: await database.account.count(),
+            sessions: await database.session.count(),
+            memberships: await database.workspaceMember.count(),
+          };
+
+          return database.workspaceMember.create({
+            data: {
+              ...data,
+              workspaceId: "workspace_missing",
+            },
+          });
+        },
+      );
+
+      await expect(
+        bootstrapAdmin(
+          input("rollback-admin@example.com"),
+          dependencies,
+        ),
+      ).rejects.toMatchObject({ code: "P2003" });
+      expect(recordsBeforeFailure).toEqual({
+        users: 1,
+        accounts: 1,
+        sessions: 1,
+        memberships: 0,
+      });
+      expect({
+        users: await prisma.user.count(),
+        accounts: await prisma.account.count(),
+        sessions: await prisma.session.count(),
+        memberships: await prisma.workspaceMember.count(),
+      }).toEqual({
+        users: 0,
+        accounts: 0,
+        sessions: 0,
+        memberships: 0,
       });
     });
   },

@@ -36,6 +36,15 @@ export type BootstrapDependencies = {
   ): Promise<T>;
 };
 
+type BootstrapCliRuntime = {
+  prisma: {
+    $disconnect(): Promise<void>;
+  };
+  dependencies: BootstrapDependencies;
+};
+
+type BootstrapCliRuntimeLoader = () => Promise<BootstrapCliRuntime>;
+
 export async function acquireBootstrapAdvisoryLock(
   database: Prisma.TransactionClient,
 ) {
@@ -91,34 +100,50 @@ export async function bootstrapAdmin(
   });
 }
 
-async function main() {
-  process.env.SGEO_ALLOW_BOOTSTRAP_SIGNUP = "true";
-  const input = readBootstrapAdminInput();
+async function loadBootstrapCliRuntime(): Promise<BootstrapCliRuntime> {
   const [{ createAuth }, { getPrisma }] = await Promise.all([
     import("../src/lib/auth"),
     import("../src/lib/prisma"),
   ]);
   const prisma = getPrisma();
 
-  await bootstrapAdmin(input, {
-    transaction: (operation) =>
-      prisma.$transaction(async (database) =>
-        operation({
-          acquireBootstrapLock: () =>
-            acquireBootstrapAdvisoryLock(database),
-          countUsers: () => database.user.count(),
-          findInternalWorkspace: () =>
-            database.workspace.findUnique({
-              where: { id: "workspace_internal" },
-              select: { id: true },
-            }),
-          signUpEmail: (body) =>
-            createAuth(database).api.signUpEmail({ body }),
-          createMembership: (data) =>
-            database.workspaceMember.create({ data }),
-        }),
-      ),
-  });
+  return {
+    prisma,
+    dependencies: {
+      transaction: (operation) =>
+        prisma.$transaction(async (database) =>
+          operation({
+            acquireBootstrapLock: () =>
+              acquireBootstrapAdvisoryLock(database),
+            countUsers: () => database.user.count(),
+            findInternalWorkspace: () =>
+              database.workspace.findUnique({
+                where: { id: "workspace_internal" },
+                select: { id: true },
+              }),
+            signUpEmail: (body) =>
+              createAuth(database).api.signUpEmail({ body }),
+            createMembership: (data) =>
+              database.workspaceMember.create({ data }),
+          }),
+        ),
+    },
+  };
+}
+
+export async function runBootstrapAdminCli(
+  env: BootstrapEnvironment = process.env,
+  loadRuntime: BootstrapCliRuntimeLoader = loadBootstrapCliRuntime,
+) {
+  env.SGEO_ALLOW_BOOTSTRAP_SIGNUP = "true";
+  const input = readBootstrapAdminInput(env);
+  const { prisma, dependencies } = await loadRuntime();
+
+  try {
+    return await bootstrapAdmin(input, dependencies);
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 function isDirectExecution() {
@@ -129,7 +154,7 @@ function isDirectExecution() {
 }
 
 if (isDirectExecution()) {
-  await main().catch((error: unknown) => {
+  await runBootstrapAdminCli().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : "BOOTSTRAP_FAILED");
     process.exitCode = 1;
   });
