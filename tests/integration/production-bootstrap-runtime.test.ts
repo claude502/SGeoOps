@@ -20,6 +20,18 @@ function sourceImportPath(moduleSpecifier: string) {
   return `${normalize(join(dirname(bootstrapPath), moduleSpecifier))}.ts`;
 }
 
+function bashBlockAfterHeading(source: string, heading: string) {
+  const headingIndex = source.indexOf(heading);
+  const start = source.indexOf("```bash\n", headingIndex);
+  const end = source.indexOf("\n```", start);
+
+  if (headingIndex === -1 || start === -1 || end === -1) {
+    throw new Error(`Bash block after ${heading} is required.`);
+  }
+
+  return source.slice(start + "```bash\n".length, end);
+}
+
 describe("production bootstrap runtime", () => {
   it("copies the bootstrap script, its source imports, tsconfig, and tsx runtime into the runner", async () => {
     const [dockerfile, packageJson, bootstrapScript] = await Promise.all([
@@ -90,6 +102,22 @@ describe("production bootstrap runtime", () => {
     const migration = deploymentGuide.indexOf("npm run prisma:deploy");
     const bootstrap = deploymentGuide.indexOf("geo-ops npm run auth:bootstrap");
     const verification = deploymentGuide.indexOf("### 7. 验证");
+    const startupProcedure = bashBlockAfterHeading(
+      deploymentGuide,
+      "### 6. 启动服务",
+    );
+    const procedureMigration = startupProcedure.indexOf("npm run prisma:deploy");
+    const procedureBootstrap = startupProcedure.indexOf(
+      "geo-ops npm run auth:bootstrap",
+    );
+    const cleanup = startupProcedure.indexOf(
+      "cleanup_bootstrap_env\ntrap - EXIT",
+    );
+    const fullStackStart = [
+      ...startupProcedure.matchAll(
+        /^docker compose --env-file \.env -f deploy\/docker-compose\.prod\.example\.yml up -d$/gm,
+      ),
+    ].at(-1)?.index ?? -1;
 
     expect(migration).toBeGreaterThanOrEqual(0);
     expect(bootstrap).toBeGreaterThan(migration);
@@ -103,6 +131,12 @@ describe("production bootstrap runtime", () => {
     expect(deploymentGuide).toContain(
       "unset SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD",
     );
+    expect(startupProcedure).toContain("set -euo pipefail");
+    expect(startupProcedure).toContain("trap cleanup_bootstrap_env EXIT");
+    expect(procedureMigration).toBeGreaterThanOrEqual(0);
+    expect(procedureBootstrap).toBeGreaterThan(procedureMigration);
+    expect(cleanup).toBeGreaterThan(procedureBootstrap);
+    expect(fullStackStart).toBeGreaterThan(cleanup);
 
     expect(geoFlowRollout).toContain("BETTER_AUTH_SECRET=");
     expect(geoFlowRollout).toContain("BETTER_AUTH_URL=");

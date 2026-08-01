@@ -236,7 +236,14 @@ cp /opt/geo-content-ops/deploy/Caddyfile.ip.example /opt/geo-content-ops/deploy/
 ### 6. 启动服务
 
 ```bash
+set -euo pipefail
 cd /opt/geo-content-ops
+
+cleanup_bootstrap_env() {
+  unset SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD
+}
+trap cleanup_bootstrap_env EXIT
+
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
@@ -251,10 +258,14 @@ docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --r
   -e SGEO_BOOTSTRAP_ADMIN_NAME \
   -e SGEO_BOOTSTRAP_ADMIN_PASSWORD \
   geo-ops npm run auth:bootstrap
-unset SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD
+
+cleanup_bootstrap_env
+trap - EXIT
 
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
 ```
+
+任何 migration、bootstrap 或 cleanup 失败都会在 full-stack `up -d` 前退出；只有 PostgreSQL 可能仍在运行。先修复失败原因，必要时使用同一 Compose command 停止 PostgreSQL，再从此 procedure 重跑；不要手动启动 `geo-ops`、`reverse-proxy` 或 `geo-worker`。
 
 ### 7. 验证
 
