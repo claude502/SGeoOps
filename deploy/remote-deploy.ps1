@@ -9,6 +9,28 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-NativeCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Operation,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Command
+  )
+
+  try {
+    & $Command
+  }
+  catch {
+    throw "$Operation failed: $($_.Exception.Message)"
+  }
+
+  $exitCode = $LASTEXITCODE
+
+  if ($exitCode -ne 0) {
+    throw "$Operation failed with exit code $exitCode."
+  }
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $archive = Join-Path $env:TEMP "geo-content-ops-deploy.tar.gz"
 $remote = "${User}@${HostName}"
@@ -23,25 +45,33 @@ try {
     Remove-Item -LiteralPath $archive -Force
   }
 
-  tar `
-    --exclude=".git" `
-    --exclude="node_modules" `
-    --exclude=".next" `
-    --exclude=".env" `
-    --exclude=".env.local" `
-    --exclude=".secrets" `
-    --exclude="secrets/" `
-    --exclude=".credentials" `
-    --exclude="docs/*.local.md" `
-    --exclude="*.tsbuildinfo" `
-    --exclude="dev-server.*.log" `
-    --exclude="qa-*.png" `
-    --exclude=".chrome-qa-profile" `
-    -czf $archive .
+  Invoke-NativeCommand -Operation "Create deployment archive" -Command {
+    tar `
+      --exclude=".git" `
+      --exclude="node_modules" `
+      --exclude=".next" `
+      --exclude=".env" `
+      --exclude=".env.local" `
+      --exclude=".secrets" `
+      --exclude="secrets/" `
+      --exclude=".credentials" `
+      --exclude="docs/*.local.md" `
+      --exclude="*.tsbuildinfo" `
+      --exclude="dev-server.*.log" `
+      --exclude="qa-*.png" `
+      --exclude=".chrome-qa-profile" `
+      -czf $archive .
+  }
 
-  ssh -i $KeyPath $remote "mkdir -p $RemoteDir"
-  scp -i $KeyPath $archive "${remote}:/tmp/geo-content-ops-deploy.tar.gz"
-  ssh -i $KeyPath $remote "tar -xzf /tmp/geo-content-ops-deploy.tar.gz -C $RemoteDir && rm /tmp/geo-content-ops-deploy.tar.gz"
+  Invoke-NativeCommand -Operation "Create remote deployment directory" -Command {
+    ssh -i $KeyPath $remote "mkdir -p $RemoteDir"
+  }
+  Invoke-NativeCommand -Operation "Upload deployment archive" -Command {
+    scp -i $KeyPath $archive "${remote}:/tmp/geo-content-ops-deploy.tar.gz"
+  }
+  Invoke-NativeCommand -Operation "Extract deployment archive" -Command {
+    ssh -i $KeyPath $remote "tar -xzf /tmp/geo-content-ops-deploy.tar.gz -C $RemoteDir && rm /tmp/geo-content-ops-deploy.tar.gz"
+  }
 
   $remoteCommands = @(
     "cd $RemoteDir",
@@ -62,7 +92,9 @@ try {
   $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d"
   $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps"
 
-  ssh -i $KeyPath $remote ($remoteCommands -join " && ")
+  Invoke-NativeCommand -Operation "Run remote deployment" -Command {
+    ssh -i $KeyPath $remote ($remoteCommands -join " && ")
+  }
 }
 finally {
   Pop-Location

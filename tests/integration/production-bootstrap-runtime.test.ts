@@ -41,7 +41,8 @@ function localImportSpecifiers(source: string, filePath: string) {
 
   const visit = (node: ts.Node) => {
     if (
-      ts.isImportDeclaration(node) &&
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
       ts.isStringLiteral(node.moduleSpecifier)
     ) {
       specifiers.add(node.moduleSpecifier.text);
@@ -115,6 +116,15 @@ function bashBlockAfterHeading(source: string, heading: string) {
 }
 
 describe("production bootstrap runtime", () => {
+  it("discovers local module re-exports in the runner source closure", () => {
+    expect(
+      localImportSpecifiers(
+        'export { bootstrap } from "./bootstrap"; export * from "@/lib/prisma";',
+        "scripts/entrypoint.ts",
+      ),
+    ).toEqual(["./bootstrap", "@/lib/prisma"]);
+  });
+
   it("copies every local bootstrap runtime dependency, tsconfig, and tsx into the runner", async () => {
     const [dockerfile, packageJson, sourceClosure] = await Promise.all([
       readFile(resolve(projectRoot, "Dockerfile"), "utf8"),
@@ -287,5 +297,39 @@ describe("production bootstrap runtime", () => {
     expect(fullStackStart).toBeGreaterThan(status);
     expect(remoteDeploy).toContain('($remoteCommands -join " && ")');
     expect(remoteDeploy).not.toMatch(/SGEO_BOOTSTRAP_ADMIN_/);
+  });
+
+  it("propagates every native deployment command failure, including the final status gate", async () => {
+    const remoteDeploy = await readFile(
+      resolve(projectRoot, "deploy/remote-deploy.ps1"),
+      "utf8",
+    );
+    const nativeOperations = [
+      ["Create deployment archive", "tar"],
+      ["Create remote deployment directory", "ssh"],
+      ["Upload deployment archive", "scp"],
+      ["Extract deployment archive", "ssh"],
+      ["Run remote deployment", "ssh"],
+    ];
+
+    expect(remoteDeploy).toMatch(
+      /function Invoke-NativeCommand[\s\S]*?& \$Command[\s\S]*?\$exitCode = \$LASTEXITCODE[\s\S]*?if \(\$exitCode -ne 0\)[\s\S]*?throw "\$Operation failed with exit code \$exitCode\./,
+    );
+    expect(remoteDeploy).toMatch(
+      /try \{[\s\S]*?& \$Command[\s\S]*?\}\s*catch \{[\s\S]*?throw "\$Operation failed: \$\(\$_\.Exception\.Message\)"/,
+    );
+    expect(remoteDeploy).not.toContain("Invoke-Expression");
+
+    for (const [operation, command] of nativeOperations) {
+      expect(remoteDeploy).toMatch(
+        new RegExp(
+          `Invoke-NativeCommand -Operation "${operation}" -Command \\{[\\s\\S]*?\\b${command}\\b`,
+        ),
+      );
+    }
+
+    expect(remoteDeploy).toMatch(
+      /Invoke-NativeCommand -Operation "Run remote deployment" -Command \{[\s\S]*?ssh -i \$KeyPath \$remote \(\$remoteCommands -join " && "\)/,
+    );
   });
 });
