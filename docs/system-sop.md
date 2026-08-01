@@ -334,10 +334,11 @@ export TEST_DATABASE_URL='postgresql://<non-production-test-user>:<non-productio
 1. 每日运行 `APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh`，并在同一时间点建立 `artifact-data` archive。
 2. PostgreSQL restore 先运行 `test -r`、`gzip -t`，再生成并验证 pre-restore safety backup；只有这些步骤成功才停止 `geo-ops`/`geo-worker` 并替换 database。restore pipeline 必须使用 `set -euo pipefail`，以捕获 gzip 和 `psql` 任一失败。
 3. artifact restore 先运行 `test -r`、`tar -tzf`，再创建当前 artifact rollback archive。candidate 必须解压到 artifact volume 内的 staging directory 并通过检查，之后才移动 live entries；不要在验证前 `rm -rf` live artifacts。
-4. artifact switch 后只启动 `geo-ops`。最多 60 秒轮询 container 内 `/api/healthz`，再以 archive metadata 中一个已知 `artifact://` URI 读取并核验 representative payload；`geo-worker` 仅在两项都成功后启动。
-5. post-switch health/read/worker startup 失败时，failure handler 必须停止 `geo-ops` 与 `geo-worker`，并保留 `.restore-previous-*` 和 host-side rollback archive。不要运行 migration 或启动半恢复的应用；使用已验证 rollback archive 恢复。
-6. 保留 `postgres_data`、`artifact-data` 和 `_prisma_migrations`。恢复和回退时不要运行 `prisma migrate reset`、`docker compose down -v` 或手工删除新 schema。恢复成功后仅在 healthcheck 和代表性 artifact read 完成后清理 volume staging/previous copy；host-side artifact rollback archive 至少保留至配对 database backup 的 retention window 结束。
-7. 应用回退仅重新部署已验证的旧应用 release，且不传 `-RunMigrations`。如果旧 release 不能读取新 schema，恢复与该 release 配对的数据库和 artifact backup。
+4. artifact switch 后只启动 `geo-ops`。最多 60 秒轮询 container 内 `/api/healthz`，再以 archive metadata 中一个已知 `artifact://` URI 读取并核验 representative payload；`geo-worker` 仅在两项都成功后进入单独 monitored rollout。
+5. platform validation 后执行 `docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-worker`，并在 30 秒内重复检查 `ps geo-worker` 和 `logs --tail 20 geo-worker`。任何 restarting、exited 或未运行状态必须停止 `geo-worker` 与 `geo-ops`，保留 `.restore-previous-*` 和 host-side rollback archive，且不得宣称 worker 已恢复。
+6. worker 只有 `restart: unless-stopped`，没有 healthcheck/readiness endpoint；同步 failure handler 只覆盖 rollout commands，不能观察随后异步 crash。继续 operator monitoring，直至未来提供 worker healthcheck。
+7. 保留 `postgres_data`、`artifact-data` 和 `_prisma_migrations`。恢复和回退时不要运行 `prisma migrate reset`、`docker compose down -v` 或手工删除新 schema。恢复成功后仅在 healthcheck 和代表性 artifact read 完成后清理 volume staging/previous copy；host-side artifact rollback archive 至少保留至配对 database backup 的 retention window 结束。
+8. 应用回退仅重新部署已验证的旧应用 release，且不传 `-RunMigrations`。如果旧 release 不能读取新 schema，恢复与该 release 配对的数据库和 artifact backup。
 
 完整的 PostgreSQL / artifact restore 命令和安全回退步骤见 [system-reference.md](./system-reference.md)。
 

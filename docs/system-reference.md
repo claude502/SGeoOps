@@ -571,7 +571,7 @@ stop_after_switch_failure() {
   trap - ERR
   docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
     stop geo-worker geo-ops || true
-  printf 'Post-switch verification failed; services stopped. Keep .restore-previous-%s and %s for recovery.\n' \
+  printf 'Post-switch verification or worker observation failed; services stopped. Keep .restore-previous-%s and %s for recovery.\n' \
     "$RESTORE_ID" "$ARTIFACT_ROLLBACK" >&2
   exit "$status"
 }
@@ -615,13 +615,31 @@ if [ -n "$VERIFY_ARTIFACT_URI" ]; then
     ' "$VERIFY_ARTIFACT_URI"
 fi
 
+printf 'Platform validation passed. Begin separately monitored geo-worker rollout.\n'
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-worker
-trap - ERR
+worker_observations=0
+while [ "$worker_observations" -lt 6 ]; do
+  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps geo-worker
+  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
+    logs --tail 20 geo-worker
+  if ! docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
+    ps --status running --services geo-worker | grep -qx 'geo-worker'
+  then
+    printf 'geo-worker is restarting, exited, or not running; stopping the recovered platform.\n' >&2
+    false
+  fi
+  worker_observations=$((worker_observations + 1))
+  if [ "$worker_observations" -lt 6 ]; then
+    sleep 5
+  fi
+done
 ```
 
 `geo-ops` 启动后最多等待 60 秒（30 次、每次 2 秒），使用 Compose healthcheck 同一 Node `fetch` contract 验证 `/api/healthz`。worker 在 health 和 representative artifact read 都成功前保持停止。artifact verification 以 `metadata.json` 的 canonical URI 定位其 SHA-256 physical object，读取 `payload` 并比对 metadata 的 version、URI、byte size 和 checksum，不依赖不存在的 public artifact endpoint。若所选 archive 没有 `metadata.json`，procedure 会记录 no-artifact exception，不执行 read verification；在恢复记录中注明该条件，且不要声称已完成 artifact read。
 
-selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持服务停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch 或 post-switch health/read/worker startup 任一步失败时，`ERR` trap 会停止 `geo-ops` 和 `geo-worker`，并保留 `.restore-previous-$RESTORE_ID` 与 `$ARTIFACT_ROLLBACK`；不要手动启动服务，使用 rollback archive 重跑 staging procedure。成功恢复后，再清理 volume 内的 previous directory：
+platform validation 完成后，`geo-worker` 是单独的 monitored rollout：上述命令启动它后连续 6 次（每 5 秒）显示 `docker compose ... ps geo-worker` 和最后 20 行 log，并确认每次都是 running。任一次显示 restarting、exited 或未运行时，`false` 触发仍在作用的 `ERR` trap，停止 `geo-worker` 与 `geo-ops`，并保留 `.restore-previous-*` 和 rollback archive。worker 只有 `restart: unless-stopped`，没有 healthcheck 或 readiness endpoint；该 trap 只能观察这段同步 rollout command，不能观察 shell 结束后的异步 crash。后续仍须由 operator 持续观察 `docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps geo-worker` 和 `logs --tail 20 geo-worker`，直到未来加入 worker healthcheck；在此之前不要把 detached launch 或短时 running status 记录为 recovered worker service state。
+
+selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持服务停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch、platform health/read 或 bounded worker observation 任一步失败时，`ERR` trap 会停止 `geo-ops` 和 `geo-worker`，并保留 `.restore-previous-$RESTORE_ID` 与 `$ARTIFACT_ROLLBACK`；不要手动启动服务，使用 rollback archive 重跑 staging procedure。成功恢复后，再清理 volume 内的 previous directory：
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T \
