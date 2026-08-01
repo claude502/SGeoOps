@@ -32,7 +32,7 @@ Last updated: 2026-05-05
 | 类型 | 保存位置 | 说明 |
 | --- | --- | --- |
 | 服务器 SSH 登录信息 | `.secrets/wingheng-geo-ops-credentials.md` | 包括服务器 IP、SSH 用户、当前测试期登录方式、常用远程命令 |
-| GEO Ops Basic Auth 账号 | `.secrets/wingheng-geo-ops-credentials.md` | 内部后台 `wingheng.technology` 登录凭证 |
+| GEO Ops Better Auth 管理员账号 | `.secrets/wingheng-geo-ops-credentials.md` | 由 `auth:bootstrap` 创建，用于内部后台 `/login` 的 email/password 登录 |
 | PostgreSQL 凭证 | `.secrets/wingheng-geo-ops-credentials.md` | 同时参考 `.secrets/wingheng-prod.env.snapshot` |
 | 生产 `.env` 快照 | `.secrets/wingheng-prod.env.snapshot` | 从远端 `/opt/geo-content-ops/.env` 拉回的快照 |
 | GEOFlow / Postiz / AI provider keys | `.secrets/wingheng-geo-ops-credentials.md` | 未配置项也在该文档明确标记 |
@@ -46,7 +46,7 @@ Last updated: 2026-05-05
 
 其中：
 
-- `wingheng.technology` 的登录账号密码在 `.secrets/wingheng-geo-ops-credentials.md`
+- `wingheng.technology` 使用 Better Auth session；管理员 email/password 在 `.secrets/wingheng-geo-ops-credentials.md`
 - `txpuro.com/guides/*` 通过 Cloudflare Worker routes 接入当前系统
 - `geo-origin.winghengtech.com` 只是回源专用入口，不作为对外业务账号入口
 

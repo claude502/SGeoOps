@@ -40,8 +40,8 @@ Last updated: 2026-05-05
 | `postgres` | running, healthy |
 | `reverse-proxy` | running |
 | `/api/healthz` | `200` |
-| 未登录访问 `/` | `401` |
-| 写入 API | 需要 Basic Auth + `x-geo-ops-action: true` |
+| 未登录访问内部页面 | 重定向到 `/login` |
+| 内部写入 API | 需要 Better Auth session、membership role 和 client scope；不使用 `x-geo-ops-action` |
 | Txpuro GEO 内容区 | 由当前 Next.js 服务承载，经 Cloudflare Worker routes 代理到 `txpuro.com/guides/*` |
 
 详细远程部署文档：

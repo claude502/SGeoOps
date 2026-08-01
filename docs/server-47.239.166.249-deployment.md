@@ -26,7 +26,7 @@
 | --- | --- | --- |
 | root 初始密码 | 用户密码管理器或云厂商控制台 | 不写入 Git，不写入本文档明文 |
 | SSH deploy key | 本机 `~/.ssh/geo_ops_deploy_ed25519` | 只把 public key 写入服务器 |
-| GEO Ops 管理员登录 | 本地 `.secrets/wingheng-geo-ops-credentials.md`；服务器 `/opt/geo-content-ops/.credentials/geo-ops-admin.md`；服务器 `/opt/geo-content-ops/.env` | 私有凭证文档已被 Git 忽略，不提交 Git |
+| GEO Ops Better Auth 管理员登录 | 本地 `.secrets/wingheng-geo-ops-credentials.md`；服务器 `/opt/geo-content-ops/.credentials/geo-ops-admin.md` | 由 bootstrap 创建；私有凭证文档已被 Git 忽略，不提交 Git |
 | 生产 `.env` | 服务器 `/opt/geo-content-ops/.env` | 权限 `600`，不提交 Git |
 | GEOFlow/Postiz/API keys | 生产 `.env` 或 secrets manager | 不提交 Git |
 
@@ -35,7 +35,7 @@
 - root 初始密码已由用户在会话中提供，不写入仓库、不写入部署文档、不写入脚本。
 - 完成 SSH key 登录后，必须更换 root 密码或禁用 root 密码登录。
 - 生产 `.env` 只保存在服务器 `/opt/geo-content-ops/.env`，权限建议 `600`。
-- GEO Ops 登录账号密码通过 `GEO_OPS_ADMIN_USERNAME`、`GEO_OPS_ADMIN_PASSWORD` 配置；明文仅写入私有凭证文档和服务器 `.env`，不提交 Git。
+- GEO Ops 使用 Better Auth email/password session；管理员由 `npm run auth:bootstrap` 创建，登录凭证仅写入私有凭证文档，不提交 Git。`.env` 只保存 Better Auth runtime configuration，不保存管理员密码。
 - 所有 API key、数据库密码、GEOFlow token、Postiz token 都不能提交到 Git。
 
 相关文档：
@@ -161,13 +161,8 @@ POSTGRES_PASSWORD="<强密码>"
 ```bash
 NEXT_PUBLIC_APP_URL="https://geo.yourdomain.com"
 PUBLIC_CONTENT_BASE_URL="https://content.yourdomain.com"
-GEO_OPS_AUTH_ENABLED="true"
-GEO_OPS_ADMIN_USERNAME="<admin username>"
-GEO_OPS_ADMIN_PASSWORD="<strong password>"
-GEO_OPS_AUTH_REALM="Wingheng GEO Ops"
-GEO_OPS_AUTH_MAX_ATTEMPTS="8"
-GEO_OPS_AUTH_WINDOW_SECONDS="300"
-GEO_OPS_REQUIRE_ACTION_HEADER="true"
+BETTER_AUTH_SECRET="<at-least-32-character-secret>"
+BETTER_AUTH_URL="https://geo.yourdomain.com"
 GEOFLOW_BASE_URL="https://geoflow.yourdomain.com"
 GEOFLOW_API_TOKEN="<GEOFlow API token>"
 GEOFLOW_STATUS_TIMEOUT_MS="2500"
@@ -250,19 +245,13 @@ docker compose -f deploy/docker-compose.prod.example.yml up -d
 
 ### 7. 验证
 
-未登录访问应该返回 `401`：
+未登录访问受保护 API 应返回 `401`：
 
 ```bash
 curl -i http://47.239.166.249/api/integrations/geoflow/status
 ```
 
-带登录账号密码访问应该返回业务 JSON：
-
-```bash
-source /opt/geo-content-ops/.env
-curl -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
-  http://47.239.166.249/api/integrations/geoflow/status
-```
+在浏览器打开 `https://geo.yourdomain.com/login`（当前域名为 `https://wingheng.technology/login`），使用 Better Auth 管理员 email/password 登录。成功后内部页面可打开；管理员发起的程序化 API 请求只使用该次登录生成的 session cookie，不使用 Basic Auth。
 
 健康检查无需登录，应该返回 `200`：
 
@@ -271,28 +260,7 @@ curl -fsS http://47.239.166.249/api/healthz
 docker compose -f deploy/docker-compose.prod.example.yml ps
 ```
 
-写入接口必须带动作头，缺少 `x-geo-ops-action` 应返回 `403`：
-
-```bash
-curl -i -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
-  -X POST http://47.239.166.249/api/geo/brief \
-  -H "content-type: application/json" \
-  --data '{"projectId":"proj_real_workspace","keywords":["GEO"]}'
-```
-
-有域名后：
-
-```bash
-curl -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
-  https://geo.yourdomain.com/api/integrations/geoflow/status
-```
-
-当前域名：
-
-```bash
-curl -u "$GEO_OPS_ADMIN_USERNAME:$GEO_OPS_ADMIN_PASSWORD" \
-  https://wingheng.technology/api/integrations/geoflow/status
-```
+写入 API 需要有效 Better Auth session，以及与目标 client 匹配的 membership role 和 client scope；未登录应返回 `401`，角色或 client scope 不足应返回 `403`。不再发送 `x-geo-ops-action` header。优先从已登录管理界面执行写入；不要把 session cookie 写入共享脚本、shell history 或 Git。
 
 预期：
 
