@@ -46,12 +46,13 @@ async function signedRequest(
   method = "POST",
   timestamp = Math.floor(Date.now() / 1_000),
   chunks?: Uint8Array[],
+  signedBytes = bytes,
 ) {
   const signed = await signInternalRequest(
     secret,
     method,
     pathname,
-    bytes,
+    signedBytes,
     timestamp,
   );
   return new Request(`http://localhost${pathname}`, {
@@ -206,21 +207,26 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
     });
 
     expect(response.status).toBe(401);
-    expect(artifacts.beginUpload).toHaveBeenCalledTimes(1);
-    expect(upload.write).toHaveBeenCalledTimes(1);
-    expect(upload.abort).toHaveBeenCalledTimes(1);
+    expect(artifacts.beginUpload).not.toHaveBeenCalled();
+    expect(upload.write).not.toHaveBeenCalled();
+    expect(upload.abort).not.toHaveBeenCalled();
     expect(upload.commit).not.toHaveBeenCalled();
   });
 
-  it("never publishes a signed body whose claimed checksum is changed", async () => {
+  it("stages then aborts when a valid claimed checksum HMAC has different bytes", async () => {
     const { artifacts, upload } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
+    const claimedBytes = new TextEncoder().encode('{"score":92}');
 
     const response = await post(await signedRequest(body, {
-      "x-sgeo-artifact-sha256": `sha256:${"b".repeat(64)}`,
-    }), { params: Promise.resolve({ id: runId }) });
+      "x-sgeo-artifact-sha256": checksumFor(claimedBytes),
+    }, "POST", Math.floor(Date.now() / 1_000), undefined, claimedBytes), {
+      params: Promise.resolve({ id: runId }),
+    });
 
     expect(response.status).toBe(422);
+    expect(artifacts.beginUpload).toHaveBeenCalledTimes(1);
+    expect(upload.write).toHaveBeenCalledTimes(1);
     expect(upload.abort).toHaveBeenCalledTimes(1);
     expect(upload.commit).not.toHaveBeenCalled();
   });

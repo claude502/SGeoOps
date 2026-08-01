@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { NextResponse } from "next/server";
 
 import { analysisEnvelopeSchema } from "@sgeo/analysis-contract";
@@ -6,15 +8,28 @@ import {
   AnalysisIngestService,
 } from "@/lib/analysis/ingest-service";
 import { PrismaAnalysisRepository } from "@/lib/analysis/repository";
-import { LocalArtifactStore } from "@/lib/artifacts/local-store";
-import { verifySignedInternalRequest } from "@/lib/internal-auth";
+import {
+  ArtifactStoreError,
+  LocalArtifactStore,
+} from "@/lib/artifacts/local-store";
+import { prepareSignedInternalRequest } from "@/lib/internal-auth";
 
 type IngestService = Pick<AnalysisIngestService, "ingest">;
+/** Analysis envelopes are compact versioned JSON; artifacts use their own route. */
+export const maximumAnalysisEnvelopeBytes = 1_024 * 1_024;
+
+class AnalysisBodyError extends Error {
+  constructor(readonly code: "INVALID" | "TOO_LARGE") {
+    super(code);
+    this.name = "AnalysisBodyError";
+  }
+}
 
 function createDefaultService(): IngestService {
+  const artifacts = new LocalArtifactStore();
   return new AnalysisIngestService(
     new PrismaAnalysisRepository(),
-    new LocalArtifactStore(),
+    artifacts,
   );
 }
 
@@ -27,7 +42,82 @@ function isJsonContentType(request: Request) {
     .toLowerCase() === "application/json";
 }
 
+function contentLength(request: Request): number | null {
+  const received = request.headers.get("content-length");
+  if (received === null) return null;
+  if (!/^(0|[1-9]\d*)$/.test(received)) {
+    throw new AnalysisBodyError("INVALID");
+  }
+  const parsed = Number(received);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new AnalysisBodyError("INVALID");
+  }
+  return parsed;
+}
+
+async function readBoundedJsonBody(request: Request, maximumByteSize: number) {
+  const reader = request.body?.getReader();
+  if (reader === undefined) {
+    return { bytes: new Uint8Array(), digest: createHash("sha256").digest("hex") };
+  }
+
+  const chunks: Uint8Array[] = [];
+  const hash = createHash("sha256");
+  let byteSize = 0;
+  let completed = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw new AnalysisBodyError("INVALID");
+      }
+      if (value.byteLength > maximumByteSize - byteSize) {
+        throw new AnalysisBodyError("TOO_LARGE");
+      }
+      chunks.push(value);
+      hash.update(value);
+      byteSize += value.byteLength;
+    }
+    completed = true;
+    const bytes = new Uint8Array(byteSize);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { bytes, digest: hash.digest("hex") };
+  } catch (error) {
+    if (error instanceof AnalysisBodyError) throw error;
+    throw new AnalysisBodyError("INVALID");
+  } finally {
+    if (!completed) {
+      try {
+        await reader.cancel();
+      } catch {
+        // The primary bounded-read failure controls the safe route response.
+      }
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // A reader cleanup error must not escape the internal route boundary.
+    }
+  }
+}
+
+function artifactUnavailable() {
+  return jsonError(
+    503,
+    "Artifact storage is temporarily unavailable",
+    "ARTIFACT_UNAVAILABLE",
+  );
+}
+
 function routeError(error: unknown): NextResponse {
+  if (error instanceof ArtifactStoreError) {
+    return artifactUnavailable();
+  }
   if (!(error instanceof AnalysisIngestError)) {
     return jsonError(500, "Internal server error", "INTERNAL_ERROR");
   }
@@ -61,27 +151,47 @@ function routeError(error: unknown): NextResponse {
         "RUN_REPLAY_CONFLICT",
       );
     case "ARTIFACT_UNAVAILABLE":
-      return jsonError(
-        503,
-        "Artifact storage is temporarily unavailable",
-        "ARTIFACT_UNAVAILABLE",
-      );
+      return artifactUnavailable();
   }
 }
 
 export function createAnalysisIngestRoute(
   buildService: () => IngestService = createDefaultService,
+  maximumByteSize = maximumAnalysisEnvelopeBytes,
 ) {
   return async function POST(request: Request) {
-    const rawBody = new Uint8Array(await request.arrayBuffer());
-    if (!(await verifySignedInternalRequest(request, rawBody))) {
-      return jsonError(401, "Internal authentication required", "UNAUTHORIZED");
-    }
     if (request.method !== "POST") {
       return jsonError(405, "Method not allowed", "METHOD_NOT_ALLOWED");
     }
+    const signed = await prepareSignedInternalRequest(request);
+    if (signed === null) {
+      return jsonError(401, "Internal authentication required", "UNAUTHORIZED");
+    }
     if (!isJsonContentType(request)) {
       return jsonError(415, "Unsupported media type", "UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    let rawBody: Uint8Array;
+    let bodyDigest: string;
+    try {
+      const declaredLength = contentLength(request);
+      if (declaredLength !== null && declaredLength > maximumByteSize) {
+        return jsonError(413, "Analysis envelope exceeds the byte limit", "ENVELOPE_TOO_LARGE");
+      }
+      ({ bytes: rawBody, digest: bodyDigest } = await readBoundedJsonBody(
+        request,
+        maximumByteSize,
+      ));
+    } catch (error) {
+      if (error instanceof AnalysisBodyError) {
+        return error.code === "TOO_LARGE"
+          ? jsonError(413, "Analysis envelope exceeds the byte limit", "ENVELOPE_TOO_LARGE")
+          : jsonError(400, "Invalid analysis envelope", "INVALID_ENVELOPE");
+      }
+      return jsonError(400, "Invalid analysis envelope", "INVALID_ENVELOPE");
+    }
+    if (!(await signed.verifyBodyDigest(bodyDigest))) {
+      return jsonError(401, "Internal authentication required", "UNAUTHORIZED");
     }
 
     let body: unknown;

@@ -8,6 +8,7 @@ import { createAnalysisIngestRoute } from "./route";
 const secret = "task-2-test-secret";
 const pathname = "/api/internal/analysis-runs/ingest";
 const originalSecret = process.env.SGEO_INTERNAL_SECRET;
+const originalArtifactRoot = process.env.SGEO_ARTIFACT_ROOT;
 const envelope: AnalysisEnvelope = {
   contractVersion: "1",
   runId: "run_1",
@@ -31,6 +32,8 @@ async function signedRequest(
   timestamp = Math.floor(Date.now() / 1_000),
   contentType = "application/json",
   method = "POST",
+  headers: Record<string, string> = {},
+  chunks?: Uint8Array[],
 ) {
   const bytes = new TextEncoder().encode(rawBody);
   const signed = await signInternalRequest(
@@ -46,9 +49,16 @@ async function signedRequest(
       "content-type": contentType,
       "x-sgeo-timestamp": signed.timestamp,
       "x-sgeo-signature": signed.signature,
+      ...headers,
     },
-    body: bytes,
-  });
+    body: chunks === undefined ? bytes : new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    }),
+    duplex: "half",
+  } as RequestInit);
 }
 
 function service() {
@@ -70,6 +80,11 @@ afterEach(() => {
     delete process.env.SGEO_INTERNAL_SECRET;
   } else {
     process.env.SGEO_INTERNAL_SECRET = originalSecret;
+  }
+  if (originalArtifactRoot === undefined) {
+    delete process.env.SGEO_ARTIFACT_ROOT;
+  } else {
+    process.env.SGEO_ARTIFACT_ROOT = originalArtifactRoot;
   }
 });
 
@@ -101,6 +116,115 @@ describe("POST /api/internal/analysis-runs/ingest", () => {
 
     expect(response.status).toBe(401);
     expect(createService).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing and expired authentication without reading the body", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+    const unreadableBody = () => new ReadableStream<Uint8Array>({
+      pull() {
+        throw new Error("unauthenticated body must not be read");
+      },
+    });
+    const expiredBytes = new TextEncoder().encode(JSON.stringify(envelope));
+    const expired = await signInternalRequest(
+      secret,
+      "POST",
+      pathname,
+      expiredBytes,
+      Math.floor(Date.now() / 1_000) - 301,
+    );
+    const missing = new Request(`http://localhost${pathname}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: unreadableBody(),
+      duplex: "half",
+    } as RequestInit);
+    const expiredRequest = new Request(`http://localhost${pathname}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sgeo-timestamp": expired.timestamp,
+        "x-sgeo-signature": expired.signature,
+      },
+      body: unreadableBody(),
+      duplex: "half",
+    } as RequestInit);
+
+    await expect(post(missing)).resolves.toMatchObject({ status: 401 });
+    await expect(post(expiredRequest)).resolves.toMatchObject({ status: 401 });
+    expect(created.ingest).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized declared JSON bodies before consuming them", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+    const signed = await signInternalRequest(secret, "POST", pathname, bytes);
+    const request = new Request(`http://localhost${pathname}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(1_048_577),
+        "x-sgeo-timestamp": signed.timestamp,
+        "x-sgeo-signature": signed.signature,
+      },
+      body: new ReadableStream<Uint8Array>({
+        pull() {
+          throw new Error("oversized declared body must not be read");
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+
+    const response = await post(request);
+
+    expect(response.status).toBe(413);
+    expect(created.ingest).not.toHaveBeenCalled();
+  });
+
+  it("rejects chunked JSON bodies that exceed the configured byte cap", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created, 3);
+    const bytes = new TextEncoder().encode("1234");
+
+    const response = await post(await signedRequest(
+      "1234",
+      Math.floor(Date.now() / 1_000),
+      "application/json",
+      "POST",
+      {},
+      [bytes.subarray(0, 2), bytes.subarray(2)],
+    ));
+
+    expect(response.status).toBe(413);
+    expect(created.ingest).not.toHaveBeenCalled();
+  });
+
+  it("maps a signed request stream failure to a safe bad request", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+    const signed = await signInternalRequest(secret, "POST", pathname, bytes);
+    const request = new Request(`http://localhost${pathname}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sgeo-timestamp": signed.timestamp,
+        "x-sgeo-signature": signed.signature,
+      },
+      body: new ReadableStream<Uint8Array>({
+        pull() {
+          throw new Error("stream failed");
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+
+    const response = await post(request);
+
+    expect(response.status).toBe(400);
+    expect(created.ingest).not.toHaveBeenCalled();
   });
 
   it("rejects an expired signature before parsing the envelope", async () => {
@@ -185,6 +309,19 @@ describe("POST /api/internal/analysis-runs/ingest", () => {
       "ARTIFACT_UNAVAILABLE",
     ));
     const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest(JSON.stringify(envelope)));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Artifact storage is temporarily unavailable",
+      code: "ARTIFACT_UNAVAILABLE",
+    });
+  });
+
+  it("fails safely when default artifact storage cannot be constructed", async () => {
+    delete process.env.SGEO_ARTIFACT_ROOT;
+    const post = createAnalysisIngestRoute();
 
     const response = await post(await signedRequest(JSON.stringify(envelope)));
 

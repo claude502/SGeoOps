@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { AnalysisRepositoryError } from "@/lib/analysis/repository";
+import { ArtifactStoreError } from "@/lib/artifacts/local-store";
 import type { ArtifactStore } from "@/lib/artifacts/store";
 import {
   AnalysisIngestError,
@@ -145,6 +146,20 @@ describe("AnalysisIngestService", () => {
     );
     expect(repository.ingest).toHaveBeenCalledOnce();
     expect(order).toEqual(["transaction", "metadata"]);
+  });
+
+  it("maps transaction-scoped artifact metadata failures to a retryable error", async () => {
+    const { artifacts, order, repository } = dependencies();
+    artifacts.getMetadata.mockRejectedValueOnce(new ArtifactStoreError(
+      "ARTIFACT_UNAVAILABLE",
+    ));
+    const service = new AnalysisIngestService(repository, artifacts);
+
+    await expect(service.ingest(envelope)).rejects.toEqual(
+      expect.objectContaining({ code: "ARTIFACT_UNAVAILABLE" }),
+    );
+    expect(order).toEqual(["transaction"]);
+    expect(repository.ingest).toHaveBeenCalledOnce();
   });
 
   it("validates the envelope before checking artifact storage", async () => {

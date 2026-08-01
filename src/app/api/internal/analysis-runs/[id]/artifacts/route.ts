@@ -99,6 +99,10 @@ export function createAnalysisArtifactRoute(
     if (!name || !checksum || !checksumPattern.test(checksum)) {
       return jsonError(400, "Invalid artifact request", "INVALID_ARTIFACT");
     }
+    const claimedDigest = checksum.slice("sha256:".length);
+    if (!(await signed.verifyBodyDigest(claimedDigest))) {
+      return jsonError(401, "Internal authentication required", "UNAUTHORIZED");
+    }
 
     const { id: runId } = await context.params;
     let uri: string;
@@ -150,15 +154,15 @@ export function createAnalysisArtifactRoute(
       }
       const bodyDigest = hash.digest("hex");
       const actualChecksum = `sha256:${bodyDigest}`;
-      if (!(await signed.verifyBodyDigest(bodyDigest))) {
-        await upload.abort();
-        upload = undefined;
-        return jsonError(401, "Internal authentication required", "UNAUTHORIZED");
-      }
       if (checksum !== actualChecksum) {
         await upload.abort();
         upload = undefined;
         return jsonError(422, "Artifact checksum does not match request bytes", "CHECKSUM_MISMATCH");
+      }
+      if (!(await signed.verifyBodyDigest(bodyDigest))) {
+        await upload.abort();
+        upload = undefined;
+        return jsonError(401, "Internal authentication required", "UNAUTHORIZED");
       }
       const expected: StoredArtifact = {
         uri,
