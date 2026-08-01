@@ -1,0 +1,5 @@
+{
+  "code": "UNLIGHTHOUSE_EXECUTION_FAILED",
+  "message": "The upstream browser process timed out before it emitted ci-result.json.",
+  "retryable": true
+}

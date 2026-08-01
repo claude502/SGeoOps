@@ -1,0 +1,28 @@
+{
+  "summary": {
+    "score": 0.8,
+    "categories": {},
+    "metrics": {}
+  },
+  "routes": [
+    {
+      "path": "/",
+      "score": 0.8,
+      "categories": {
+        "performance": { "score": 0.74 },
+        "accessibility": { "score": 0.93 },
+        "best-practices": { "score": 0.88 },
+        "seo": { "score": 0.95 }
+      },
+      "metrics": {
+        "largest-contentful-paint": { "numericValue": 2400, "displayValue": "2.4 s" },
+        "cumulative-layout-shift": { "numericValue": 0.03, "displayValue": "0.03" },
+        "total-blocking-time": { "numericValue": 100, "displayValue": "100 ms" }
+      }
+    }
+  ],
+  "metadata": {
+    "categories": {},
+    "metrics": {}
+  }
+}

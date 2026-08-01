@@ -1,0 +1,12 @@
+{
+  "summary": { "score": 0 },
+  "routes": [
+    {
+      "path": "https://foreign.example/escape",
+      "score": 0.7,
+      "categories": {},
+      "metrics": {}
+    }
+  ],
+  "metadata": {}
+}

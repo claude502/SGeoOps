@@ -13,7 +13,8 @@
     "@sgeo/internal-protocol": "1.0.0",
     "@trigger.dev/sdk": "4.5.9",
     "google-trends-api": "^4.9.2",
-    "@mendable/firecrawl-js": "^0.0.28"
+    "@mendable/firecrawl-js": "^0.0.28",
+    "unlighthouse-ci": "0.18.0"
   },
   "devDependencies": {
     "@trigger.dev/build": "4.5.9",
