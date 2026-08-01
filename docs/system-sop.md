@@ -286,7 +286,7 @@ Postiz 如果继续使用，只作为可选下游分发系统之一，不再是�
 1. 由 `Admin` 先创建 client；只有 `Admin` 可以创建 client 和 site integration。
 2. 由 `Admin` 或 `Operator` 在已获 client scope 内依次创建 brand、site、market。
 3. 从每个 API 响应记录新的 `client.id`、`brand.id`、`site.id` 和 `siteMarket.id`，再作为下一步路径参数或 integration 的 `siteMarketId`。
-4. site 的 `canonicalHost` / `originHosts` 只填写 host（可带 port），不能填 URL、path、query 或 credentials。遇到 `409 Host already claimed` 时先核对现有 site，不能绕过唯一 host ownership。
+4. site 的 `canonicalHost` / `originHosts` 只填写 host（可带 port），不能填 URL、path、query 或 credentials。API 会丢弃 port，canonical host claim 不包含 port；不要用不同 port 区分 site，改用不同 hostname。遇到 `409 Host already claimed` 时先核对现有 site，不能绕过唯一 host ownership。
 
 完整的请求 payload 和 endpoint 见 [system-reference.md](./system-reference.md)。执行 API 请求必须保留已登录的 Better Auth session；不要把 session cookie 保存到共享脚本或工单。
 
@@ -321,14 +321,23 @@ npm run test:integration -- \
   tests/integration/compose-policy.test.ts
 ```
 
-`npm run test:integration` 与 isolation/backfill evidence 需要专用 PostgreSQL 16 的 `TEST_DATABASE_URL` 和 schema 创建/删除权限。没有该变量时，database-backed suites 会以 `TEST_DATABASE_URL is required for database integration tests` 退出非零；记录为测试环境缺失，不得以生产数据库替代或标记通过。
+`npm run test:integration` 与 isolation/backfill evidence 需要专用 PostgreSQL 16、`SGEO_DATABASE_INTEGRATION=1` 和 schema 创建/删除权限。默认 disposable database 必须命名为 `sgeo_task4_test`，或安全后缀如 `sgeo_task4_test_task12`；Txpuro backfill guard 会拒绝 `sgeo_test` 等任意名称。使用以下非生产 URL 形状，绝不能替换为生产 database：
+
+```bash
+export SGEO_DATABASE_INTEGRATION=1
+export TEST_DATABASE_URL='postgresql://<non-production-test-user>:<non-production-test-password>@127.0.0.1:5432/sgeo_task4_test?schema=public'
+```
+
+没有 `TEST_DATABASE_URL` 时，database-backed suites 会以 `TEST_DATABASE_URL is required for database integration tests` 退出非零；没有 `SGEO_DATABASE_INTEGRATION=1` 时不会执行实际 database coverage。记录为测试环境缺失，不得标记通过。
 
 ### 9.4 PostgreSQL、artifact 与应用回退
 
 1. 每日运行 `APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh`，并在同一时间点建立 `artifact-data` archive。
-2. 恢复前停止 `geo-ops` 与 `geo-worker`；先恢复 PostgreSQL，再恢复同一时间点的 artifacts。
-3. 保留 `postgres_data`、`artifact-data` 和 `_prisma_migrations`。恢复和回退时不要运行 `prisma migrate reset`、`docker compose down -v` 或手工删除新 schema。
-4. 应用回退仅重新部署已验证的旧应用 release，且不传 `-RunMigrations`。如果旧 release 不能读取新 schema，恢复与该 release 配对的数据库和 artifact backup。
+2. PostgreSQL restore 先运行 `test -r`、`gzip -t`，再生成并验证 pre-restore safety backup；只有这些步骤成功才停止 `geo-ops`/`geo-worker` 并替换 database。restore pipeline 必须使用 `set -euo pipefail`，以捕获 gzip 和 `psql` 任一失败。
+3. artifact restore 先运行 `test -r`、`tar -tzf`，再创建当前 artifact rollback archive。candidate 必须解压到 artifact volume 内的 staging directory 并通过检查，之后才移动 live entries；不要在验证前 `rm -rf` live artifacts。
+4. preflight 或 staging 失败时保持 live data 不变，并停止恢复。database replacement 或 artifact switch 失败时保持应用服务停止，使用已验证的 pre-restore/rollback archive 恢复；不要运行 migration 或启动半恢复的应用。
+5. 保留 `postgres_data`、`artifact-data` 和 `_prisma_migrations`。恢复和回退时不要运行 `prisma migrate reset`、`docker compose down -v` 或手工删除新 schema。恢复成功后仅在 healthcheck 和代表性 artifact read 完成后清理 volume staging/previous copy；host-side artifact rollback archive 至少保留至配对 database backup 的 retention window 结束。
+6. 应用回退仅重新部署已验证的旧应用 release，且不传 `-RunMigrations`。如果旧 release 不能读取新 schema，恢复与该 release 配对的数据库和 artifact backup。
 
 完整的 PostgreSQL / artifact restore 命令和安全回退步骤见 [system-reference.md](./system-reference.md)。
 

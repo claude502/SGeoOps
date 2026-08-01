@@ -424,7 +424,7 @@ curl --fail-with-body -sS -X POST "$OPS_URL/api/sites/<site-id>/markets" \
 unset BETTER_AUTH_SESSION_COOKIE
 ```
 
-创建 client 需要 `Admin`。创建 brand、site、market 需要 `Admin` 或 `Operator`，且 session scope 必须包含对应 client。host 只能是 host[:port]，不能包含 scheme、path、query 或 credentials；API 会规范化大小写、端口和尾随点。重复 host claim 返回 `409`。
+创建 client 需要 `Admin`。创建 brand、site、market 需要 `Admin` 或 `Operator`，且 session scope 必须包含对应 client。host 只能是 host[:port]，不能包含 scheme、path、query 或 credentials；API 会规范化大小写和尾随点，但会丢弃 port。canonical host claim 不包含 port，因此不要依赖 `example.com:443` 与 `example.com:8443` 区分两个 site；使用不同 hostname。重复 host claim 返回 `409`。
 
 ### 11.3 注册 file-based secret reference
 
@@ -463,52 +463,114 @@ docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --r
 
 Phase 1 ownership sequence is `20260731090000_platform_foundation_expand`、`20260731100000_backfill_txpuro_ownership`、`20260731110000_enforce_platform_scope` 和 `20260731120000_remove_legacy_ownership_defaults`。backfill 在 transaction 中锁住 legacy tables；contract migration 会在发现无 root ownership 的记录时中止。先修复该数据或从备份恢复，不能跳过 migration。
 
-在专用非生产 PostgreSQL 16 实例上设置 `TEST_DATABASE_URL`（测试用户必须能创建和删除 schema），再运行扩展、Txpuro backfill、scope contract 和 worker-isolation evidence：
+在专用非生产 PostgreSQL 16 实例上创建 disposable database `sgeo_task4_test`，或使用安全后缀如 `sgeo_task4_test_task12`。测试用户必须能创建和删除 schema。Txpuro backfill guard 只接受 `sgeo_task4_test` 或以 `sgeo_task4_test_` 开头的 database；任意名称如 `sgeo_test` 会被 guard 拒绝。绝不能指向生产或共享业务 database。
 
 ```bash
-TEST_DATABASE_URL='<non-production-postgresql-url>' \
-  npm run test:integration -- \
+export SGEO_DATABASE_INTEGRATION=1
+export TEST_DATABASE_URL='postgresql://<non-production-test-user>:<non-production-test-password>@127.0.0.1:5432/sgeo_task4_test?schema=public'
+npm run test:integration -- \
   tests/integration/client-isolation.test.ts \
   tests/integration/txpuro-backfill.test.ts \
   tests/integration/compose-policy.test.ts
+unset SGEO_DATABASE_INTEGRATION TEST_DATABASE_URL
 ```
 
-没有 `TEST_DATABASE_URL` 时，database-backed integration suites 会明确报该前置条件并使该命令退出非零；应记录为外部测试服务缺失，不能把它记录为通过，也不要将生产 `DATABASE_URL` 作为替代。
+缺少 `TEST_DATABASE_URL` 时，database-backed integration suites 会明确报该前置条件并使该命令退出非零；缺少 `SGEO_DATABASE_INTEGRATION=1` 时不会执行实际 database coverage。应记录为外部测试服务缺失，不能把它记录为通过，也不要将生产 `DATABASE_URL` 作为替代。
 
 ### 11.5 恢复 PostgreSQL 与 artifacts
 
-`deploy/backup-postgres.sh` 生成 plain SQL gzip backup。恢复会替换整个应用数据库，因此先停止写入服务，并只将同一恢复点的数据库 archive 与 artifact archive 配对使用：
+`deploy/backup-postgres.sh` 生成 plain SQL gzip backup。只将同一恢复点的 database archive 与 artifact archive 配对使用。以下 Bash procedure 先验证所选 archive，再在替换前创建并验证当前 database 的 safety backup；任何 preflight 失败时都不要停止服务、drop database 或继续恢复。
 
 ```bash
 cd /opt/geo-content-ops
+set -euo pipefail
+BACKUP_DIR=/opt/geo-content-ops/backups
 BACKUP=/opt/geo-content-ops/backups/geo_content_ops-YYYYMMDD-HHMMSS.sql.gz
+test -r "$BACKUP"
+gzip -t "$BACKUP"
+
+RESTORE_ID="$(date +%Y%m%d-%H%M%S)"
+PRE_RESTORE_DIR="$BACKUP_DIR/pre-restore-$RESTORE_ID"
+APP_DIR=/opt/geo-content-ops BACKUP_DIR="$PRE_RESTORE_DIR" \
+  bash deploy/backup-postgres.sh
+PRE_RESTORE_BACKUP="$(find "$PRE_RESTORE_DIR" -maxdepth 1 -type f -name 'geo_content_ops-*.sql.gz' -print -quit)"
+test -n "$PRE_RESTORE_BACKUP"
+gzip -t "$PRE_RESTORE_BACKUP"
+
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml stop geo-ops geo-worker
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml exec -T postgres sh -ceu \
-  'dropdb -U "$POSTGRES_USER" --if-exists "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
-gzip -dc "$BACKUP" | docker compose --env-file .env -f deploy/docker-compose.prod.example.yml exec -T postgres sh -ceu \
-  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+  'dropdb -U "$POSTGRES_USER" --if-exists "$POSTGRES_DB"; createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+gzip -dc "$BACKUP" | \
+  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml exec -T postgres sh -ceu \
+    'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-备份 artifacts 时使用与数据库 backup 相同的时间标签：
+`set -euo pipefail` 使 `gzip` 或 `psql` 任一失败都让 restore command 失败，不能把截断解压当作成功。preflight 或 safety backup 失败时 live database 尚未改动，停止并修复 archive 或 backup storage。drop/create/restore 中任何一步失败时，保持 `geo-ops` 与 `geo-worker` 停止，不要运行 migration 或启动应用；用已验证的 `$PRE_RESTORE_BACKUP` 作为 `BACKUP` 重跑同一 procedure，直到 database 完整恢复。
+
+artifact archive 也必须先验证。此 procedure 在停写后创建独立 rollback archive，将 candidate 解压到 `artifact-data` volume 内的 staging directory，验证后才移动 live entries。不要执行 `docker compose down -v`。
 
 ```bash
+cd /opt/geo-content-ops
+set -euo pipefail
+BACKUP_DIR=/opt/geo-content-ops/backups
 ARTIFACT_BACKUP=/opt/geo-content-ops/backups/artifacts-YYYYMMDD-HHMMSS.tar.gz
+test -r "$ARTIFACT_BACKUP"
+tar -tzf "$ARTIFACT_BACKUP" >/dev/null
+
+RESTORE_ID="$(date +%Y%m%d-%H%M%S)"
+ARTIFACT_BACKUP_NAME="$(basename "$ARTIFACT_BACKUP")"
+ARTIFACT_ROLLBACK="$BACKUP_DIR/artifacts-pre-restore-$RESTORE_ID.tar.gz"
+
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml stop geo-ops geo-worker
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T geo-ops \
-  sh -c 'tar -C "$SGEO_ARTIFACT_ROOT" -czf - .' > "$ARTIFACT_BACKUP"
-chmod 600 "$ARTIFACT_BACKUP"
+  sh -ceu 'tar -C "$SGEO_ARTIFACT_ROOT" -czf - .' > "$ARTIFACT_ROLLBACK"
+chmod 600 "$ARTIFACT_ROLLBACK"
+tar -tzf "$ARTIFACT_ROLLBACK" >/dev/null
+
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T \
+  -v "$BACKUP_DIR":/backup:ro \
+  -e ARTIFACT_BACKUP_NAME="$ARTIFACT_BACKUP_NAME" \
+  -e RESTORE_ID="$RESTORE_ID" \
+  geo-ops sh -ceu '
+    root="$SGEO_ARTIFACT_ROOT"
+    stage_name=".restore-stage-$RESTORE_ID"
+    previous_name=".restore-previous-$RESTORE_ID"
+    stage="$root/$stage_name"
+    previous="$root/$previous_name"
+    test ! -e "$stage"
+    test ! -e "$previous"
+    mkdir -m 700 "$stage"
+    tar -xzf "/backup/$ARTIFACT_BACKUP_NAME" -C "$stage"
+    test -d "$stage"
+    stage_symlink="$(find "$stage" -type l -print -quit)"
+    if [ -n "$stage_symlink" ]; then
+      echo "Refusing artifact archive containing symlinks" >&2
+      exit 1
+    fi
+    mkdir -m 700 "$previous"
+    find "$root" -mindepth 1 -maxdepth 1 \
+      ! -name "$stage_name" ! -name "$previous_name" \
+      -exec mv -- {} "$previous"/ \;
+    find "$stage" -mindepth 1 -maxdepth 1 -exec mv -- {} "$root"/ \;
+    rmdir "$stage"
+  '
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-ops geo-worker
+curl -fsS http://127.0.0.1/api/healthz
 ```
 
-恢复 artifacts 时保持服务停止；`artifact-data` 是持久 named volume，不要执行 `docker compose down -v`：
+selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持服务停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch 中任一步失败时也不要启动服务；pre-restore entries 可能分布在 root 和 volume 的 `.restore-previous-$RESTORE_ID`，但完整 rollback archive 在 `$ARTIFACT_ROLLBACK`，应将该 archive 作为 candidate 重跑 staging procedure。成功恢复后，先读取代表性的 artifact 并确认无 `ARTIFACT_CORRUPT`，再清理 volume 内的 previous directory：
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T \
-  -v /opt/geo-content-ops/backups:/backup:ro geo-ops sh -ceu \
-  'find "$SGEO_ARTIFACT_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; tar -xzf /backup/artifacts-YYYYMMDD-HHMMSS.tar.gz -C "$SGEO_ARTIFACT_ROOT"'
-docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-ops geo-worker
+  -e RESTORE_ID="$RESTORE_ID" geo-ops sh -ceu '
+    previous="$SGEO_ARTIFACT_ROOT/.restore-previous-$RESTORE_ID"
+    test -d "$previous"
+    rm -rf -- "$previous"
+  '
 ```
 
-`LocalArtifactStore` 在读取时校验 metadata、payload 和 checksum；恢复后出现 `ARTIFACT_CORRUPT` 必须从原始 archive 重新恢复，不能手改 object files 或 checksum。
+`$ARTIFACT_ROLLBACK` 不会被 `backup-postgres.sh` 自动清理；至少保留到与之配对的 database backup 的 retention window 结束，再由受控 backup rotation 删除。`LocalArtifactStore` 在读取时校验 metadata、payload 和 checksum；恢复后出现 `ARTIFACT_CORRUPT` 必须从原始 archive 重新恢复，不能手改 object files 或 checksum。
 
 ### 11.6 回滚应用，不删除新 schema
 
