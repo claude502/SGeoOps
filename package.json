@@ -20,6 +20,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "node prisma/seed.mjs",
     "auth:bootstrap": "tsx scripts/bootstrap-admin.ts",
+    "auth:bootstrap:status": "tsx scripts/bootstrap-admin-status.ts",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run native:build",
     "test": "vitest run",

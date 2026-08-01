@@ -30,6 +30,7 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/.sgeo-native ./.sgeo-native
 COPY --from=builder /app/scripts/bootstrap-admin.ts ./scripts/bootstrap-admin.ts
+COPY --from=builder /app/scripts/bootstrap-admin-status.ts ./scripts/bootstrap-admin-status.ts
 COPY --from=builder /app/src/lib/auth.ts ./src/lib/auth.ts
 COPY --from=builder /app/src/lib/prisma.ts ./src/lib/prisma.ts
 

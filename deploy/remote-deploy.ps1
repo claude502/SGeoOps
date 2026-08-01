@@ -58,6 +58,7 @@ try {
     $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy"
   }
 
+  $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run auth:bootstrap:status"
   $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d"
   $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps"
 

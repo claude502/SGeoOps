@@ -104,9 +104,11 @@ docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d p
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
 ```
 
-完成首位管理员 procedure 后，才启动全部服务：
+完成首位管理员 procedure 后，先用只读 status gate 确认 Admin membership，再启动全部服务。status 失败时不要继续执行 `up -d`；修复 bootstrap 或数据库问题后重新检查：
 
 ```bash
+set -euo pipefail
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run auth:bootstrap:status
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
 ```
 

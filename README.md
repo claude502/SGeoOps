@@ -61,14 +61,40 @@ npm run dev
 - `.env`、API key、数据库密码不进 Git。
 - 生产数据库开启备份和恢复演练。
 
-仓库内提供了一个 MVP 部署样例：
+首次生产部署到新数据库时，必须在 full-stack start 前创建并验证首位管理员。以下 procedure 必须作为一个 fail-fast shell session 运行；密码仅通过隐藏输入和临时环境变量传给一次性 Compose runner，不写入 `.env`、归档、Git 或命令行参数：
 
 ```bash
+set -euo pipefail
+cd /opt/geo-content-ops
+
+cleanup_bootstrap_env() {
+  unset SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD
+}
+trap cleanup_bootstrap_env EXIT
+
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
+
+read -r -p 'Admin email: ' SGEO_BOOTSTRAP_ADMIN_EMAIL
+read -r -p 'Admin name: ' SGEO_BOOTSTRAP_ADMIN_NAME
+read -r -s -p 'Admin password: ' SGEO_BOOTSTRAP_ADMIN_PASSWORD
+printf '\n'
+export SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm \
+  -e SGEO_BOOTSTRAP_ADMIN_EMAIL \
+  -e SGEO_BOOTSTRAP_ADMIN_NAME \
+  -e SGEO_BOOTSTRAP_ADMIN_PASSWORD \
+  geo-ops npm run auth:bootstrap
+
+cleanup_bootstrap_env
+trap - EXIT
+
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run auth:bootstrap:status
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
 ```
+
+任何 migration、bootstrap、status 或 cleanup 失败都会在 full-stack `up -d` 前退出；只有 PostgreSQL 可能仍在运行。修复原因后从 procedure 重跑，不要手动启动 `geo-ops`、`reverse-proxy` 或 `geo-worker`。`auth:bootstrap:status` 只读取 `workspace_internal` 的 Admin membership；后续部署可用它在 full-stack `up -d` 前证明管理员仍存在。`deploy/remote-deploy.ps1` 始终执行这个只读 gate，并且不接收 bootstrap credentials；新数据库必须先完成以上 procedure，已有管理员的后续部署才会继续。
 
 使用前先把 `deploy/Caddyfile.example` 里的 `geo.example.com` 改成真实域名，并在部署主机上创建非 Git 跟踪的生产 `.env`。`docker compose ... config` 可以在没有该文件时验证 Compose 语法；实际 `up` 前必须设置 `DATABASE_URL`、`POSTGRES_PASSWORD`、Better Auth 和所需集成密钥。部署归档不会传输 `.env` 或 `secrets/`；在运行部署脚本前，通过受控 SSH 或 secret manager 将 `/run/secrets` 所需的文件预置到部署主机的 `secrets/` 目录。
 

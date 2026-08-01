@@ -1,10 +1,12 @@
 import { readFile } from "node:fs/promises";
-import { dirname, join, normalize, resolve } from "node:path";
+import { dirname, join, normalize, relative, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import * as ts from "typescript";
 
 const projectRoot = process.cwd();
 const bootstrapPath = "scripts/bootstrap-admin.ts";
+const bootstrapStatusPath = "scripts/bootstrap-admin-status.ts";
 
 function runnerStage(dockerfile: string) {
   const stage = dockerfile.split(/^FROM node:24-alpine AS runner$/m)[1];
@@ -16,8 +18,88 @@ function runnerStage(dockerfile: string) {
   return stage;
 }
 
-function sourceImportPath(moduleSpecifier: string) {
-  return `${normalize(join(dirname(bootstrapPath), moduleSpecifier))}.ts`;
+function fencedBashBlockContaining(source: string, needle: string) {
+  const needleIndex = source.indexOf(needle);
+  const start = source.lastIndexOf("```bash\n", needleIndex);
+  const end = source.indexOf("\n```", needleIndex);
+
+  if (needleIndex === -1 || start === -1 || end === -1) {
+    throw new Error(`Bash block containing ${needle} is required.`);
+  }
+
+  return source.slice(start + "```bash\n".length, end);
+}
+
+function localImportSpecifiers(source: string, filePath: string) {
+  const parsed = ts.createSourceFile(
+    filePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const specifiers = new Set<string>();
+
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specifiers.add(node.moduleSpecifier.text);
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteral(node.arguments[0])
+    ) {
+      specifiers.add(node.arguments[0].text);
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  visit(parsed);
+  return [...specifiers];
+}
+
+function localSourceImportPath(importerPath: string, moduleSpecifier: string) {
+  const sourceRoot = resolve(projectRoot, "src");
+  const importedSource = moduleSpecifier.startsWith("@/")
+    ? resolve(sourceRoot, moduleSpecifier.slice(2))
+    : moduleSpecifier.startsWith(".")
+      ? resolve(dirname(resolve(projectRoot, importerPath)), moduleSpecifier)
+      : null;
+
+  return importedSource
+    ? `${normalize(relative(projectRoot, importedSource))}.ts`
+    : null;
+}
+
+async function localSourceClosure(entryPaths: string[]) {
+  const pending = [...entryPaths];
+  const discovered = new Set<string>();
+
+  while (pending.length > 0) {
+    const sourcePath = pending.pop();
+
+    if (!sourcePath || discovered.has(sourcePath)) {
+      continue;
+    }
+
+    discovered.add(sourcePath);
+    const source = await readFile(resolve(projectRoot, sourcePath), "utf8");
+
+    for (const moduleSpecifier of localImportSpecifiers(source, sourcePath)) {
+      const importedPath = localSourceImportPath(sourcePath, moduleSpecifier);
+
+      if (importedPath && !discovered.has(importedPath)) {
+        pending.push(importedPath);
+      }
+    }
+  }
+
+  return [...discovered].sort();
 }
 
 function bashBlockAfterHeading(source: string, heading: string) {
@@ -33,23 +115,23 @@ function bashBlockAfterHeading(source: string, heading: string) {
 }
 
 describe("production bootstrap runtime", () => {
-  it("copies the bootstrap script, its source imports, tsconfig, and tsx runtime into the runner", async () => {
-    const [dockerfile, packageJson, bootstrapScript] = await Promise.all([
+  it("copies every local bootstrap runtime dependency, tsconfig, and tsx into the runner", async () => {
+    const [dockerfile, packageJson, sourceClosure] = await Promise.all([
       readFile(resolve(projectRoot, "Dockerfile"), "utf8"),
       readFile(resolve(projectRoot, "package.json"), "utf8"),
-      readFile(resolve(projectRoot, bootstrapPath), "utf8"),
+      localSourceClosure([bootstrapPath, bootstrapStatusPath]),
     ]);
     const packageManifest = JSON.parse(packageJson) as {
       scripts: Record<string, string | undefined>;
       dependencies: Record<string, string | undefined>;
     };
-    const imports = [
-      ...bootstrapScript.matchAll(/import\("([^\"]+)"\)/g),
-    ].map(([, moduleSpecifier]) => sourceImportPath(moduleSpecifier));
     const runner = runnerStage(dockerfile);
 
     expect(packageManifest.scripts["auth:bootstrap"]).toBe(
       "tsx scripts/bootstrap-admin.ts",
+    );
+    expect(packageManifest.scripts["auth:bootstrap:status"]).toBe(
+      "tsx scripts/bootstrap-admin-status.ts",
     );
     expect(packageManifest.dependencies.tsx).toBeDefined();
     expect(runner).toContain(
@@ -58,11 +140,8 @@ describe("production bootstrap runtime", () => {
     expect(runner).toContain(
       "COPY --from=builder /app/tsconfig.json ./tsconfig.json",
     );
-    expect(runner).toContain(
-      "COPY --from=builder /app/scripts/bootstrap-admin.ts ./scripts/bootstrap-admin.ts",
-    );
 
-    for (const sourcePath of imports) {
+    for (const sourcePath of sourceClosure) {
       expect(runner).toContain(
         `COPY --from=builder /app/${sourcePath} ./${sourcePath}`,
       );
@@ -147,5 +226,66 @@ describe("production bootstrap runtime", () => {
     expect(trendReview).toContain("membership role and client scope");
     expect(trendReview).not.toContain("x-geo-ops-action: true");
     expect(trendReview).not.toContain("Basic Auth protected dashboard");
+  });
+
+  it("gates every active production entrypoint on a verified Administrator before full startup", async () => {
+    const [readme, deployReadme, geoFlowRollout, remoteDeploy] = await Promise.all([
+      readFile(resolve(projectRoot, "README.md"), "utf8"),
+      readFile(resolve(projectRoot, "deploy/README.md"), "utf8"),
+      readFile(resolve(projectRoot, "docs/geoflow-rollout.md"), "utf8"),
+      readFile(resolve(projectRoot, "deploy/remote-deploy.ps1"), "utf8"),
+    ]);
+
+    for (const deploymentGuide of [readme, deployReadme]) {
+      const firstDeployment = fencedBashBlockContaining(
+        deploymentGuide,
+        "geo-ops npm run auth:bootstrap",
+      );
+      const bootstrap = firstDeployment.indexOf("geo-ops npm run auth:bootstrap");
+      const status = firstDeployment.indexOf(
+        "geo-ops npm run auth:bootstrap:status",
+      );
+      const fullStackStart = [
+        ...firstDeployment.matchAll(
+          /^docker compose --env-file \.env -f deploy\/docker-compose\.prod\.example\.yml up -d$/gm,
+        ),
+      ].at(-1)?.index ?? -1;
+
+      expect(firstDeployment).toContain("set -euo pipefail");
+      expect(firstDeployment).toContain(
+        "read -r -s -p 'Admin password: ' SGEO_BOOTSTRAP_ADMIN_PASSWORD",
+      );
+      expect(firstDeployment).toContain("trap cleanup_bootstrap_env EXIT");
+      expect(bootstrap).toBeGreaterThanOrEqual(0);
+      expect(status).toBeGreaterThan(bootstrap);
+      expect(fullStackStart).toBeGreaterThan(status);
+    }
+
+    const geoFlowGate = fencedBashBlockContaining(
+      geoFlowRollout,
+      "geo-ops npm run auth:bootstrap:status",
+    );
+    const geoFlowStatus = geoFlowGate.indexOf(
+      "geo-ops npm run auth:bootstrap:status",
+    );
+    const geoFlowFullStackStart = geoFlowGate.indexOf(
+      "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d",
+    );
+
+    expect(geoFlowGate).toContain("set -euo pipefail");
+    expect(geoFlowStatus).toBeGreaterThanOrEqual(0);
+    expect(geoFlowFullStackStart).toBeGreaterThan(geoFlowStatus);
+
+    const migration = remoteDeploy.indexOf("npm run prisma:deploy");
+    const status = remoteDeploy.indexOf("npm run auth:bootstrap:status");
+    const fullStackStart = remoteDeploy.indexOf(
+      '$remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d"',
+    );
+
+    expect(migration).toBeGreaterThanOrEqual(0);
+    expect(status).toBeGreaterThan(migration);
+    expect(fullStackStart).toBeGreaterThan(status);
+    expect(remoteDeploy).toContain('($remoteCommands -join " && ")');
+    expect(remoteDeploy).not.toMatch(/SGEO_BOOTSTRAP_ADMIN_/);
   });
 });
