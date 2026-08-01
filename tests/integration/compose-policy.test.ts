@@ -1,7 +1,24 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
+
+const execFileAsync = promisify(execFile);
+
+const directDatabaseCredentialPattern =
+  /\b(?:DATABASE_URL(?:_FILE)?|POSTGRES(?:_[A-Z_]+)?|PG(?:HOST|PORT|USER|PASSWORD|DATABASE)|PRISMA_DATABASE_URL(?:_FILE))\b/;
+
+type RenderedCompose = {
+  services: Record<
+    string,
+    {
+      environment?: Record<string, string>;
+    }
+  >;
+};
 
 function serviceBlock(compose: string, serviceName: string): string {
   const lines = compose.split("\n");
@@ -31,6 +48,54 @@ function publishesPort(compose: string, port: number): boolean {
   return shortSyntax.test(compose) || longSyntax.test(compose);
 }
 
+async function renderProductionComposeWithFixture(): Promise<RenderedCompose> {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "sgeo-compose-policy-"));
+  const fixtureDeploy = join(fixtureRoot, "deploy");
+  const fixtureEnv = join(fixtureRoot, ".env");
+
+  try {
+    await mkdir(fixtureDeploy);
+    await writeFile(
+      join(fixtureDeploy, "docker-compose.prod.example.yml"),
+      await readFile(
+        resolve(process.cwd(), "deploy/docker-compose.prod.example.yml"),
+        "utf8",
+      ),
+    );
+    await writeFile(
+      fixtureEnv,
+      [
+        "DATABASE_URL=postgresql://geo_ops:fixture-postgres-password@postgres:5432/geo_content_ops?schema=public",
+        "BETTER_AUTH_SECRET=fixture-better-auth-secret",
+        "POSTGRES_PASSWORD=fixture-postgres-password",
+        "TRIGGER_API_URL=https://trigger.fixture.internal",
+        "TRIGGER_WORKER_API_KEY=fixture-trigger-api-key",
+        "TRIGGER_PROJECT_REF=proj_fixture",
+        "FIRECRAWL_API_KEY=fixture-firecrawl-key",
+      ].join("\n"),
+    );
+
+    const { stdout } = await execFileAsync(
+      "docker",
+      [
+        "compose",
+        "--env-file",
+        fixtureEnv,
+        "-f",
+        join(fixtureDeploy, "docker-compose.prod.example.yml"),
+        "config",
+        "--format",
+        "json",
+      ],
+      { cwd: fixtureRoot },
+    );
+
+    return JSON.parse(stdout) as RenderedCompose;
+  } finally {
+    await rm(fixtureRoot, { recursive: true });
+  }
+}
+
 describe("Compose worker isolation policy", () => {
   it("does not give geo-worker direct database configuration", async () => {
     for (const composePath of [
@@ -40,9 +105,7 @@ describe("Compose worker isolation policy", () => {
       const compose = await readFile(resolve(process.cwd(), composePath), "utf8");
       const worker = serviceBlock(compose, "geo-worker");
 
-      expect(worker, composePath).not.toMatch(
-        /\b(?:DATABASE_URL|POSTGRES(?:_[A-Z_]+)?|PG(?:HOST|PORT|USER|PASSWORD|DATABASE)|PRISMA_DATABASE_URL)\b/,
-      );
+      expect(worker, composePath).not.toMatch(directDatabaseCredentialPattern);
       expect(worker, composePath).not.toMatch(/\b(?:postgres|postgresql):\/\//i);
       expect(worker, composePath).not.toMatch(/^\s+env_file:/m);
       expect(worker, composePath).toContain("SGEO_INTERNAL_URL");
@@ -78,5 +141,70 @@ describe("Compose worker isolation policy", () => {
     );
 
     expect(compose).toContain("POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}");
+  });
+
+  it("treats database URL file variables as direct worker database credentials", () => {
+    expect("DATABASE_URL_FILE=/run/secrets/database_url").toMatch(
+      directDatabaseCredentialPattern,
+    );
+    expect("PRISMA_DATABASE_URL_FILE=/run/secrets/database_url").toMatch(
+      directDatabaseCredentialPattern,
+    );
+  });
+
+  it("keeps secrets out of root Docker builds and deployment archives", async () => {
+    const [dockerignore, remoteDeploy] = await Promise.all([
+      readFile(resolve(process.cwd(), ".dockerignore"), "utf8"),
+      readFile(resolve(process.cwd(), "deploy/remote-deploy.ps1"), "utf8"),
+    ]);
+
+    expect(dockerignore).toMatch(/^secrets\/$/m);
+    expect(remoteDeploy).toContain('--exclude="secrets/"');
+    expect(remoteDeploy).toContain("test -f secrets/sgeo_internal_secret");
+  });
+
+  it("renders production service configuration from an explicit fixture env file", async () => {
+    const rendered = await renderProductionComposeWithFixture();
+    const postgres = rendered.services.postgres.environment ?? {};
+    const ops = rendered.services["geo-ops"].environment ?? {};
+    const worker = rendered.services["geo-worker"].environment ?? {};
+
+    expect(postgres.POSTGRES_PASSWORD).toBe("fixture-postgres-password");
+    expect(ops.DATABASE_URL).toBe(
+      "postgresql://geo_ops:fixture-postgres-password@postgres:5432/geo_content_ops?schema=public",
+    );
+    expect(ops.BETTER_AUTH_SECRET).toBe("fixture-better-auth-secret");
+    expect(worker).toMatchObject({
+      TRIGGER_API_URL: "https://trigger.fixture.internal",
+      TRIGGER_API_KEY: "fixture-trigger-api-key",
+      TRIGGER_PROJECT_REF: "proj_fixture",
+      FIRECRAWL_API_KEY: "fixture-firecrawl-key",
+    });
+
+    for (const key of [
+      "DATABASE_URL",
+      "DATABASE_URL_FILE",
+      "PRISMA_DATABASE_URL",
+      "PRISMA_DATABASE_URL_FILE",
+    ]) {
+      expect(worker).not.toHaveProperty(key);
+    }
+  });
+
+  it("uses root .env for production Compose interpolation in documentation and remote deploys", async () => {
+    const [readme, remoteDeploy] = await Promise.all([
+      readFile(resolve(process.cwd(), "README.md"), "utf8"),
+      readFile(resolve(process.cwd(), "deploy/remote-deploy.ps1"), "utf8"),
+    ]);
+
+    expect(readme).toContain(
+      "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build",
+    );
+    expect(remoteDeploy).toContain(
+      "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build",
+    );
+    expect(remoteDeploy).not.toContain(
+      "docker compose -f deploy/docker-compose.prod.example.yml",
+    );
   });
 });

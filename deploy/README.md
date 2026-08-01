@@ -14,23 +14,32 @@ Before running it:
 6. Edit `deploy/Caddyfile.example` for the real GEO Ops domain and SSL mode.
 7. Make sure DNS points that domain to the Linux server or to a Cloudflare proxied record.
 8. Open only ports `80` and `443` on the server firewall.
+9. Provision `secrets/sgeo_internal_secret` directly on the target with directory mode `700` and file mode `600`. The deployment archive deliberately excludes `secrets/` and `.env`.
 
 The current `wingheng.technology` test deployment uses Cloudflare edge HTTPS with HTTP origin mode to avoid redirect loops under Cloudflare `Flexible`. For production, prefer Cloudflare `Full (strict)` plus an HTTPS Caddy site block.
 
 Run:
 
 ```bash
-docker compose -f deploy/docker-compose.prod.example.yml build
-docker compose -f deploy/docker-compose.prod.example.yml up -d postgres
-docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
-docker compose -f deploy/docker-compose.prod.example.yml up -d
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
+```
+
+Provision the internal signing secret separately from the code archive, using an encrypted operator channel:
+
+```bash
+ssh -i <key> root@<host> "install -d -m 700 /opt/geo-content-ops/secrets"
+scp -i <key> <local-secret-file> root@<host>:/opt/geo-content-ops/secrets/sgeo_internal_secret
+ssh -i <key> root@<host> "chmod 600 /opt/geo-content-ops/secrets/sgeo_internal_secret"
 ```
 
 Health check:
 
 ```bash
 curl -fsS http://127.0.0.1/api/healthz
-docker compose -f deploy/docker-compose.prod.example.yml ps
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps
 ```
 
 Database backup:
@@ -49,13 +58,13 @@ Restore example:
 
 ```bash
 gzip -dc /opt/geo-content-ops/backups/geo_content_ops-YYYYMMDD-HHMMSS.sql.gz | \
-  docker compose -f deploy/docker-compose.prod.example.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
 Optional Redis service:
 
 ```bash
-docker compose -f deploy/docker-compose.prod.example.yml --profile optional-cache up -d redis
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml --profile optional-cache up -d redis
 ```
 
 The included PostgreSQL service is suitable for MVP validation. For production, prefer a managed PostgreSQL service with automatic backups and PITR.

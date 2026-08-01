@@ -64,13 +64,13 @@ npm run dev
 仓库内提供了一个 MVP 部署样例：
 
 ```bash
-docker compose -f deploy/docker-compose.prod.example.yml build
-docker compose -f deploy/docker-compose.prod.example.yml up -d postgres
-docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
-docker compose -f deploy/docker-compose.prod.example.yml up -d
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
 ```
 
-使用前先把 `deploy/Caddyfile.example` 里的 `geo.example.com` 改成真实域名，并在部署主机上创建非 Git 跟踪的生产 `.env`。`docker compose ... config` 可以在没有该文件时验证 Compose 语法；实际 `up` 前必须设置 `DATABASE_URL`、`POSTGRES_PASSWORD`、Better Auth 和所需集成密钥。
+使用前先把 `deploy/Caddyfile.example` 里的 `geo.example.com` 改成真实域名，并在部署主机上创建非 Git 跟踪的生产 `.env`。`docker compose ... config` 可以在没有该文件时验证 Compose 语法；实际 `up` 前必须设置 `DATABASE_URL`、`POSTGRES_PASSWORD`、Better Auth 和所需集成密钥。部署归档不会传输 `.env` 或 `secrets/`；在运行部署脚本前，通过受控 SSH 或 secret manager 将 `/run/secrets` 所需的文件预置到部署主机的 `secrets/` 目录。
 
 首次生产迁移使用：
 

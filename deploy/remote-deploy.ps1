@@ -30,6 +30,7 @@ try {
     --exclude=".env" `
     --exclude=".env.local" `
     --exclude=".secrets" `
+    --exclude="secrets/" `
     --exclude=".credentials" `
     --exclude="docs/*.local.md" `
     --exclude="*.tsbuildinfo" `
@@ -45,17 +46,20 @@ try {
   $remoteCommands = @(
     "cd $RemoteDir",
     "test -f .env || (echo 'Missing $RemoteDir/.env. Create it from .env.example before starting services.' && exit 20)",
+    "install -d -m 700 secrets",
+    "test -f secrets/sgeo_internal_secret || (echo 'Missing $RemoteDir/secrets/sgeo_internal_secret. Provision it separately over SSH or your secret manager, then chmod 600 it.' && exit 21)",
+    "chmod 600 secrets/sgeo_internal_secret",
     $(if ($UseIpCaddy) { "cp deploy/Caddyfile.ip.example deploy/Caddyfile.example" } else { "true" }),
-    "docker compose -f deploy/docker-compose.prod.example.yml build",
-    "docker compose -f deploy/docker-compose.prod.example.yml up -d postgres"
+    "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build",
+    "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres"
   )
 
   if ($RunMigrations) {
-    $remoteCommands += "docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy"
+    $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy"
   }
 
-  $remoteCommands += "docker compose -f deploy/docker-compose.prod.example.yml up -d"
-  $remoteCommands += "docker compose -f deploy/docker-compose.prod.example.yml ps"
+  $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d"
+  $remoteCommands += "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps"
 
   ssh -i $KeyPath $remote ($remoteCommands -join " && ")
 }
