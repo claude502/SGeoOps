@@ -2,28 +2,28 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { TxpuroSitePage } from "@/components/txpuro-site";
-import { isTxpuroHost, normalizeLocaleFromGuidesSlug } from "@/lib/site-context";
+import { resolvePublicRoute } from "@/lib/site-context";
 import { getTxpuroPublicAsset, txpuroCompanyLabel, txpuroSiteLabel } from "@/lib/txpuro";
 
 type PageProps = {
   params: Promise<{ slug?: string[] }>;
 };
 
-function slugKey(segments: string[]) {
-  return segments.length ? segments.join("/") : "home";
+function guidePath(slug: string[] | undefined) {
+  return slug?.length ? `/guides/${slug.join("/")}` : "/guides";
 }
 
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const host = (await headers()).get("host");
-  if (!isTxpuroHost(host)) {
+  const { slug } = await params;
+  const route = await resolvePublicRoute(host, guidePath(slug));
+  if (!route || route.siteId !== "site_txpuro_com") {
     return {};
   }
 
-  const { slug } = await params;
-  const { locale, pathSegments } = normalizeLocaleFromGuidesSlug(slug);
-  const asset = await getTxpuroPublicAsset(slugKey(pathSegments), locale);
+  const asset = await getTxpuroPublicAsset(route.slug, route.locale);
   if (!asset) {
     return {};
   }
@@ -38,28 +38,28 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       title: asset.seoTitle || asset.title,
       description: asset.metaDescription || asset.summary,
       url: asset.canonicalUrl,
-      siteName: txpuroSiteLabel(locale),
+      siteName: txpuroSiteLabel(route.locale),
       type: "article",
     },
     other: {
-      "application-name": txpuroSiteLabel(locale),
-      "txpuro-company": txpuroCompanyLabel(locale),
+      "application-name": txpuroSiteLabel(route.locale),
+      "txpuro-company": txpuroCompanyLabel(route.locale),
     },
   };
 }
 
 export default async function TxpuroGuidesPage({ params }: PageProps) {
   const host = (await headers()).get("host");
-  if (!isTxpuroHost(host)) {
+  const { slug } = await params;
+  const route = await resolvePublicRoute(host, guidePath(slug));
+  if (!route || route.siteId !== "site_txpuro_com") {
     notFound();
   }
 
-  const { slug } = await params;
-  const { locale, pathSegments } = normalizeLocaleFromGuidesSlug(slug);
-  const asset = await getTxpuroPublicAsset(slugKey(pathSegments), locale);
+  const asset = await getTxpuroPublicAsset(route.slug, route.locale);
   if (!asset) {
     notFound();
   }
 
-  return <TxpuroSitePage asset={asset} locale={locale} />;
+  return <TxpuroSitePage asset={asset} locale={route.locale} />;
 }

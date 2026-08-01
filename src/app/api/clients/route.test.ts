@@ -4,7 +4,7 @@ import type { AccessScope } from "@/lib/authorization";
 
 const mocks = vi.hoisted(() => ({
   requireAccessScope: vi.fn(),
-  listClients: vi.fn(),
+  listClientSiteOverviews: vi.fn(),
   createClient: vi.fn(),
 }));
 
@@ -16,7 +16,7 @@ vi.mock("@/lib/authorization", async (importOriginal) => ({
 vi.mock("@/lib/organization/repository", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/organization/repository")>()),
   organizationRepository: {
-    listClients: mocks.listClients,
+    listClientSiteOverviews: mocks.listClientSiteOverviews,
     createClient: mocks.createClient,
   },
 }));
@@ -46,7 +46,7 @@ describe("/api/clients", () => {
       updatedAt: new Date("2026-07-31T00:00:00.000Z"),
     };
     mocks.requireAccessScope.mockResolvedValue({ ...operator, role: "Viewer" });
-    mocks.listClients.mockResolvedValue([client]);
+    mocks.listClientSiteOverviews.mockResolvedValue([{ ...client, sites: [] }]);
     const { GET } = await import("./route");
 
     const response = await GET(new Request("http://localhost/api/clients"));
@@ -58,20 +58,21 @@ describe("/api/clients", () => {
           ...client,
           createdAt: "2026-07-31T00:00:00.000Z",
           updatedAt: "2026-07-31T00:00:00.000Z",
+          sites: [],
         },
       ],
       permissions: {
         canCreateClient: false,
       },
     });
-    expect(mocks.listClients).toHaveBeenCalledWith(
+    expect(mocks.listClientSiteOverviews).toHaveBeenCalledWith(
       expect.objectContaining({ actorId: "operator_a", role: "Viewer" }),
     );
   });
 
   it("reports client creation permission for Admin", async () => {
     mocks.requireAccessScope.mockResolvedValue({ ...operator, role: "Admin" });
-    mocks.listClients.mockResolvedValue([]);
+    mocks.listClientSiteOverviews.mockResolvedValue([]);
     const { GET } = await import("./route");
 
     const response = await GET(new Request("http://localhost/api/clients"));
@@ -95,7 +96,7 @@ describe("/api/clients", () => {
     const response = await GET(new Request("http://localhost/api/clients"));
 
     expect(response.status).toBe(401);
-    expect(mocks.listClients).not.toHaveBeenCalled();
+    expect(mocks.listClientSiteOverviews).not.toHaveBeenCalled();
   });
 
   it("allows only Admin to create a client", async () => {

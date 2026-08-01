@@ -1,91 +1,177 @@
+import type { ResolvedPublicSite } from "@/lib/organization/repository";
+import { organizationRepository } from "@/lib/organization/repository";
+import { isDatabaseConfigured } from "@/lib/prisma";
 import type { ContentLocale } from "@/types/geo";
+import {
+  getTxpuroOriginHosts,
+  getTxpuroServeHosts,
+  isOpsHost,
+  isTxpuroHost,
+  normalizeSiteHost,
+  preferredTxpuroHost,
+  TXPURO_GUIDES_PREFIX,
+} from "@/lib/site-context-hosts";
 
-const defaultTxpuroCanonicalHosts = ["txpuro.com", "www.txpuro.com"];
-const defaultTxpuroOriginHosts = ["geo-origin.winghengtech.com"];
-const defaultOpsHosts = ["wingheng.technology", "www.wingheng.technology"];
-export const TXPURO_GUIDES_PREFIX = "/guides";
+export {
+  getOpsHosts,
+  getTxpuroCanonicalHosts,
+  getTxpuroOriginHosts,
+  getTxpuroServeHosts,
+  isOpsHost,
+  isTxpuroHost,
+  preferredTxpuroHost,
+  txpuroBaseUrl,
+  TXPURO_GUIDES_PREFIX,
+} from "@/lib/site-context-hosts";
 
-function normalizeHost(value: string | null | undefined) {
-  return (value || "").split(":")[0].trim().toLowerCase();
+export type { ResolvedPublicSite } from "@/lib/organization/repository";
+
+export type ResolvedPublicRoute = Pick<
+  ResolvedPublicSite,
+  "siteId"
+> & {
+  locale: ContentLocale;
+  slug: string;
+};
+
+function staticTxpuroSite(): ResolvedPublicSite {
+  const canonicalHost = preferredTxpuroHost();
+  return {
+    workspaceId: "workspace_internal",
+    clientId: "client_wing_heng",
+    brandId: "brand_txpuro",
+    siteId: "site_txpuro_com",
+    name: "Txpuro",
+    canonicalHost,
+    originHosts: getTxpuroOriginHosts(),
+    siteType: "content",
+    hostingMode: "hybrid",
+    canonicalRules: { https: true, www: "redirect" },
+    allowedPublishPaths: [TXPURO_GUIDES_PREFIX],
+  };
 }
 
-function envHosts(value: string | undefined, fallback: string[]) {
-  const hosts = (value ?? "")
-    .split(",")
-    .map((item) => normalizeHost(item))
-    .filter(Boolean);
-  return hosts.length ? hosts : fallback;
+function staticTxpuroSiteForHost(host: string) {
+  return getTxpuroServeHosts().includes(host) ? staticTxpuroSite() : null;
 }
 
-export function getTxpuroCanonicalHosts() {
-  return envHosts(
-    [process.env.TXPURO_PUBLIC_HOST, process.env.TXPURO_PUBLIC_HOST_WWW].filter(Boolean).join(","),
-    defaultTxpuroCanonicalHosts,
-  );
+/**
+ * Resolves a public hostname from the database-backed Site ownership model.
+ * Txpuro retains a static fallback only while a database is unavailable so its
+ * established public URLs continue to work during bootstrap and recovery.
+ */
+export async function resolvePublicSite(
+  host: string | null | undefined,
+): Promise<ResolvedPublicSite | null> {
+  const normalizedHost = normalizeSiteHost(host);
+  if (!normalizedHost) {
+    return null;
+  }
+
+  if (isDatabaseConfigured()) {
+    try {
+      const site = await organizationRepository.resolveSiteByHost(
+        normalizedHost,
+      );
+      if (site) {
+        return site;
+      }
+    } catch {
+      return staticTxpuroSiteForHost(normalizedHost);
+    }
+  }
+
+  return staticTxpuroSiteForHost(normalizedHost);
 }
 
-export function getTxpuroOriginHosts() {
-  return envHosts(process.env.TXPURO_ORIGIN_HOST, defaultTxpuroOriginHosts);
+function contentPathPrefix(site: ResolvedPublicSite) {
+  return (
+    site.allowedPublishPaths.find(
+      (path) => path.startsWith("/") && !path.startsWith("//"),
+    ) ?? TXPURO_GUIDES_PREFIX
+  ).replace(/\/+$/, "") || TXPURO_GUIDES_PREFIX;
 }
 
-export function getTxpuroServeHosts() {
-  return Array.from(new Set([...getTxpuroCanonicalHosts(), ...getTxpuroOriginHosts()]));
+function normalizeContentSlug(slug: string, prefix: string) {
+  const normalized = slug.trim().replace(/^\/+|\/+$/g, "");
+  const prefixSlug = prefix.replace(/^\/+|\/+$/g, "");
+  if (normalized === prefixSlug) {
+    return "";
+  }
+  return normalized.startsWith(`${prefixSlug}/`)
+    ? normalized.slice(prefixSlug.length + 1)
+    : normalized;
 }
 
-export function getOpsHosts() {
-  return envHosts(
-    [process.env.NEXT_PUBLIC_APP_URL]
-      .filter(Boolean)
-      .map((value) => {
-        try {
-          return new URL(value!).host;
-        } catch (e) {
-          console.warn("Invalid NEXT_PUBLIC_APP_URL:", value, e);
-          return value!;
-        }
-      })
-      .join(","),
-    defaultOpsHosts,
-  );
+export function publicContentPath(
+  site: ResolvedPublicSite,
+  slug: string,
+  locale: string,
+) {
+  const prefix = contentPathPrefix(site);
+  const normalizedSlug = normalizeContentSlug(slug, prefix);
+  const localePrefix = locale.toLowerCase() === "en" ? "/en" : "";
+  const basePath = `${prefix}${localePrefix}`;
+
+  return normalizedSlug && normalizedSlug !== "home"
+    ? `${basePath}/${normalizedSlug}`
+    : basePath;
 }
 
-export function isTxpuroHost(host: string | null | undefined) {
-  const normalized = normalizeHost(host);
-  return getTxpuroServeHosts().includes(normalized);
+export function publicCanonicalUrl(
+  site: ResolvedPublicSite,
+  slug: string,
+  locale: string,
+) {
+  return `https://${site.canonicalHost}${publicContentPath(site, slug, locale)}`;
 }
 
-export function isOpsHost(host: string | null | undefined) {
-  const normalized = normalizeHost(host);
-  return getOpsHosts().includes(normalized);
-}
+export async function resolvePublicRoute(
+  host: string | null | undefined,
+  pathname: string,
+): Promise<ResolvedPublicRoute | null> {
+  if (!pathname.startsWith("/")) {
+    return null;
+  }
 
-export function preferredTxpuroHost() {
-  return getTxpuroCanonicalHosts()[0] || "txpuro.com";
-}
+  const site = await resolvePublicSite(host);
+  if (!site) {
+    return null;
+  }
 
-export function txpuroBaseUrl() {
-  return `https://${preferredTxpuroHost()}`;
-}
+  let parsedPathname: string;
+  try {
+    parsedPathname = new URL(pathname, "https://public-route.invalid").pathname;
+  } catch {
+    return null;
+  }
 
-function normalizeGuidesSlug(slug: string) {
-  const trimmed = slug.trim().replace(/^\/+|\/+$/g, "");
-  return trimmed.replace(/^guides\//, "");
+  const prefix = contentPathPrefix(site).split("/").filter(Boolean);
+  const segments = parsedPathname.split("/").filter(Boolean);
+  if (
+    prefix.length > segments.length ||
+    prefix.some((segment, index) => segments[index] !== segment)
+  ) {
+    return null;
+  }
+
+  const contentSegments = segments.slice(prefix.length);
+  const locale = contentSegments[0] === "en" ? "en" : "zh-CN";
+  const slugSegments = locale === "en" ? contentSegments.slice(1) : contentSegments;
+
+  return {
+    siteId: site.siteId,
+    locale,
+    slug: slugSegments.join("/") || "home",
+  };
 }
 
 export function txpuroGuidesPath(slug: string, locale: ContentLocale) {
-  const normalized = normalizeGuidesSlug(slug);
-  if (locale === "en") {
-    return normalized && normalized !== "home"
-      ? `${TXPURO_GUIDES_PREFIX}/en/${normalized}`
-      : `${TXPURO_GUIDES_PREFIX}/en`;
-  }
-  return normalized && normalized !== "home"
-    ? `${TXPURO_GUIDES_PREFIX}/${normalized}`
-    : TXPURO_GUIDES_PREFIX;
+  return publicContentPath(staticTxpuroSite(), slug, locale);
 }
 
 export function txpuroCanonicalUrl(slug: string, locale: ContentLocale) {
-  return `${txpuroBaseUrl()}${txpuroGuidesPath(slug, locale)}`;
+  return publicCanonicalUrl(staticTxpuroSite(), slug, locale);
 }
 
 export function normalizeLocaleFromGuidesSlug(slug: string[] | undefined) {

@@ -9,7 +9,6 @@ export function buildCreateClientRequest(input: CreateClientRequestInput) {
     method: "POST" as const,
     headers: {
       "content-type": "application/json",
-      "x-geo-ops-action": "true",
     },
     body: JSON.stringify(input),
   };

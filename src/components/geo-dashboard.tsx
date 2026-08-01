@@ -60,7 +60,6 @@ type ToastMessage = { text: string; tone: ToastTone } | null;
 
 const actionHeaders = {
   "content-type": "application/json",
-  "x-geo-ops-action": "true",
 };
 
 const emptyAssetDraft = {
@@ -93,12 +92,6 @@ type IntegrationStatus = {
   catalogError: string | null;
   geoFlowStatusTimeoutMs?: number;
   links: GeoFlowTaskLinkView[];
-  auth?: {
-    enabled: boolean;
-    actionHeaderRequired: boolean;
-    maxAttempts: number;
-    windowSeconds: number;
-  };
   postizConfigured?: boolean;
 };
 type TxpuroInitPayload = {
@@ -879,8 +872,6 @@ function SettingsPanel({
   txpuroAssetCount: number;
 }) {
   const missing = status?.missing ?? [];
-  const authEnabled = status?.auth?.enabled ?? false;
-  const actionHeaderRequired = status?.auth?.actionHeaderRequired ?? false;
   const databaseHealthy = Boolean(status?.databaseConfigured && status?.databaseReachable);
   const geoFlowHealthy = Boolean(status?.geoFlowConfigured && status?.catalogReachable);
   const latestAudit = auditEvents[0];
@@ -925,17 +916,12 @@ function SettingsPanel({
         <article className="settings-card">
           <div>
             <strong>Auth</strong>
-            <Chip tone={authEnabled ? "success" : "danger"}>
-              {authEnabled ? "已开启 / Enabled" : "未开启 / Disabled"}
-            </Chip>
+            <Chip tone="success">Session required</Chip>
           </div>
           <p>
-            Basic Auth、失败限流和写入动作头。 / Basic Auth, failed-login throttling, and write action headers.
+            Better Auth sessions protect operational pages and tenant-scoped APIs.
           </p>
-          <small>
-            {actionHeaderRequired ? "x-geo-ops-action required" : "Action header disabled"} ·{" "}
-            {status?.auth ? `${status.auth.maxAttempts}/${status.auth.windowSeconds}s` : "loading"}
-          </small>
+          <small>Public brand routes remain anonymous.</small>
         </article>
 
         <article className="settings-card">

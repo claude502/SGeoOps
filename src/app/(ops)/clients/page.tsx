@@ -1,6 +1,7 @@
 "use client";
 
 import { Building2, Plus, RefreshCw, X } from "lucide-react";
+import Link from "next/link";
 import {
   FormEvent,
   useCallback,
@@ -19,6 +20,11 @@ type ClientSummary = {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  sites: Array<{
+    id: string;
+    name: string;
+    canonicalHost: string;
+  }>;
 };
 
 type ClientDraft = {
@@ -95,7 +101,7 @@ export default function ClientsPage() {
         buildCreateClientRequest(draft),
       );
       const body = (await response.json()) as {
-        client?: ClientSummary;
+        client?: Omit<ClientSummary, "sites">;
         error?: string;
       };
       if (!response.ok || !body.client) {
@@ -107,8 +113,12 @@ export default function ClientsPage() {
         return;
       }
 
+      const createdClient: ClientSummary = {
+        ...body.client,
+        sites: [],
+      };
       setClients((current) =>
-        [...current, body.client as ClientSummary].sort((left, right) =>
+        [...current, createdClient].sort((left, right) =>
           left.name.localeCompare(right.name),
         ),
       );
@@ -169,6 +179,7 @@ export default function ClientsPage() {
       <section aria-busy={loading} className="clients-table-shell">
         <div className="clients-table-head" role="row">
           <span>Client</span>
+          <span>Sites</span>
           <span>Status</span>
           <span>Updated</span>
         </div>
@@ -191,6 +202,18 @@ export default function ClientsPage() {
                 <div>
                   <strong>{client.name}</strong>
                   <span>{client.slug}</span>
+                </div>
+                <div className="client-sites">
+                  {client.sites.length ? (
+                    client.sites.map((site) => (
+                      <Link href={`/sites/${site.id}`} key={site.id}>
+                        <strong>{site.name}</strong>
+                        <span>{site.canonicalHost}</span>
+                      </Link>
+                    ))
+                  ) : (
+                    <span>No active sites</span>
+                  )}
                 </div>
                 <span
                   className={

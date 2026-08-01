@@ -183,10 +183,30 @@ button:disabled {
 .clients-table-head,
 .clients-table-row {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) 120px minmax(180px, 240px);
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr) 120px minmax(180px, 240px);
   gap: 18px;
   align-items: center;
   padding: 13px 18px;
+}
+
+.client-sites {
+  display: grid;
+  gap: 6px;
+}
+
+.client-sites a {
+  color: inherit;
+  display: grid;
+  gap: 2px;
+  text-decoration: none;
+}
+
+.client-sites a:hover strong {
+  color: var(--teal-600);
+}
+
+.clients-table-row.site-overview-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .clients-table-head {
@@ -1450,6 +1470,10 @@ h2 {
   .clients-table-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 9px;
+  }
+
+  .clients-table-row.site-overview-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .workspace,

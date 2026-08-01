@@ -1,5 +1,4 @@
 import type { Prisma } from "@prisma/client";
-import { parseBasicAuthorization } from "@/lib/basic-auth";
 import type { AccessScope } from "@/lib/authorization";
 import { getPrisma, isDatabaseConfigured } from "@/lib/prisma";
 import type { AuditEventView } from "@/types/geo";
@@ -51,14 +50,6 @@ function toIso(value: Date | string) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function auditActorFromRequest(request?: Request) {
-  if (!request) {
-    return "system";
-  }
-
-  return parseBasicAuthorization(request.headers.get("authorization"))?.username || "unknown";
-}
-
 function requestIdFromRequest(request?: Request) {
   return request?.headers.get("x-request-id") || request?.headers.get("cf-ray") || null;
 }
@@ -94,7 +85,7 @@ export async function recordAuditEvent(input: AuditEventInput) {
         brandId: input.brandId,
         siteId: input.siteId,
         siteMarketId: input.siteMarketId ?? null,
-        actor: input.actor || auditActorFromRequest(input.request),
+        actor: input.actor || "system",
         action: input.action,
         entityType: input.entityType,
         entityId: input.entityId === undefined || input.entityId === null ? null : String(input.entityId),

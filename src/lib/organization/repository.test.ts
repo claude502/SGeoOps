@@ -84,6 +84,60 @@ describe("PrismaOrganizationRepository", () => {
     );
   });
 
+  it("lists active sites nested beneath only the scoped clients", async () => {
+    const database = organizationDatabase();
+    database.client.findMany.mockResolvedValue([
+      {
+        id: "client_a",
+        workspaceId: "workspace_internal",
+        name: "Client A",
+        slug: "client-a",
+        active: true,
+        createdAt: new Date("2026-07-31T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-31T00:00:00.000Z"),
+        brands: [
+          {
+            sites: [
+              {
+                id: "site_a",
+                name: "Client A Site",
+                canonicalHost: "client-a.example.com",
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const repository = new PrismaOrganizationRepository(database as never);
+
+    await expect(repository.listClientSiteOverviews(scope)).resolves.toEqual([
+      {
+        id: "client_a",
+        workspaceId: "workspace_internal",
+        name: "Client A",
+        slug: "client-a",
+        active: true,
+        createdAt: new Date("2026-07-31T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-31T00:00:00.000Z"),
+        sites: [
+          {
+            id: "site_a",
+            name: "Client A Site",
+            canonicalHost: "client-a.example.com",
+          },
+        ],
+      },
+    ]);
+    expect(database.client.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId: "workspace_internal",
+          id: { in: ["client_a"] },
+        },
+      }),
+    );
+  });
+
   it("creates a client inside the scoped workspace", async () => {
     const database = organizationDatabase();
     database.client.create.mockResolvedValue({

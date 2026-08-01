@@ -55,8 +55,7 @@ npm run dev
 - 只暴露 80/443。
 - PostgreSQL/Redis 不映射公网端口。
 - 所有公网入口必须 HTTPS。
-- GEO Ops 总控台和 API 必须启用登录保护；当前 MVP 使用 HTTP Basic Auth。
-- 写入 API 默认要求 `x-geo-ops-action: true`，并开启 Basic Auth 登录失败限流。
+- GEO Ops 总控台和内部 API 使用 Better Auth 会话和租户范围授权；公开品牌页面保持匿名访问。
 - `.env`、API key、数据库密码不进 Git。
 - 生产数据库开启备份和恢复演练。
 
@@ -96,7 +95,7 @@ GET  /api/integrations/geoflow/status
 GET  /api/healthz
 ```
 
-除 `GET` 和 `HEAD` 外，写入接口默认需要请求头 `x-geo-ops-action: true`。
+除公开健康检查和 Better Auth 路由外，内部 API 需要 Better Auth 会话和租户范围授权。
 
 ## 环境变量
 
@@ -117,13 +116,9 @@ GEO_TARGET_KEYWORDS=
 GEO_CANONICAL_DOMAIN=
 SEED_DEMO_DATA=
 
-GEO_OPS_AUTH_ENABLED=
-GEO_OPS_ADMIN_USERNAME=
-GEO_OPS_ADMIN_PASSWORD=
-GEO_OPS_AUTH_REALM=
-GEO_OPS_AUTH_MAX_ATTEMPTS=
-GEO_OPS_AUTH_WINDOW_SECONDS=
-GEO_OPS_REQUIRE_ACTION_HEADER=
+BETTER_AUTH_SECRET=
+BETTER_AUTH_URL=
+SGEO_ALLOW_BOOTSTRAP_SIGNUP=
 
 GEOFLOW_BASE_URL=
 GEOFLOW_API_TOKEN=

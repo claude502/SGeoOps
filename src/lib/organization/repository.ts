@@ -37,6 +37,14 @@ export interface ClientSummary {
   updatedAt: Date;
 }
 
+export interface ClientSiteOverview extends ClientSummary {
+  sites: Array<{
+    id: string;
+    name: string;
+    canonicalHost: string;
+  }>;
+}
+
 export interface BrandSummary {
   id: string;
   clientId: string;
@@ -100,6 +108,7 @@ export type CreateSiteMarketInput = CreateSiteMarketBody & { siteId: string };
 
 export interface OrganizationRepository {
   listClients(scope: AccessScope): Promise<ClientSummary[]>;
+  listClientSiteOverviews(scope: AccessScope): Promise<ClientSiteOverview[]>;
   createClient(
     scope: AccessScope,
     input: CreateClientInput,
@@ -131,6 +140,37 @@ const clientSelect = {
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ClientSelect;
+
+const clientSiteOverviewSelect = {
+  ...clientSelect,
+  brands: {
+    select: {
+      sites: {
+        where: { active: true },
+        select: {
+          id: true,
+          name: true,
+          canonicalHost: true,
+        },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+      },
+    },
+  },
+} satisfies Prisma.ClientSelect;
+
+type ClientSiteOverviewRecord = Prisma.ClientGetPayload<{
+  select: typeof clientSiteOverviewSelect;
+}>;
+
+function toClientSiteOverview(
+  client: ClientSiteOverviewRecord,
+): ClientSiteOverview {
+  const { brands, ...summary } = client;
+  return {
+    ...summary,
+    sites: brands.flatMap((brand) => brand.sites),
+  };
+}
 
 const brandSelect = {
   id: true,
@@ -252,6 +292,17 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
       select: clientSelect,
       orderBy: [{ name: "asc" }, { id: "asc" }],
     });
+  }
+
+  async listClientSiteOverviews(
+    scope: AccessScope,
+  ): Promise<ClientSiteOverview[]> {
+    const clients = await this.database.client.findMany({
+      where: scopedClientWhere(scope),
+      select: clientSiteOverviewSelect,
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+    });
+    return clients.map(toClientSiteOverview);
   }
 
   async createClient(

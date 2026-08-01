@@ -8,8 +8,8 @@ Before running it:
 
 1. Copy `.env.example` to `.env` at the repository root.
 2. Replace all placeholder secrets and domains.
-3. Set `GEO_OPS_AUTH_ENABLED=true` and choose a strong `GEO_OPS_ADMIN_PASSWORD`.
-4. Keep `GEO_OPS_REQUIRE_ACTION_HEADER=true` so write APIs require `x-geo-ops-action: true`.
+3. Set `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`, then bootstrap the first Better Auth administrator.
+4. Keep internal API access limited to signed-in tenant members.
 5. For this Compose file, set `DATABASE_URL` to use host `postgres`, not `localhost`.
 6. Edit `deploy/Caddyfile.example` for the real GEO Ops domain and SSL mode.
 7. Make sure DNS points that domain to the Linux server or to a Cloudflare proxied record.

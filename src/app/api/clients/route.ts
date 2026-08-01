@@ -8,7 +8,7 @@ import { createClientSchema } from "@/lib/organization/schemas";
 export async function GET(request: Request) {
   try {
     const scope = await requireAccessScope(request);
-    const clients = await organizationRepository.listClients(scope);
+    const clients = await organizationRepository.listClientSiteOverviews(scope);
     return NextResponse.json({
       clients,
       permissions: {
