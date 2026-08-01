@@ -82,6 +82,7 @@ services:
       - SGEO_SECRET_ROOT=/run/secrets
     volumes:
       - artifact-data:/var/lib/sgeo/artifacts
+      # Host secret directory/file: root:10001 0750 / root:10001 0640.
       - ./secrets:/run/secrets:ro
 
 volumes:

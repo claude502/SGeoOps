@@ -15,12 +15,18 @@ import { SgeoOpsClient } from "../clients/sgeo-ops";
 type SiteOneOpsClient = Pick<SgeoOpsClient, "ingest" | "uploadArtifact">;
 
 const SITEONE_DELIVERY_CHECKPOINT_KEY = "siteoneDeliveryCheckpoint";
-const SITEONE_MAX_CHECKPOINT_BYTES = 200 * 1024;
+const TRIGGER_METADATA_MAX_BYTES = 256 * 1024;
 
 export interface SiteOneDeliveryCheckpoint {
   load(input: SiteOneInput): Promise<AnalysisEnvelope | null>;
+  assertCapacity(envelope: AnalysisEnvelope): Promise<void>;
   save(envelope: AnalysisEnvelope): Promise<void>;
 }
+
+export type SiteOneTriggerMetadata = {
+  current(): Record<string, unknown> | undefined;
+  set(key: string, value: unknown): { flush(): Promise<void> };
+};
 
 export type SiteOneCrawlDependencies = {
   execute?: (input: SiteOneInput) => Promise<SiteOneExecution>;
@@ -59,9 +65,6 @@ function checkpointEnvelope(value: unknown, input?: SiteOneInput): AnalysisEnvel
   ) {
     throw new Error("SiteOne delivery checkpoint does not match the task payload.");
   }
-  if (Buffer.byteLength(JSON.stringify(parsed.data), "utf8") > SITEONE_MAX_CHECKPOINT_BYTES) {
-    throw new Error("SiteOne delivery checkpoint exceeds the Trigger metadata limit.");
-  }
   return parsed.data;
 }
 
@@ -71,12 +74,34 @@ function checkpointRecord(value: unknown) {
   return record.version === 1 ? record.envelope : null;
 }
 
-function checkCheckpointCapacity(
+function projectedMetadata(
+  envelope: AnalysisEnvelope,
+  currentMetadata: Record<string, unknown> | undefined,
+) {
+  const current = currentMetadata ?? {};
+  const checkpoint = checkpointEnvelope(envelope);
+  let serialized: string;
+  try {
+    serialized = JSON.stringify({
+      ...current,
+      [SITEONE_DELIVERY_CHECKPOINT_KEY]: { version: 1, envelope: checkpoint },
+    });
+  } catch {
+    throw new Error("SiteOne delivery metadata cannot be serialized.");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > TRIGGER_METADATA_MAX_BYTES) {
+    throw new Error("SiteOne delivery metadata limit exceeded.");
+  }
+  return checkpoint;
+}
+
+async function checkCheckpointCapacity(
+  checkpoint: SiteOneDeliveryCheckpoint,
   envelope: AnalysisEnvelope,
   input: SiteOneInput,
   rawReport: Uint8Array,
 ) {
-  checkpointEnvelope({
+  const candidate = checkpointEnvelope({
     ...envelope,
     rawArtifact: {
       uri: `artifact://${input.runId}/${SITEONE_ARTIFACT_NAME}`,
@@ -85,25 +110,39 @@ function checkCheckpointCapacity(
       byteSize: rawReport.byteLength,
     },
   });
+  await checkpoint.assertCapacity(candidate);
 }
 
 const noOpCheckpoint: SiteOneDeliveryCheckpoint = {
   async load() {
     return null;
   },
+  async assertCapacity(envelope) {
+    checkpointEnvelope(envelope);
+  },
   async save() {},
 };
 
-export function createTriggerMetadataCheckpoint(): SiteOneDeliveryCheckpoint {
+const triggerMetadata: SiteOneTriggerMetadata = {
+  current: () => metadata.current(),
+  set: (key, value) => metadata.set(key, value as never),
+};
+
+export function createTriggerMetadataCheckpoint(
+  metadataApi: SiteOneTriggerMetadata = triggerMetadata,
+): SiteOneDeliveryCheckpoint {
   return {
     async load(input) {
-      const current = metadata.current();
+      const current = metadataApi.current();
       const saved = checkpointRecord(current?.[SITEONE_DELIVERY_CHECKPOINT_KEY]);
       return saved === null ? null : checkpointEnvelope(saved, input);
     },
+    async assertCapacity(envelope) {
+      projectedMetadata(envelope, metadataApi.current());
+    },
     async save(envelope) {
-      const saved = checkpointEnvelope(envelope);
-      await metadata.set(SITEONE_DELIVERY_CHECKPOINT_KEY, {
+      const saved = projectedMetadata(envelope, metadataApi.current());
+      await metadataApi.set(SITEONE_DELIVERY_CHECKPOINT_KEY, {
         version: 1,
         envelope: saved,
       }).flush();
@@ -134,7 +173,7 @@ export async function runSiteOneCrawl(
   } else {
     // Validate capacity before publishing the fixed-name artifact. Otherwise a
     // metadata-size failure could leave an upload that a changed recrawl cannot replay.
-    checkCheckpointCapacity(envelope, input, execution.rawReport);
+    await checkCheckpointCapacity(checkpoint, envelope, input, execution.rawReport);
     const rawArtifact = await client.uploadArtifact(
       input.runId,
       SITEONE_ARTIFACT_NAME,

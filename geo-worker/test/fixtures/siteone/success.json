@@ -5,12 +5,9 @@
       "url": "https://example.test/",
       "status": "200",
       "type": 1,
-      "extras": [
-        {
-          "name": "SgeoStructuredData",
-          "value": "{\"@graph\":[{\"@type\":\"Organization\"},{\"@type\":[\"BreadcrumbList\"]}]}"
-        }
-      ]
+      "extras": {
+        "SgeoStructuredData": "{\"@graph\":[{\"@type\":\"Organization\"},{\"@type\":[\"BreadcrumbList\"]}]}"
+      }
     },
     { "url": "https://example.test/missing", "status": "404", "type": 1 }
   ],

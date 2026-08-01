@@ -14,7 +14,7 @@ Before running it:
 6. Edit `deploy/Caddyfile.example` for the real GEO Ops domain and SSL mode.
 7. Make sure DNS points that domain to the Linux server or to a Cloudflare proxied record.
 8. Open only ports `80` and `443` on the server firewall.
-9. Provision `secrets/sgeo_internal_secret` directly on the target with directory mode `700` and file mode `600`. The deployment archive deliberately excludes `secrets/` and `.env`.
+9. Provision `secrets/sgeo_internal_secret` directly on the target with directory owner/group `root:10001` and mode `0750`, and file owner/group `root:10001` and mode `0640`. The non-root geo-worker image runs as UID/GID `10001`, so this grants only its group read/traverse access. The deployment archive deliberately excludes `secrets/` and `.env`.
 
 The current `wingheng.technology` test deployment uses Cloudflare edge HTTPS with HTTP origin mode to avoid redirect loops under Cloudflare `Flexible`. For production, prefer Cloudflare `Full (strict)` plus an HTTPS Caddy site block.
 
@@ -62,9 +62,9 @@ Migration, bootstrap, status, or cleanup failure stops before full-stack `up -d`
 Provision the internal signing secret separately from the code archive, using an encrypted operator channel:
 
 ```bash
-ssh -i <key> root@<host> "install -d -m 700 /opt/geo-content-ops/secrets"
+ssh -i <key> root@<host> "install -d -o root -g 10001 -m 0750 /opt/geo-content-ops/secrets"
 scp -i <key> <local-secret-file> root@<host>:/opt/geo-content-ops/secrets/sgeo_internal_secret
-ssh -i <key> root@<host> "chmod 600 /opt/geo-content-ops/secrets/sgeo_internal_secret"
+ssh -i <key> root@<host> "chown root:10001 /opt/geo-content-ops/secrets/sgeo_internal_secret && chmod 0640 /opt/geo-content-ops/secrets/sgeo_internal_secret"
 ```
 
 Health check:

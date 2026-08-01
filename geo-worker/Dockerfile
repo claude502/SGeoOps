@@ -33,9 +33,9 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/siteone-crawler; \
     rm -rf /tmp/siteone /tmp/siteone.tar.gz; \
     apk del .siteone-fetch
-RUN addgroup -S sgeo && adduser -S -G sgeo sgeo
-COPY --chown=sgeo:sgeo geo-worker ./geo-worker
-COPY --chown=sgeo:sgeo packages/analysis-contract ./packages/analysis-contract
-COPY --chown=sgeo:sgeo packages/internal-protocol ./packages/internal-protocol
+RUN addgroup -S -g 10001 sgeo && adduser -S -D -H -u 10001 -G sgeo sgeo
+COPY --chown=10001:10001 geo-worker ./geo-worker
+COPY --chown=10001:10001 packages/analysis-contract ./packages/analysis-contract
+COPY --chown=10001:10001 packages/internal-protocol ./packages/internal-protocol
 WORKDIR /app/geo-worker
-USER sgeo
+USER 10001:10001

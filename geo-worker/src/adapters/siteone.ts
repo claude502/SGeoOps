@@ -11,6 +11,8 @@ import {
   type NormalizedObservation,
 } from "@sgeo/analysis-contract";
 
+import { startPinnedOriginProxy, type PinnedOriginProxy } from "./pinned-origin-proxy";
+
 export const SITEONE_BINARY = "siteone-crawler";
 export const SITEONE_SOURCE = "siteone";
 export const SITEONE_SOURCE_VERSION = "2.5.1";
@@ -85,6 +87,7 @@ function nonEmptyIdentifier(value: string, name: string) {
 }
 
 type AuditedOrigin = {
+  protocol: "http:" | "https:";
   hostname: string;
   port: number;
   includeRegex: string;
@@ -187,7 +190,12 @@ function validateUrl(value: string): AuditedOrigin {
   const port = parsed.port === ""
     ? parsed.protocol === "https:" ? 443 : 80
     : Number(parsed.port);
-  return { hostname, port, includeRegex: originRegex(parsed, hostname, port) };
+  return {
+    protocol: parsed.protocol,
+    hostname,
+    port,
+    includeRegex: originRegex(parsed, hostname, port),
+  };
 }
 
 function validateInput(input: SiteOneInput): AuditedOrigin {
@@ -214,7 +222,9 @@ function validateInput(input: SiteOneInput): AuditedOrigin {
   return origin;
 }
 
-async function resolveAuditedOrigin(origin: AuditedOrigin, lookup: SiteOneLookup) {
+type ResolvedAddress = { address: string; family: 4 | 6 };
+
+async function resolveAuditedOrigin(origin: AuditedOrigin, lookup: SiteOneLookup): Promise<ResolvedAddress[]> {
   let addresses: Array<{ address: string; family: number }>;
   try {
     addresses = await lookup(origin.hostname, { all: true, verbatim: true });
@@ -227,7 +237,12 @@ async function resolveAuditedOrigin(origin: AuditedOrigin, lookup: SiteOneLookup
   ) {
     throw new SiteOneInputError("url host must resolve only to globally routable addresses.");
   }
-  return [...new Set(addresses.map(({ address }) => address))];
+  return addresses.reduce<ResolvedAddress[]>((unique, { address, family }) => {
+    if (!unique.some((entry) => entry.address === address)) {
+      unique.push({ address, family: family as 4 | 6 });
+    }
+    return unique;
+  }, []);
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -399,7 +414,10 @@ function structuredTypes(value: unknown): string[] {
 function structuredDataExtra(result: JsonRecord): string | null {
   const extras = result.extras;
   let extracted: unknown;
-  if (Array.isArray(extras)) {
+  if (asRecord(extras) !== null) {
+    // SiteOne v2.5.1 JSON output uses a keyed object when extra columns are configured.
+    extracted = asRecord(extras)?.[SITEONE_STRUCTURED_DATA_COLUMN];
+  } else if (Array.isArray(extras)) {
     for (const extra of extras.slice(0, SITEONE_MAX_EXTRA_COLUMNS)) {
       const record = asRecord(extra);
       if (record !== null && record.name === SITEONE_STRUCTURED_DATA_COLUMN) {
@@ -407,10 +425,6 @@ function structuredDataExtra(result: JsonRecord): string | null {
         break;
       }
     }
-  } else {
-    // SiteOne's historical JSON exporters used a keyed object. Retain only the
-    // single bounded compatibility value rather than accepting arbitrary extras.
-    extracted = asRecord(extras)?.[SITEONE_STRUCTURED_DATA_COLUMN];
   }
   const value = stringValue(extracted);
   return value !== null && value.length <= SITEONE_MAX_STRUCTURED_DATA_BYTES
@@ -632,7 +646,7 @@ function executionFailure(
 function commandArgs(
   input: SiteOneInput,
   origin: AuditedOrigin,
-  resolvedAddresses: string[],
+  proxyPort: number,
   outputFile: string,
   configFile: string,
 ) {
@@ -645,7 +659,7 @@ function commandArgs(
     "--memory-limit=512M",
     `--max-queue-length=${input.maxUrls}`,
     `--max-skipped-urls=${input.maxUrls}`,
-    ...resolvedAddresses.map((address) => `--resolve=${origin.hostname}:${origin.port}:${address}`),
+    `--proxy=127.0.0.1:${proxyPort}`,
     `--include-regex=${origin.includeRegex}`,
     `--output-json-file=${outputFile}`,
     "--output-html-report=",
@@ -719,14 +733,36 @@ export async function executeSiteOne(
   const outputFile = join(workingDirectory, "report.json");
   const configFile = join(workingDirectory, "siteone.conf");
   const execFile = dependencies?.execFile ?? defaultExecFile;
+  const pinnedAddress = resolvedAddresses[0]!;
+  let proxy: PinnedOriginProxy | null = null;
 
   try {
     await writeFile(configFile, "", { mode: 0o600 });
+    try {
+      proxy = await startPinnedOriginProxy({
+        protocol: origin.protocol,
+        hostname: origin.hostname,
+        port: origin.port,
+        address: pinnedAddress.address,
+        family: pinnedAddress.family,
+      });
+    } catch {
+      return {
+        rawReport: null,
+        envelope: executionFailure(
+          input,
+          startedAt,
+          "SITEONE_PROXY_UNAVAILABLE",
+          "SiteOne could not start its pinned origin proxy.",
+          true,
+        ),
+      };
+    }
     let commandFailed = false;
     try {
       await invokeSiteOne(
         execFile,
-        commandArgs(input, origin, resolvedAddresses, outputFile, configFile),
+        commandArgs(input, origin, proxy.port, outputFile, configFile),
         workingDirectory,
         input,
       );
@@ -778,7 +814,11 @@ export async function executeSiteOne(
       envelope: normalizeReport(input, rawReport, startedAt, new Date().toISOString()),
     };
   } finally {
-    await rm(workingDirectory, { recursive: true, force: true });
+    try {
+      await proxy?.close();
+    } finally {
+      await rm(workingDirectory, { recursive: true, force: true });
+    }
   }
 }
 

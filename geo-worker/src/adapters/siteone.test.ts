@@ -130,7 +130,7 @@ function facts(envelope: AnalysisEnvelope, kind: string) {
 }
 
 describe("SiteOne technical audit adapter", () => {
-  it("pins a validated public origin and confines the crawler to injection-safe argv", async () => {
+  it("starts a loopback origin proxy and confines the crawler to injection-safe argv", async () => {
     const calls: ExecCall[] = [];
     const execution = await executeSiteOne(
       {
@@ -152,7 +152,7 @@ describe("SiteOne technical audit adapter", () => {
       "--timeout=30",
       "--workers=1",
       "--max-reqs-per-sec=2",
-      "--resolve=example.test:443:93.184.216.34",
+      expect.stringMatching(/^--proxy=127\.0\.0\.1:\d+$/),
       "--include-regex=^https:\\/\\/example\\.test(?::443)?(?:[\\/?#]|$)",
       "--memory-limit=512M",
       "--max-queue-length=25",
@@ -164,6 +164,7 @@ describe("SiteOne technical audit adapter", () => {
       "--output-html-report=",
       "--output-text-file=",
     ]));
+    expect(calls[0]?.args.some((arg) => arg.startsWith("--resolve="))).toBe(false);
     expect(calls[0]?.args).not.toContain("--output=json");
     expect(calls[0]?.args).toEqual(expect.arrayContaining([
       expect.stringMatching(/^--config-file=.*siteone\.conf$/),
@@ -205,12 +206,18 @@ describe("SiteOne technical audit adapter", () => {
   it("preserves exact raw JSON separately while normalizing all technical facts", async () => {
     const calls: ExecCall[] = [];
     const rawFixture = await readFile(fixtureUrl("success.json"));
+    const fixture = JSON.parse(rawFixture.toString("utf8")) as {
+      results: Array<{ extras: unknown }>;
+    };
     const execution = await executeSiteOne(input, {
       execFile: fixtureExec("success.json", calls),
       lookup: publicLookup,
     });
 
     expect(execution.rawReport).toEqual(new Uint8Array(rawFixture));
+    expect(fixture.results[0]?.extras).toEqual({
+      SgeoStructuredData: "{\"@graph\":[{\"@type\":\"Organization\"},{\"@type\":[\"BreadcrumbList\"]}]}",
+    });
     expect(execution.envelope).toMatchObject({
       source: "siteone",
       sourceVersion: "2.5.1",
@@ -417,7 +424,7 @@ describe("SiteOne technical audit adapter", () => {
     }
   });
 
-  it("supports only the bounded legacy keyed extras shape as a compatibility fallback", async () => {
+  it("normalizes SiteOne's documented keyed extras shape", async () => {
     const execution = await executeSiteOne(input, {
       execFile: jsonExec(JSON.stringify({
         crawler: { name: "SiteOne Crawler", version: "2.5.1.20260627" },
@@ -427,6 +434,27 @@ describe("SiteOne technical audit adapter", () => {
           extras: {
             SgeoStructuredData: "{\"@type\":\"Organization\"}",
           },
+        }],
+      }), []),
+      lookup: publicLookup,
+    });
+
+    expect(facts(execution.envelope, "siteone.structured_data")).toContainEqual(
+      expect.objectContaining({ value: { count: 1, types: ["Organization"] } }),
+    );
+  });
+
+  it("keeps forward-compatible name/value extra arrays bounded", async () => {
+    const execution = await executeSiteOne(input, {
+      execFile: jsonExec(JSON.stringify({
+        crawler: { name: "SiteOne Crawler", version: "2.5.1.20260627" },
+        results: [{
+          url: "https://example.test/",
+          status: "200",
+          extras: [{
+            name: "SgeoStructuredData",
+            value: "{\"@type\":\"Organization\"}",
+          }],
         }],
       }), []),
       lookup: publicLookup,
@@ -472,6 +500,7 @@ describe("SiteOne technical audit adapter", () => {
     const dockerfile = await readFile(new URL("../../Dockerfile", import.meta.url), "utf8");
 
     expect(dockerfile).toContain("ARG TARGETARCH");
+    expect(dockerfile).toContain("addgroup -S -g 10001 sgeo && adduser -S -D -H -u 10001 -G sgeo sgeo");
     expect(dockerfile).toContain(
       "FROM node:24-alpine@sha256:f70403e87646dc51b45295f4b8b70cdad0b63d2297c4c9899119b03f7af7a6b3",
     );
@@ -490,8 +519,15 @@ describe("SiteOne technical audit adapter", () => {
     expect(dockerfile).toContain('echo "Unsupported TARGETARCH: $TARGETARCH"');
     expect(dockerfile).toContain("sha256sum -c -");
     expect(dockerfile).toContain("/tmp/siteone/siteone-crawler/siteone-crawler");
-    expect(dockerfile).toContain("adduser -S -G sgeo sgeo");
-    expect(dockerfile).toContain("USER sgeo");
+    expect(dockerfile).toContain("COPY --chown=10001:10001 geo-worker ./geo-worker");
+    expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).not.toMatch(/^CMD\s/m);
+
+    const deployReadme = await readFile(new URL("../../../deploy/README.md", import.meta.url), "utf8");
+    const compose = await readFile(new URL("../../../docker-compose.yml", import.meta.url), "utf8");
+    expect(deployReadme).toContain("root:10001");
+    expect(deployReadme).toContain("0750");
+    expect(deployReadme).toContain("0640");
+    expect(compose).toContain("root:10001");
   });
 });

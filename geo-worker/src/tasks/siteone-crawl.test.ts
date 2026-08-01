@@ -112,6 +112,7 @@ describe("siteOneCrawlTask", () => {
     let checkpoint: AnalysisEnvelope | null = null;
     const checkpointStore = {
       load: vi.fn(async () => checkpoint),
+      assertCapacity: vi.fn(async () => {}),
       save: vi.fn(async (saved: AnalysisEnvelope) => {
         checkpoint = saved;
       }),
@@ -152,7 +153,7 @@ describe("siteOneCrawlTask", () => {
   });
 
   it("persists and flushes Trigger metadata checkpoints only after validating the envelope", async () => {
-    const state: Record<string, unknown> = {};
+    const state: Record<string, unknown> = { unrelated: "preserve-me" };
     triggerMocks.metadata.current.mockReturnValue(state);
     triggerMocks.metadata.flush.mockResolvedValue(undefined);
     triggerMocks.metadata.set.mockImplementation((key: string, value: unknown) => {
@@ -178,5 +179,30 @@ describe("siteOneCrawlTask", () => {
     );
     expect(triggerMocks.metadata.flush).toHaveBeenCalledTimes(1);
     await expect(checkpoint.load(input)).resolves.toEqual(saved);
+    expect(state.unrelated).toBe("preserve-me");
+  });
+
+  it("rejects oversized total Trigger metadata before publishing an artifact", async () => {
+    const metadataApi = {
+      current: vi.fn(() => ({ unrelated: "x".repeat(256 * 1024) })),
+      set: vi.fn(),
+    };
+    const rawReport = new TextEncoder().encode('{"crawler":"siteone"}\n');
+    const uploadArtifact = vi.fn(async () => ({
+      uri: "artifact://run_123/siteone-report.json",
+      checksum: `sha256:${"d".repeat(64)}`,
+      mediaType: "application/json",
+      byteSize: rawReport.byteLength,
+    }));
+    const checkpoint = createTriggerMetadataCheckpoint(metadataApi);
+
+    await expect(runSiteOneCrawl(input, {
+      execute: vi.fn(async () => ({ envelope, rawReport })),
+      client: { uploadArtifact, ingest: vi.fn() },
+      checkpoint,
+    })).rejects.toThrow("metadata limit");
+
+    expect(uploadArtifact).not.toHaveBeenCalled();
+    expect(metadataApi.set).not.toHaveBeenCalled();
   });
 });
