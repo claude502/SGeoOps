@@ -92,14 +92,32 @@ function savedCheckpoint() {
   };
 }
 
-async function withInternalTaskEnvironment(run: () => Promise<void>) {
+type InternalTaskEnvironment = {
+  baseUrl?: string | null;
+  secret?: string;
+  secretFile?: string | null;
+  useMissingSecretFile?: boolean;
+};
+
+async function withInternalTaskEnvironment(
+  run: () => Promise<void>,
+  options: InternalTaskEnvironment = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "sgeo-siteone-task-"));
-  const secretFile = join(directory, "internal-secret");
+  const defaultSecretFile = join(directory, "internal-secret");
   const previousUrl = process.env.SGEO_INTERNAL_URL;
   const previousSecretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
-  await writeFile(secretFile, "test-secret\n", { mode: 0o600 });
-  process.env.SGEO_INTERNAL_URL = "https://geo-ops.test";
-  process.env.SGEO_INTERNAL_SECRET_FILE = secretFile;
+  const baseUrl = options.baseUrl === undefined ? "https://geo-ops.test" : options.baseUrl;
+  const secretFile = options.secretFile === undefined
+    ? options.useMissingSecretFile
+      ? join(directory, "missing-internal-secret")
+      : defaultSecretFile
+    : options.secretFile;
+  await writeFile(defaultSecretFile, options.secret ?? "test-secret\n", { mode: 0o600 });
+  if (baseUrl === null) delete process.env.SGEO_INTERNAL_URL;
+  else process.env.SGEO_INTERNAL_URL = baseUrl;
+  if (secretFile === null) delete process.env.SGEO_INTERNAL_SECRET_FILE;
+  else process.env.SGEO_INTERNAL_SECRET_FILE = secretFile;
   try {
     await run();
   } finally {
@@ -281,5 +299,20 @@ describe("siteOneCrawlTask", () => {
         retryable: true,
       });
     });
+  });
+
+  it.each([
+    ["a missing SGeoOps URL", { baseUrl: null }],
+    ["a missing internal secret path", { secretFile: null }],
+    ["an unreadable internal secret file", { useMissingSecretFile: true }],
+    ["an empty internal secret", { secret: "\n" }],
+  ] as const)("aborts the captured Trigger task run for %s", async (_label, options) => {
+    const taskRun = capturedTaskRun();
+
+    await withInternalTaskEnvironment(async () => {
+      triggerMocks.metadata.current.mockReturnValue(savedCheckpoint());
+
+      await expect(taskRun(input)).rejects.toMatchObject({ name: "AbortTaskRunError" });
+    }, options);
   });
 });

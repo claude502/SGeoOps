@@ -367,7 +367,7 @@ chown root:10001 secrets/sgeo_internal_secret
 chmod 0640 secrets/sgeo_internal_secret
 ```
 
-生产 Compose 将该目录只读挂载为 `/run/secrets`，并将 artifact named volume 挂载为 `/var/lib/sgeo/artifacts`。`geo-worker` 只使用 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE` 与平台交互；不要为它设置 `DATABASE_URL`。
+生产 Compose 将该目录只读挂载给 `geo-ops`，并将 artifact named volume 挂载为 `/var/lib/sgeo/artifacts`。它不启动 `geo-worker`；单独 provision 的 Trigger worker 只能使用 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE` 与平台交互，绝不设置 `DATABASE_URL`。production worker runbook 在 [Trigger.dev v4 Production Precondition](../deploy/README.md#triggerdev-v4-production-precondition) 所述的 Phase 2 Task 9 交付前不可假定已经部署。
 
 ### 11.1 创建首位管理员
 
@@ -497,7 +497,7 @@ PRE_RESTORE_BACKUP="$(find "$PRE_RESTORE_DIR" -maxdepth 1 -type f -name 'geo_con
 test -n "$PRE_RESTORE_BACKUP"
 gzip -t "$PRE_RESTORE_BACKUP"
 
-docker compose --env-file .env -f deploy/docker-compose.prod.example.yml stop geo-ops geo-worker
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml stop geo-ops
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml exec -T postgres sh -ceu \
   'dropdb -U "$POSTGRES_USER" --if-exists "$POSTGRES_DB"; createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
@@ -506,7 +506,7 @@ gzip -dc "$BACKUP" | \
     'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-`set -euo pipefail` 使 `gzip` 或 `psql` 任一失败都让 restore command 失败，不能把截断解压当作成功。preflight 或 safety backup 失败时 live database 尚未改动，停止并修复 archive 或 backup storage。drop/create/restore 中任何一步失败时，保持 `geo-ops` 与 `geo-worker` 停止，不要运行 migration 或启动应用；用已验证的 `$PRE_RESTORE_BACKUP` 作为 `BACKUP` 重跑同一 procedure，直到 database 完整恢复。
+`set -euo pipefail` 使 `gzip` 或 `psql` 任一失败都让 restore command 失败，不能把截断解压当作成功。preflight 或 safety backup 失败时 live database 尚未改动，停止并修复 archive 或 backup storage。drop/create/restore 中任何一步失败时，保持 `geo-ops` 停止，不要运行 migration 或启动应用；用已验证的 `$PRE_RESTORE_BACKUP` 作为 `BACKUP` 重跑同一 procedure，直到 database 完整恢复。
 
 artifact archive 也必须先验证。此 procedure 在停写后创建独立 rollback archive，将 candidate 解压到 `artifact-data` volume 内的 staging directory，验证后才移动 live entries。不要执行 `docker compose down -v`。
 
@@ -533,7 +533,7 @@ else
   printf 'Selected artifact archive has no metadata.json; record the no-artifact exception.\n' >&2
 fi
 
-docker compose --env-file .env -f deploy/docker-compose.prod.example.yml stop geo-ops geo-worker
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml stop geo-ops
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T geo-ops \
   sh -ceu 'tar -C "$SGEO_ARTIFACT_ROOT" -czf - .' > "$ARTIFACT_ROLLBACK"
 chmod 600 "$ARTIFACT_ROLLBACK"
@@ -571,8 +571,8 @@ stop_after_switch_failure() {
   status=$?
   trap - ERR
   docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
-    stop geo-worker geo-ops || true
-  printf 'Post-switch verification or worker observation failed; services stopped. Keep .restore-previous-%s and %s for recovery.\n' \
+    stop geo-ops || true
+  printf 'Post-switch platform verification failed; geo-ops stopped. Keep .restore-previous-%s and %s for recovery.\n' \
     "$RESTORE_ID" "$ARTIFACT_ROLLBACK" >&2
   exit "$status"
 }
@@ -616,32 +616,15 @@ if [ -n "$VERIFY_ARTIFACT_URI" ]; then
     ' "$VERIFY_ARTIFACT_URI"
 fi
 
-printf 'Platform validation passed. Begin separately monitored geo-worker rollout.\n'
-docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-worker
-worker_observations=0
-while [ "$worker_observations" -lt 6 ]; do
-  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps geo-worker
-  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
-    logs --tail 20 geo-worker
-  if ! docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
-    ps --status running --services geo-worker | grep -qx 'geo-worker'
-  then
-    printf 'geo-worker is restarting, exited, or not running; stopping the recovered platform.\n' >&2
-    false
-  fi
-  worker_observations=$((worker_observations + 1))
-  if [ "$worker_observations" -lt 6 ]; then
-    sleep 5
-  fi
-done
 trap - ERR
+printf 'Platform validation passed for the production Compose stack.\n'
 ```
 
-`geo-ops` 启动后最多等待 60 秒（30 次、每次 2 秒），使用 Compose healthcheck 同一 Node `fetch` contract 验证 `/api/healthz`。worker 在 health 和 representative artifact read 都成功前保持停止。artifact verification 以 `metadata.json` 的 canonical URI 定位其 SHA-256 physical object，读取 `payload` 并比对 metadata 的 version、URI、byte size 和 checksum，不依赖不存在的 public artifact endpoint。若所选 archive 没有 `metadata.json`，procedure 会记录 no-artifact exception，不执行 read verification；在恢复记录中注明该条件，且不要声称已完成 artifact read。
+`geo-ops` 启动后最多等待 60 秒（30 次、每次 2 秒），使用 Compose healthcheck 同一 Node `fetch` contract 验证 `/api/healthz`。artifact verification 以 `metadata.json` 的 canonical URI 定位其 SHA-256 physical object，读取 `payload` 并比对 metadata 的 version、URI、byte size 和 checksum，不依赖不存在的 public artifact endpoint。若所选 archive 没有 `metadata.json`，procedure 会记录 no-artifact exception，不执行 read verification；在恢复记录中注明该条件，且不要声称已完成 artifact read。
 
-platform validation 完成后，`geo-worker` 是单独的 monitored rollout：上述命令启动它后连续 6 次（每 5 秒）显示 `docker compose ... ps geo-worker` 和最后 20 行 log，并确认每次都是 running。任一次显示 restarting、exited 或未运行时，`false` 触发仍在作用的 `ERR` trap，停止 `geo-worker` 与 `geo-ops`，并保留 `.restore-previous-*` 和 rollback archive。第六次确认 running 后立刻 `trap - ERR`，所以后续 cleanup 的无关失败不会停止已恢复服务。worker 只有 `restart: unless-stopped`，没有 healthcheck 或 readiness endpoint；该 trap 只能观察 post-switch health/read 和这段同步 bounded rollout，不能观察 trap 清除或 shell 结束后的异步 crash。后续仍须由 operator 持续观察 `docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps geo-worker` 和 `logs --tail 20 geo-worker`，直到未来加入 worker healthcheck；在此之前不要把 detached launch 或短时 running status 记录为 recovered worker service state。
+当前 production Compose 不定义 `geo-worker`，因此本 procedure 只恢复并验证 `geo-ops`。如另行 provision 了 Trigger worker，database/artifact restore 前后的 quiesce 和 recovery 必须由其 deployment owner 在独立环境中协调。遵循 [Trigger.dev v4 Production Precondition](../deploy/README.md#triggerdev-v4-production-precondition)；具体 self-host production runbook 在 Phase 2 Task 9 交付前不可假定已经部署。
 
-selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持服务停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch、platform health/read 或 bounded worker observation 任一步失败时，`ERR` trap 会停止 `geo-ops` 和 `geo-worker`，并保留 `.restore-previous-$RESTORE_ID` 与 `$ARTIFACT_ROLLBACK`；不要手动启动服务，使用 rollback archive 重跑 staging procedure。成功恢复后，再清理 volume 内的 previous directory：
+selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持 `geo-ops` 停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch、platform health/read 任一步失败时，`ERR` trap 会停止 `geo-ops`，并保留 `.restore-previous-$RESTORE_ID` 与 `$ARTIFACT_ROLLBACK`；不要手动启动服务，使用 rollback archive 重跑 staging procedure。成功恢复后，再清理 volume 内的 previous directory：
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T \

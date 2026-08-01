@@ -35,15 +35,31 @@ export type SiteOneCrawlDependencies = {
   checkpoint?: SiteOneDeliveryCheckpoint;
 };
 
+export class SiteOneTaskConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SiteOneTaskConfigurationError";
+  }
+}
+
 async function defaultClient(): Promise<SiteOneOpsClient> {
   const baseUrl = process.env.SGEO_INTERNAL_URL;
   const secretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
-  if (!baseUrl || !secretFile) {
-    throw new Error("SGEO_INTERNAL_URL and SGEO_INTERNAL_SECRET_FILE are required.");
+  if (!baseUrl) {
+    throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_URL is required.");
   }
-  const secret = (await readFile(secretFile, "utf8")).trim();
+  if (!secretFile) {
+    throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE is required.");
+  }
+
+  let secret: string;
+  try {
+    secret = (await readFile(secretFile, "utf8")).trim();
+  } catch {
+    throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE could not be read.");
+  }
   if (secret.length === 0) {
-    throw new Error("SGEO_INTERNAL_SECRET_FILE must contain a secret.");
+    throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE must contain a secret.");
   }
   return new SgeoOpsClient({ baseUrl, secret });
 }
@@ -199,6 +215,7 @@ async function runSiteOneCrawlTask(input: SiteOneInput) {
   } catch (error) {
     if (
       error instanceof SiteOneInputError ||
+      error instanceof SiteOneTaskConfigurationError ||
       (error instanceof SgeoOpsClientError && !error.retryable)
     ) {
       throw new AbortTaskRunError(error.message);

@@ -35,6 +35,13 @@ function serviceBlock(compose: string, serviceName: string): string {
   return lines.slice(start, end === -1 ? undefined : end).join("\n");
 }
 
+function markdownSection(document: string, heading: string): string {
+  const start = document.indexOf(heading);
+  if (start === -1) throw new Error(`Missing documentation section: ${heading}`);
+  const nextHeading = document.indexOf("\n## ", start + heading.length);
+  return document.slice(start, nextHeading === -1 ? undefined : nextHeading);
+}
+
 function publishesPort(compose: string, port: number): boolean {
   const shortSyntax = new RegExp(
     `^\\s*-\\s*["']?(?:[0-9.]+:)?${port}:${port}["']?\\s*$`,
@@ -168,6 +175,24 @@ describe("Compose worker isolation policy", () => {
     expect(readme).toContain("Trigger.dev v4.5.9");
     expect(readme).toContain("Phase 2 Task 9");
     expect(readme).toContain("`TRIGGER_API_URL` and `TRIGGER_ACCESS_TOKEN`");
+  });
+
+  it("keeps current restore procedures inside the production Compose boundary", async () => {
+    const [sop, reference] = await Promise.all([
+      readFile(resolve(process.cwd(), "docs/system-sop.md"), "utf8"),
+      readFile(resolve(process.cwd(), "docs/system-reference.md"), "utf8"),
+    ]);
+    const restoreSop = markdownSection(sop, "### 9.4 PostgreSQL、artifact 与应用回退");
+    const restoreReference = markdownSection(reference, "### 11.5 恢复 PostgreSQL 与 artifacts");
+
+    for (const procedure of [restoreSop, restoreReference]) {
+      expect(procedure).not.toMatch(/\bup\s+-d\s+geo-worker\b/);
+      expect(procedure).not.toMatch(/\bstop\s+geo-worker\b/);
+      expect(procedure).not.toMatch(/\bps\s+(?:--[^\n]+\s+)?geo-worker\b/);
+      expect(procedure).not.toMatch(/\blogs(?:\s+--tail\s+\d+)?\s+geo-worker\b/);
+      expect(procedure).toContain("../deploy/README.md#triggerdev-v4-production-precondition");
+      expect(procedure).toContain("Phase 2 Task 9");
+    }
   });
 
   it("does not publish PostgreSQL or Redis from production Compose", async () => {
