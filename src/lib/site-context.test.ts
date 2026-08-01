@@ -53,6 +53,13 @@ describe("site context helpers", () => {
     expect(mocks.resolveSiteByHost).toHaveBeenCalledWith("txpuro.com");
   });
 
+  it("fails closed when the configured site repository cannot resolve a public host", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://geo.example/sgeo");
+    mocks.resolveSiteByHost.mockRejectedValue(new Error("database unavailable"));
+
+    await expect(resolvePublicSite("txpuro.com")).resolves.toBeNull();
+  });
+
   it("resolves the Txpuro guide route through the public-site resolver", async () => {
     await expect(
       resolvePublicRoute("txpuro.com", "/guides/pricing"),

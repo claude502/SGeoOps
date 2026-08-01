@@ -70,14 +70,11 @@ export async function resolvePublicSite(
 
   if (isDatabaseConfigured()) {
     try {
-      const site = await organizationRepository.resolveSiteByHost(
+      return await organizationRepository.resolveSiteByHost(
         normalizedHost,
       );
-      if (site) {
-        return site;
-      }
     } catch {
-      return staticTxpuroSiteForHost(normalizedHost);
+      return null;
     }
   }
 

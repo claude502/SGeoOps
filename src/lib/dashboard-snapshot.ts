@@ -1,10 +1,18 @@
-import { PrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
-import { listPersistentChannelVariants, listPersistentGeoRuns } from "@/lib/geo-persistence";
+import type { AccessScope } from "@/lib/authorization";
+import { PrismaBusinessRepository } from "@/lib/business/repository";
 import { getDashboardSnapshot } from "@/lib/geo-store";
 import { isDatabaseConfigured } from "@/lib/prisma";
-import { listRecentAuditEvents } from "@/lib/audit-log";
 import { txpuroProject } from "@/lib/txpuro";
-import type { ContentAsset, DashboardSnapshot, GeoProject, ProviderHealth } from "@/types/geo";
+import type {
+  AuditEventView,
+  ChannelVariant,
+  ContentAsset,
+  DashboardSnapshot,
+  GEORun,
+  GeoProject,
+  GeoRecommendation,
+  ProviderHealth,
+} from "@/types/geo";
 import { providers } from "@/types/geo";
 
 function splitList(value: string | undefined) {
@@ -78,34 +86,78 @@ function providerHealthFromEnv(): ProviderHealth[] {
   }));
 }
 
-export async function getRuntimeDashboardSnapshot(): Promise<DashboardSnapshot> {
+function toIso(value: Date | string | null) {
+  if (!value) {
+    return null;
+  }
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function recommendations(value: unknown): GeoRecommendation[] {
+  return Array.isArray(value) ? (value as GeoRecommendation[]) : [];
+}
+
+function serializeRun(run: {
+  createdAt: Date | string;
+  recommendations: unknown;
+  provider: string;
+  mode: string;
+  [key: string]: unknown;
+}): GEORun {
+  return {
+    ...run,
+    provider: run.provider as GEORun["provider"],
+    mode: run.mode as GEORun["mode"],
+    recommendations: recommendations(run.recommendations),
+    createdAt: toIso(run.createdAt) ?? new Date().toISOString(),
+  } as GEORun;
+}
+
+function serializeVariant(variant: {
+  scheduledAt: Date | string | null;
+  platform: string;
+  status: string;
+  [key: string]: unknown;
+}): ChannelVariant {
+  return {
+    ...variant,
+    platform: variant.platform as ChannelVariant["platform"],
+    status: variant.status as ChannelVariant["status"],
+    scheduledAt: toIso(variant.scheduledAt),
+  } as ChannelVariant;
+}
+
+function serializeAuditEvent(event: {
+  outcome: string;
+  createdAt: Date | string;
+  [key: string]: unknown;
+}): AuditEventView {
+  return {
+    ...event,
+    outcome: event.outcome === "failure" ? "failure" : "success",
+    createdAt: toIso(event.createdAt) ?? new Date().toISOString(),
+  } as AuditEventView;
+}
+
+export async function getRuntimeDashboardSnapshot(
+  scope?: AccessScope,
+): Promise<DashboardSnapshot> {
   const memorySnapshot = getDashboardSnapshot();
 
-  if (!isDatabaseConfigured()) {
+  if (!isDatabaseConfigured() || !scope?.clientIds.length) {
     return memorySnapshot;
   }
 
-  const repository = new PrismaGeoFlowBridgeRepository();
-  const [geoFlowLinks, assets] = await Promise.all([
-    repository.listLinks().catch(() => []),
-    repository.listContentAssets().catch(() => []),
-  ]);
-  const project = getProjectFromEnvironment(assets);
-  const assetIds = new Set(assets.map((asset) => asset.id));
-  const [runs, variants, auditEvents] = await Promise.all([
-    listPersistentGeoRuns(project.id).catch(() => []),
-    listPersistentChannelVariants([...assetIds]).catch(() => []),
-    listRecentAuditEvents(20).catch(() => []),
-  ]);
+  const data = await new PrismaBusinessRepository().listDashboardData(scope);
 
   return {
-    project,
+    project: getProjectFromEnvironment(data.assets),
     providerHealth: providerHealthFromEnv(),
-    runs,
-    assets,
-    variants,
-    geoFlowLinks,
-    auditEvents,
+    runs: data.runs.map(serializeRun),
+    assets: data.assets,
+    variants: data.variants.map(serializeVariant),
+    geoFlowLinks: data.links,
+    auditEvents: data.audits.map(serializeAuditEvent),
   };
 }
 

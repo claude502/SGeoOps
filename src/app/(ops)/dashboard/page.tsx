@@ -17,5 +17,12 @@ export default async function TxpuroDashboardPage() {
     notFound();
   }
 
-  return <GeoDashboard initialSnapshot={await getRuntimeDashboardSnapshot()} />;
+  return (
+    <GeoDashboard
+      initialSnapshot={await getRuntimeDashboardSnapshot({
+        ...scope,
+        clientIds: [TXPURO_CLIENT_ID],
+      })}
+    />
+  );
 }
