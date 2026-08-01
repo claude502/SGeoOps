@@ -1,5 +1,6 @@
 import { execFile as defaultExecFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, mkdtemp, open as defaultOpen, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -22,6 +23,7 @@ export const UNLIGHTHOUSE_BINARY = "unlighthouse-ci";
 export const UNLIGHTHOUSE_SOURCE = "unlighthouse";
 export const UNLIGHTHOUSE_SOURCE_VERSION = "0.18.0";
 export const UNLIGHTHOUSE_ADAPTER_VERSION = "1.0.0";
+export const UNLIGHTHOUSE_DEFAULT_CHROMIUM_EXECUTABLE_PATH = "/usr/bin/chromium";
 export const UNLIGHTHOUSE_ARTIFACT_NAME = "unlighthouse-json-expanded.json";
 export const UNLIGHTHOUSE_ARTIFACT_MEDIA_TYPE = "application/json";
 export const UNLIGHTHOUSE_MAX_TEMPLATE_ROUTES = 10;
@@ -68,6 +70,7 @@ export class UnlighthouseExecutionError extends Error {
 type UnlighthouseDependencies = {
   execFile?: typeof import("node:child_process").execFile;
   lookup?: PublicOriginLookup;
+  openReportFile?: typeof defaultOpen;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -76,6 +79,43 @@ function nonEmptyIdentifier(value: string, name: string) {
   if (value.length === 0 || value.length > 200 || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new UnlighthouseInputError(`${name} must be a bounded, non-control string.`);
   }
+}
+
+function requiredString(value: unknown, name: string) {
+  if (typeof value !== "string") {
+    throw new UnlighthouseInputError(`${name} must be a string.`);
+  }
+  return value;
+}
+
+/** Parses untrusted Trigger payloads before the adapter can perform DNS or process I/O. */
+export function parseUnlighthouseInput(value: unknown): UnlighthouseInput {
+  const record = asRecord(value);
+  if (record === null) {
+    throw new UnlighthouseInputError("Unlighthouse task input must be an object.");
+  }
+  if (record.siteMarketId !== null && typeof record.siteMarketId !== "string") {
+    throw new UnlighthouseInputError("siteMarketId must be a string or null.");
+  }
+  if (!Array.isArray(record.templateRoutes) || record.templateRoutes.some((route) => typeof route !== "string")) {
+    throw new UnlighthouseInputError("templateRoutes must be an array of strings.");
+  }
+  if (typeof record.timeoutSeconds !== "number") {
+    throw new UnlighthouseInputError("timeoutSeconds must be a number.");
+  }
+
+  const input: UnlighthouseInput = {
+    runId: requiredString(record.runId, "runId"),
+    clientId: requiredString(record.clientId, "clientId"),
+    brandId: requiredString(record.brandId, "brandId"),
+    siteId: requiredString(record.siteId, "siteId"),
+    siteMarketId: record.siteMarketId,
+    url: requiredString(record.url, "url"),
+    templateRoutes: record.templateRoutes,
+    timeoutSeconds: record.timeoutSeconds,
+  };
+  validateInput(input);
+  return input;
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -395,6 +435,7 @@ function buildConfig(
   proxyPort: number,
   browserCacheDirectory: string,
   timeoutSeconds: number,
+  chromiumExecutablePath: string,
 ) {
   return `export default ${JSON.stringify({
     urls: templateRoutes,
@@ -409,6 +450,7 @@ function buildConfig(
       samples: 1,
     },
     puppeteerOptions: {
+      executablePath: chromiumExecutablePath,
       userDataDir: browserCacheDirectory,
       args: [
         `--proxy-server=http://127.0.0.1:${proxyPort}`,
@@ -427,7 +469,11 @@ function buildConfig(
   })};\n`;
 }
 
-function proxyEnvironment(proxyPort: number, workingDirectory: string) {
+function proxyEnvironment(
+  proxyPort: number,
+  workingDirectory: string,
+  chromiumExecutablePath: string,
+) {
   const proxyUrl = `http://127.0.0.1:${proxyPort}`;
   const nodeOptions = `${process.env.NODE_OPTIONS ?? ""} --use-env-proxy`.trim();
   return {
@@ -435,6 +481,7 @@ function proxyEnvironment(proxyPort: number, workingDirectory: string) {
     HOME: workingDirectory,
     XDG_CACHE_HOME: join(workingDirectory, "cache"),
     PUPPETEER_CACHE_DIR: join(workingDirectory, "browser-cache"),
+    PUPPETEER_EXECUTABLE_PATH: chromiumExecutablePath,
     HTTP_PROXY: proxyUrl,
     HTTPS_PROXY: proxyUrl,
     NO_PROXY: "",
@@ -452,6 +499,7 @@ async function invokeUnlighthouse(
   configFile: string,
   proxyPort: number,
   workingDirectory: string,
+  chromiumExecutablePath: string,
 ) {
   const args = [
     `--site=${input.url}`,
@@ -465,7 +513,7 @@ async function invokeUnlighthouse(
       shell: false,
       timeout: executionTimeout(input),
       maxBuffer: 1_024 * 1_024,
-      env: proxyEnvironment(proxyPort, workingDirectory),
+      env: proxyEnvironment(proxyPort, workingDirectory, chromiumExecutablePath),
     }, (error) => {
       if (error === null) resolveCommand();
       else rejectCommand(error);
@@ -479,19 +527,56 @@ type RawReport =
   | { kind: "too_large" }
   | { kind: "invalid_output" };
 
-async function readRawReport(outputDirectory: string): Promise<RawReport> {
+function isMissingFile(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+async function readRawReport(
+  outputDirectory: string,
+  openReportFile: typeof defaultOpen = defaultOpen,
+): Promise<RawReport> {
   const outputFile = resolve(outputDirectory, UNLIGHTHOUSE_REPORT_FILE);
   if (dirname(outputFile) !== resolve(outputDirectory)) return { kind: "invalid_output" };
+
+  let handle: Awaited<ReturnType<typeof defaultOpen>> | null = null;
   try {
-    const metadata = await lstat(outputFile);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) return { kind: "invalid_output" };
-    if (metadata.size > UNLIGHTHOUSE_MAX_REPORT_BYTES) return { kind: "too_large" };
-    return { kind: "ok", rawReport: new Uint8Array(await readFile(outputFile)) };
-  } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-      return { kind: "missing" };
+    // Open once without following a symlink, then validate and read only that descriptor.
+    handle = await openReportFile(outputFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const initial = await handle.stat();
+    if (!initial.isFile()) return { kind: "invalid_output" };
+    if (initial.size > UNLIGHTHOUSE_MAX_REPORT_BYTES) return { kind: "too_large" };
+
+    const buffer = Buffer.alloc(initial.size);
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, offset);
+      if (bytesRead <= 0) return { kind: "invalid_output" };
+      offset += bytesRead;
     }
+
+    const final = await handle.stat();
+    if (!final.isFile()) return { kind: "invalid_output" };
+    if (final.size > UNLIGHTHOUSE_MAX_REPORT_BYTES) return { kind: "too_large" };
+    if (
+      final.dev !== initial.dev ||
+      final.ino !== initial.ino ||
+      final.size !== initial.size ||
+      offset !== final.size
+    ) {
+      return { kind: "invalid_output" };
+    }
+    return { kind: "ok", rawReport: new Uint8Array(buffer) };
+  } catch (error) {
+    if (isMissingFile(error)) return { kind: "missing" };
     return { kind: "invalid_output" };
+  } finally {
+    if (handle !== null) {
+      try {
+        await handle.close();
+      } catch {
+        // A close failure cannot make an unverified report valid.
+      }
+    }
   }
 }
 
@@ -499,7 +584,10 @@ export async function executeUnlighthouse(
   input: UnlighthouseInput,
   dependencies: UnlighthouseDependencies = {},
 ): Promise<UnlighthouseExecution> {
-  const validated = validateInput(input);
+  const parsedInput = parseUnlighthouseInput(input);
+  const validated = validateInput(parsedInput);
+  const chromiumExecutablePath = process.env.PUPPETEER_EXECUTABLE_PATH ??
+    UNLIGHTHOUSE_DEFAULT_CHROMIUM_EXECUTABLE_PATH;
   let resolvedAddresses;
   try {
     resolvedAddresses = await resolvePublicOrigin(validated.origin, dependencies.lookup);
@@ -533,28 +621,35 @@ export async function executeUnlighthouse(
     }
     await writeFile(
       configFile,
-      buildConfig(validated.templateRoutes, proxy.port, browserCacheDirectory, input.timeoutSeconds),
+      buildConfig(
+        validated.templateRoutes,
+        proxy.port,
+        browserCacheDirectory,
+        parsedInput.timeoutSeconds,
+        chromiumExecutablePath,
+      ),
       { mode: 0o600 },
     );
     let commandFailed = false;
     try {
       await invokeUnlighthouse(
         execFile,
-        input,
+        parsedInput,
         outputDirectory,
         configFile,
         proxy.port,
         workingDirectory,
+        chromiumExecutablePath,
       );
     } catch {
       commandFailed = true;
     }
-    const report = await readRawReport(outputDirectory);
+    const report = await readRawReport(outputDirectory, dependencies.openReportFile);
     if (report.kind === "too_large") {
       return {
         rawReport: null,
         envelope: failedEnvelope(
-          input,
+          parsedInput,
           startedAt,
           "UNLIGHTHOUSE_REPORT_TOO_LARGE",
           "Unlighthouse produced a JSON report larger than the 64 MiB safety limit.",
@@ -566,7 +661,7 @@ export async function executeUnlighthouse(
       return {
         rawReport: null,
         envelope: failedEnvelope(
-          input,
+          parsedInput,
           startedAt,
           "UNLIGHTHOUSE_INVALID_OUTPUT",
           "Unlighthouse produced an unsafe report output path or type.",
@@ -588,7 +683,7 @@ export async function executeUnlighthouse(
     }
     return {
       rawReport: report.rawReport,
-      envelope: normalizeReport(input, validated.templateRoutes, report.rawReport, startedAt),
+      envelope: normalizeReport(parsedInput, validated.templateRoutes, report.rawReport, startedAt),
     };
   } finally {
     try {

@@ -7,7 +7,9 @@ COPY packages/analysis-contract/package.json ./packages/analysis-contract/packag
 COPY packages/internal-protocol/package.json ./packages/internal-protocol/package.json
 RUN npm ci --ignore-scripts --workspace geo-worker
 RUN set -eux; \
-    apk add --no-cache ca-certificates; \
+    apk add --no-cache ca-certificates chromium; \
+    test -x /usr/bin/chromium; \
+    /usr/bin/chromium --version; \
     apk add --no-cache --virtual .siteone-fetch curl; \
     case "$TARGETARCH" in \
       amd64) \
@@ -33,6 +35,7 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/siteone-crawler; \
     rm -rf /tmp/siteone /tmp/siteone.tar.gz; \
     apk del .siteone-fetch
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 RUN addgroup -S -g 10001 sgeo && adduser -S -D -H -u 10001 -G sgeo sgeo
 COPY --chown=10001:10001 geo-worker ./geo-worker
 COPY --chown=10001:10001 packages/analysis-contract ./packages/analysis-contract

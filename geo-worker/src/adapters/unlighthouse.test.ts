@@ -1,4 +1,5 @@
-import { access, readFile, truncate, writeFile } from "node:fs/promises";
+import { access, readFile, symlink, truncate, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -115,6 +116,8 @@ describe("Unlighthouse adapter", () => {
     expect(command[0]?.config).toContain('"crawler":false');
     expect(command[0]?.config).toContain('"discovery":false');
     expect(command[0]?.config).toContain('"--proxy-server=http://127.0.0.1:');
+    expect(command[0]?.config).toContain('"executablePath":"/usr/bin/chromium"');
+    expect(command[0]?.env?.PUPPETEER_EXECUTABLE_PATH).toBe("/usr/bin/chromium");
     expect(command[0]?.env).toMatchObject({
       NODE_OPTIONS: expect.stringContaining("--use-env-proxy"),
       HTTP_PROXY: expect.stringMatching(/^http:\/\/127\.0\.0\.1:/),
@@ -257,6 +260,22 @@ describe("Unlighthouse adapter", () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed runtime input before DNS resolution or CLI execution", async () => {
+    const execFile = vi.fn();
+    const lookup = vi.fn();
+
+    await expect(executeUnlighthouse({
+      ...input,
+      runId: 7,
+    } as unknown as UnlighthouseInput, {
+      execFile: execFile as unknown as typeof import("node:child_process").execFile,
+      lookup,
+    })).rejects.toBeInstanceOf(UnlighthouseInputError);
+
+    expect(lookup).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
   it("rejects absolute, cross-origin, control-character, and unbounded template routes before spawning", async () => {
     const execFile = vi.fn();
     const invalidInputs = [
@@ -326,6 +345,77 @@ describe("Unlighthouse adapter", () => {
       envelope: {
         status: "failed",
         error: { code: "UNLIGHTHOUSE_REPORT_TOO_LARGE", retryable: false },
+      },
+    });
+  });
+
+  it("rejects a symlink ci-result.json instead of following an untrusted output path", async () => {
+    const rawReport = await fixture("success.json");
+    const execFile = ((_file: unknown, args: unknown, _options: unknown, callback: unknown) => {
+      const outputPath = (args as string[]).find((arg) => arg.startsWith("--output-path="))?.slice(14);
+      if (outputPath === undefined) throw new Error("missing output path");
+      const target = join(outputPath, "other-report.json");
+      void writeFile(target, rawReport)
+        .then(() => symlink("other-report.json", join(outputPath, "ci-result.json")))
+        .then(() => (callback as (error: Error | null) => void)(null));
+      return {};
+    }) as unknown as typeof import("node:child_process").execFile;
+
+    const result = await executeUnlighthouse(input, { execFile, lookup: publicLookup() });
+
+    expect(result).toMatchObject({
+      rawReport: null,
+      envelope: {
+        status: "failed",
+        error: { code: "UNLIGHTHOUSE_INVALID_OUTPUT", retryable: false },
+      },
+    });
+  });
+
+  it.each([
+    ["grows", 1, 0],
+    ["shrinks", -1, 0],
+    ["changes descriptor identity", 0, 1],
+  ])("rejects a report that %s after a same-descriptor read and closes the handle", async (
+    _scenario,
+    sizeDelta,
+    inodeDelta,
+  ) => {
+    const rawReport = await fixture("success.json");
+    const handle = {
+      stat: vi.fn()
+        .mockResolvedValueOnce({ isFile: () => true, size: rawReport.byteLength, dev: 1, ino: 1 })
+        .mockResolvedValueOnce({
+          isFile: () => true,
+          size: rawReport.byteLength + sizeDelta,
+          dev: 1,
+          ino: 1 + inodeDelta,
+        }),
+      read: vi.fn(async (buffer: Buffer) => {
+        rawReport.copy(buffer);
+        return { bytesRead: rawReport.byteLength, buffer };
+      }),
+      close: vi.fn(async () => {}),
+    };
+    const openReportFile = vi.fn(async () => handle);
+
+    const result = await executeUnlighthouse(input, {
+      execFile: successfulCli(rawReport, []),
+      lookup: publicLookup(),
+      openReportFile: openReportFile as never,
+    });
+
+    expect(openReportFile).toHaveBeenCalledWith(
+      expect.stringMatching(/ci-result\.json$/),
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    expect(handle.read).toHaveBeenCalledTimes(1);
+    expect(handle.close).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      rawReport: null,
+      envelope: {
+        status: "failed",
+        error: { code: "UNLIGHTHOUSE_INVALID_OUTPUT", retryable: false },
       },
     });
   });

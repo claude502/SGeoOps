@@ -8,6 +8,7 @@ import {
   UNLIGHTHOUSE_ARTIFACT_MEDIA_TYPE,
   UNLIGHTHOUSE_ARTIFACT_NAME,
   UnlighthouseInputError,
+  parseUnlighthouseInput,
   type UnlighthouseExecution,
   type UnlighthouseInput,
 } from "../adapters/unlighthouse";
@@ -42,15 +43,39 @@ export class UnlighthouseTaskConfigurationError extends Error {
   }
 }
 
+function internalOriginBaseUrl(value: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new UnlighthouseTaskConfigurationError("SGEO_INTERNAL_URL must be an HTTP(S) origin.");
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== ""
+  ) {
+    throw new UnlighthouseTaskConfigurationError(
+      "SGEO_INTERNAL_URL must be an HTTP(S) origin without credentials, path, query, or fragment.",
+    );
+  }
+  return parsed.origin;
+}
+
 async function defaultClient(): Promise<UnlighthouseOpsClient> {
-  const baseUrl = process.env.SGEO_INTERNAL_URL;
+  const configuredBaseUrl = process.env.SGEO_INTERNAL_URL;
   const secretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
-  if (!baseUrl) {
+  if (!configuredBaseUrl) {
     throw new UnlighthouseTaskConfigurationError("SGEO_INTERNAL_URL is required.");
   }
   if (!secretFile) {
     throw new UnlighthouseTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE is required.");
   }
+
+  const baseUrl = internalOriginBaseUrl(configuredBaseUrl);
 
   let secret: string;
   try {
@@ -171,27 +196,28 @@ export async function runUnlighthouseAudit(
   input: UnlighthouseInput,
   dependencies: UnlighthouseAuditDependencies = {},
 ): Promise<AnalysisEnvelope> {
+  const parsedInput = parseUnlighthouseInput(input);
   const client = dependencies.client ?? await defaultClient();
   const checkpoint = dependencies.checkpoint ?? noOpCheckpoint;
-  const saved = await checkpoint.load(input);
+  const saved = await checkpoint.load(parsedInput);
   if (saved !== null) {
     await client.ingest(saved);
     return saved;
   }
 
-  const execution = await (dependencies.execute ?? executeUnlighthouse)(input);
+  const execution = await (dependencies.execute ?? executeUnlighthouse)(parsedInput);
   let envelope = execution.envelope;
 
   if (execution.rawReport === null) {
     logger.warn("Unlighthouse did not produce a JSON artifact.", {
-      runId: input.runId,
+      runId: parsedInput.runId,
       status: envelope.status,
     });
   } else {
     // Reject a full Trigger metadata object before publishing the fixed-name artifact.
-    await checkCheckpointCapacity(checkpoint, envelope, input, execution.rawReport);
+    await checkCheckpointCapacity(checkpoint, envelope, parsedInput, execution.rawReport);
     const rawArtifact = await client.uploadArtifact(
-      input.runId,
+      parsedInput.runId,
       UNLIGHTHOUSE_ARTIFACT_NAME,
       execution.rawReport,
       UNLIGHTHOUSE_ARTIFACT_MEDIA_TYPE,
@@ -205,9 +231,9 @@ export async function runUnlighthouseAudit(
   return envelope;
 }
 
-async function runUnlighthouseAuditTask(input: UnlighthouseInput) {
+async function runUnlighthouseAuditTask(input: unknown) {
   try {
-    return await runUnlighthouseAudit(input, {
+    return await runUnlighthouseAudit(parseUnlighthouseInput(input), {
       checkpoint: createTriggerMetadataCheckpoint(),
     });
   } catch (error) {

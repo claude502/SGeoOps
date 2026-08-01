@@ -229,8 +229,35 @@ describe("unlighthouseAuditTask", () => {
     expect(uploadArtifact).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed direct task input before execution, upload, or ingestion", async () => {
+    const execute = vi.fn(async () => ({ envelope, rawReport: new Uint8Array() }));
+    const client = { uploadArtifact: vi.fn(), ingest: vi.fn() };
+
+    await expect(runUnlighthouseAudit({
+      ...input,
+      runId: 7,
+    } as unknown as UnlighthouseInput, { execute, client }))
+      .rejects.toMatchObject({ name: "UnlighthouseInputError" });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(client.uploadArtifact).not.toHaveBeenCalled();
+    expect(client.ingest).not.toHaveBeenCalled();
+  });
+
   it("aborts the actual task wrapper for permanent configuration, payload, and SGeoOps failures while retaining transient retries", async () => {
     const taskRun = capturedTaskRun();
+
+    for (const payload of [
+      null,
+      [],
+      { ...input, runId: 7 },
+      { ...input, siteMarketId: 7 },
+      { ...input, templateRoutes: ["/", 7] },
+      { ...input, timeoutSeconds: "30" },
+    ]) {
+      await expect(taskRun(payload as UnlighthouseInput))
+        .rejects.toMatchObject({ name: "AbortTaskRunError" });
+    }
 
     await withInternalTaskEnvironment(async () => {
       await expect(taskRun(input)).rejects.toMatchObject({ name: "AbortTaskRunError" });
@@ -247,6 +274,22 @@ describe("unlighthouseAuditTask", () => {
     await withInternalTaskEnvironment(async () => {
       await expect(taskRun(input)).rejects.toMatchObject({ name: "AbortTaskRunError" });
     }, { secret: "\n" });
+
+    for (const baseUrl of [
+      "not-a-url",
+      "ftp://geo-ops.test",
+      "https://operator:secret@geo-ops.test",
+      "https://geo-ops.test/api",
+      "https://geo-ops.test/?debug=1",
+    ]) {
+      await withInternalTaskEnvironment(async () => {
+        triggerMocks.metadata.current.mockReturnValue(savedCheckpoint());
+        const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
+        vi.stubGlobal("fetch", fetch);
+        await expect(taskRun(input)).rejects.toMatchObject({ name: "AbortTaskRunError" });
+        expect(fetch).not.toHaveBeenCalled();
+      }, { baseUrl });
+    }
 
     await withInternalTaskEnvironment(async () => {
       await expect(taskRun({ ...input, templateRoutes: ["https://foreign.example/"] }))
