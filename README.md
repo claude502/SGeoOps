@@ -70,7 +70,7 @@ docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm ru
 docker compose -f deploy/docker-compose.prod.example.yml up -d
 ```
 
-使用前先把 `deploy/Caddyfile.example` 里的 `geo.example.com` 改成真实域名，并准备生产 `.env`。
+使用前先把 `deploy/Caddyfile.example` 里的 `geo.example.com` 改成真实域名，并在部署主机上创建非 Git 跟踪的生产 `.env`。`docker compose ... config` 可以在没有该文件时验证 Compose 语法；实际 `up` 前必须设置 `DATABASE_URL`、`POSTGRES_PASSWORD`、Better Auth 和所需集成密钥。
 
 首次生产迁移使用：
 
