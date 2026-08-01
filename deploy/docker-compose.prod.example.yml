@@ -52,12 +52,13 @@ services:
 
   geo-worker:
     build:
-      context: ../geo-worker
+      context: ..
+      dockerfile: geo-worker/Dockerfile
     restart: unless-stopped
     environment:
       TRIGGER_API_URL: ${TRIGGER_API_URL:-}
-      TRIGGER_API_KEY: ${TRIGGER_WORKER_API_KEY:-}
-      TRIGGER_PROJECT_REF: ${TRIGGER_PROJECT_REF:-proj_geo_ops}
+      TRIGGER_ACCESS_TOKEN: ${TRIGGER_ACCESS_TOKEN:-}
+      TRIGGER_PROJECT_REF: ${TRIGGER_PROJECT_REF:-proj_sgeo_ops}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
       SGEO_INTERNAL_URL: http://geo-ops:3000
       SGEO_INTERNAL_SECRET_FILE: /run/secrets/sgeo_internal_secret
