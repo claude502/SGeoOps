@@ -61,7 +61,11 @@ function routeError(error: unknown): NextResponse {
         "RUN_REPLAY_CONFLICT",
       );
     case "ARTIFACT_UNAVAILABLE":
-      return jsonError(500, "Internal server error", "INTERNAL_ERROR");
+      return jsonError(
+        503,
+        "Artifact storage is temporarily unavailable",
+        "ARTIFACT_UNAVAILABLE",
+      );
   }
 }
 

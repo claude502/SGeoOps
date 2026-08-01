@@ -179,6 +179,22 @@ describe("POST /api/internal/analysis-runs/ingest", () => {
     });
   });
 
+  it("maps unavailable artifact storage to a safe retryable response", async () => {
+    const created = service();
+    created.ingest.mockRejectedValueOnce(new AnalysisIngestError(
+      "ARTIFACT_UNAVAILABLE",
+    ));
+    const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest(JSON.stringify(envelope)));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Artifact storage is temporarily unavailable",
+      code: "ARTIFACT_UNAVAILABLE",
+    });
+  });
+
   it("rejects an unsupported signed content type", async () => {
     const created = service();
     const post = createAnalysisIngestRoute(() => created);

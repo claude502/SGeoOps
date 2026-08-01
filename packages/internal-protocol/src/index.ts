@@ -29,20 +29,23 @@ function parseCanonicalTimestamp(timestamp: string): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function createCanonicalInput(
-  timestamp: string,
-  method: string,
-  pathname: string,
-  body: InternalRequestBody,
-): string {
+function requestBodyDigest(body: InternalRequestBody): string {
   const bodyHasher = createHash("sha256");
   if (typeof body === "string") {
     bodyHasher.update(body, "utf8");
   } else {
     bodyHasher.update(body);
   }
-  const bodyHash = bodyHasher.digest("hex");
-  return `${timestamp}\n${method}\n${pathname}\n${bodyHash}`;
+  return bodyHasher.digest("hex");
+}
+
+function createCanonicalInputFromDigest(
+  timestamp: string,
+  method: string,
+  pathname: string,
+  bodyDigest: string,
+): string {
+  return `${timestamp}\n${method}\n${pathname}\n${bodyDigest}`;
 }
 
 function createSignature(
@@ -53,7 +56,30 @@ function createSignature(
   body: InternalRequestBody,
 ): string {
   return createHmac("sha256", secret)
-    .update(createCanonicalInput(timestamp, method, pathname, body), "utf8")
+    .update(
+      createCanonicalInputFromDigest(
+        timestamp,
+        method,
+        pathname,
+        requestBodyDigest(body),
+      ),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function createSignatureFromDigest(
+  secret: string,
+  timestamp: string,
+  method: string,
+  pathname: string,
+  bodyDigest: string,
+): string {
+  return createHmac("sha256", secret)
+    .update(
+      createCanonicalInputFromDigest(timestamp, method, pathname, bodyDigest),
+      "utf8",
+    )
     .digest("hex");
 }
 
@@ -88,8 +114,21 @@ export async function verifyInternalRequest(
   body: InternalRequestBody,
   nowSeconds?: number,
 ): Promise<boolean> {
+  return verifyInternalRequestDigest(
+    secret,
+    signed,
+    method,
+    pathname,
+    requestBodyDigest(body),
+    nowSeconds,
+  );
+}
+
+export function isInternalSignatureFresh(
+  signed: InternalSignature,
+  nowSeconds?: number,
+): boolean {
   if (
-    secret.length === 0 ||
     typeof signed?.timestamp !== "string" ||
     typeof signed?.signature !== "string" ||
     !SHA256_HEX_PATTERN.test(signed.signature)
@@ -112,8 +151,33 @@ export async function verifyInternalRequest(
     return false;
   }
 
+  return true;
+}
+
+export async function verifyInternalRequestDigest(
+  secret: string,
+  signed: InternalSignature,
+  method: string,
+  pathname: string,
+  bodyDigest: string,
+  nowSeconds?: number,
+): Promise<boolean> {
+  if (
+    secret.length === 0 ||
+    !SHA256_HEX_PATTERN.test(bodyDigest) ||
+    !isInternalSignatureFresh(signed, nowSeconds)
+  ) {
+    return false;
+  }
+
   const expected = Buffer.from(
-    createSignature(secret, signed.timestamp, method, pathname, body),
+    createSignatureFromDigest(
+      secret,
+      signed.timestamp,
+      method,
+      pathname,
+      bodyDigest,
+    ),
     "hex",
   );
   const received = Buffer.from(signed.signature, "hex");

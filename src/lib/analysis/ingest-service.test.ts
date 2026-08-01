@@ -44,13 +44,21 @@ function metadata(source: AnalysisEnvelope = envelope) {
 function dependencies() {
   const order: string[] = [];
   const repository = {
-    ingest: vi.fn().mockImplementation(async () => {
-      order.push("ingest");
+    ingest: vi.fn().mockImplementation(async (
+      source: AnalysisEnvelope,
+      verifyUploadedArtifact: (artifact: NonNullable<AnalysisEnvelope["rawArtifact"]>) => Promise<unknown>,
+    ) => {
+      order.push("transaction");
+      if (source.rawArtifact !== null) {
+        await verifyUploadedArtifact(source.rawArtifact);
+      }
+      order.push("write");
       return { duplicate: false };
     }),
   };
   const artifacts = {
     put: vi.fn(),
+    beginUpload: vi.fn(),
     get: vi.fn(),
     getMetadata: vi.fn().mockImplementation(async () => {
       order.push("metadata");
@@ -61,7 +69,7 @@ function dependencies() {
 }
 
 describe("AnalysisIngestService", () => {
-  it("returns accepted results and verifies the uploaded artifact before ingesting", async () => {
+  it("verifies uploaded artifact metadata inside the repository transaction", async () => {
     const { artifacts, order, repository } = dependencies();
     const service = new AnalysisIngestService(repository, artifacts);
 
@@ -70,18 +78,38 @@ describe("AnalysisIngestService", () => {
       status: "accepted",
       duplicate: false,
     });
-    repository.ingest.mockResolvedValueOnce({ duplicate: true });
+    repository.ingest.mockImplementationOnce(async (
+      source: AnalysisEnvelope,
+      verifyUploadedArtifact: (artifact: NonNullable<AnalysisEnvelope["rawArtifact"]>) => Promise<unknown>,
+    ) => {
+      order.push("transaction");
+      if (source.rawArtifact !== null) {
+        await verifyUploadedArtifact(source.rawArtifact);
+      }
+      order.push("write");
+      return { duplicate: true };
+    });
     await expect(service.ingest(envelope)).resolves.toEqual({
       runId: "run_1",
       status: "accepted",
       duplicate: true,
     });
 
-    expect(order).toEqual(["metadata", "ingest", "metadata"]);
+    expect(order).toEqual([
+      "transaction",
+      "metadata",
+      "write",
+      "transaction",
+      "metadata",
+      "write",
+    ]);
     expect(artifacts.getMetadata).toHaveBeenCalledWith(
       "artifact://run_1/report.json",
     );
-    expect(repository.ingest).toHaveBeenCalledWith(envelope, metadata());
+    expect(repository.ingest).toHaveBeenCalledWith(
+      envelope,
+      expect.any(Function),
+    );
   });
 
   it("maps a repository ownership failure to a stable run error", async () => {
@@ -99,10 +127,13 @@ describe("AnalysisIngestService", () => {
   });
 
   it("rejects a changed stored artifact checksum before repository writes", async () => {
-    const { artifacts, repository } = dependencies();
-    artifacts.getMetadata.mockResolvedValueOnce({
-      ...metadata(),
-      checksum: `sha256:${"b".repeat(64)}`,
+    const { artifacts, order, repository } = dependencies();
+    artifacts.getMetadata.mockImplementationOnce(async () => {
+      order.push("metadata");
+      return {
+        ...metadata(),
+        checksum: `sha256:${"b".repeat(64)}`,
+      };
     });
     const service = new AnalysisIngestService(repository, artifacts);
 
@@ -112,7 +143,8 @@ describe("AnalysisIngestService", () => {
         code: "RUN_CHECKSUM_CONFLICT",
       }),
     );
-    expect(repository.ingest).not.toHaveBeenCalled();
+    expect(repository.ingest).toHaveBeenCalledOnce();
+    expect(order).toEqual(["transaction", "metadata"]);
   });
 
   it("validates the envelope before checking artifact storage", async () => {
@@ -133,7 +165,10 @@ describe("AnalysisIngestService", () => {
     await service.ingest(withoutArtifact);
 
     expect(artifacts.getMetadata).not.toHaveBeenCalled();
-    expect(repository.ingest).toHaveBeenCalledWith(withoutArtifact, null);
+    expect(repository.ingest).toHaveBeenCalledWith(
+      withoutArtifact,
+      expect.any(Function),
+    );
   });
 
   it("exposes stable error instances", () => {

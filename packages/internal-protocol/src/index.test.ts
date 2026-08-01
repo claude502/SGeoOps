@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
+  isInternalSignatureFresh,
   signInternalRequest,
+  verifyInternalRequestDigest,
   verifyInternalRequest,
   type InternalRequestBody,
   type InternalSignature,
@@ -72,6 +75,32 @@ describe("internal request signatures", () => {
     const signed = await sign();
 
     expect(await verify(signed, { nowSeconds: SIGNED_AT + 30 })).toBe(true);
+  });
+
+  it("verifies an incrementally computed request digest without rebuilding bytes", async () => {
+    const body = Uint8Array.of(0x00, 0x80, 0xff, 0x11);
+    const signed = await sign({ body });
+    const hasher = createHash("sha256");
+    hasher.update(body.subarray(0, 2));
+    hasher.update(body.subarray(2));
+
+    await expect(verifyInternalRequestDigest(
+      SECRET,
+      signed,
+      METHOD,
+      PATHNAME,
+      hasher.digest("hex"),
+      SIGNED_AT,
+    )).resolves.toBe(true);
+  });
+
+  it("rejects invalid and expired signature headers before body verification", async () => {
+    const signed = await sign();
+
+    expect(isInternalSignatureFresh(signed, SIGNED_AT)).toBe(true);
+    expect(isInternalSignatureFresh({ ...signed, signature: "bad" }, SIGNED_AT))
+      .toBe(false);
+    expect(isInternalSignatureFresh(signed, SIGNED_AT + 301)).toBe(false);
   });
 
   it.each([

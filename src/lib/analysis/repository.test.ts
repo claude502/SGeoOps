@@ -4,6 +4,7 @@ import type { AnalysisEnvelope } from "@sgeo/analysis-contract";
 import {
   AnalysisRepositoryError,
   ingestEnvelope,
+  PrismaAnalysisRepository,
 } from "@/lib/analysis/repository";
 
 const checksum = `sha256:${"a".repeat(64)}`;
@@ -405,15 +406,49 @@ describe("ingestEnvelope", () => {
     const database = analysisDatabase();
 
     await expect(
-      ingestEnvelope(database as never, envelope, {
+      ingestEnvelope(database as never, envelope, async () => ({
         ...envelope.rawArtifact!,
         checksum: `sha256:${"b".repeat(64)}`,
-      }),
+      })),
     ).rejects.toMatchObject({ code: "ANALYSIS_ARTIFACT_CONFLICT" });
     expect(database.rawArtifact.create).not.toHaveBeenCalled();
     expect(database.observation.createMany).not.toHaveBeenCalled();
     expect(database.analysisRun.update).not.toHaveBeenCalled();
     expect(database.outboxEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("runs uploaded artifact lookup inside Prisma's transaction callback before writes", async () => {
+    const transaction = analysisDatabase();
+    const order: string[] = [];
+    transaction.$queryRaw.mockImplementation(async () => {
+      order.push("lock");
+      return [];
+    });
+    transaction.analysisRun.findUnique.mockImplementation(async () => {
+      order.push("run");
+      return existingRun();
+    });
+    transaction.rawArtifact.create.mockImplementation(async () => {
+      order.push("artifact");
+      return { id: "artifact_1" };
+    });
+    const prisma = {
+      $transaction: vi.fn(async (callback) => {
+        order.push("transaction");
+        return callback(transaction);
+      }),
+    };
+    const repository = new PrismaAnalysisRepository(prisma as never);
+
+    await repository.ingest(envelope, async () => {
+      order.push("metadata");
+      return { ...envelope.rawArtifact! };
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(order.indexOf("transaction")).toBeLessThan(order.indexOf("metadata"));
+    expect(order.indexOf("run")).toBeLessThan(order.indexOf("metadata"));
+    expect(order.indexOf("metadata")).toBeLessThan(order.indexOf("artifact"));
   });
 
   it("uses a stable marker for a null-artifact replay", async () => {

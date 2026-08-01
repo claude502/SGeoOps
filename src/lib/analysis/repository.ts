@@ -18,10 +18,14 @@ import { getPrisma } from "@/lib/prisma";
 
 export type { CreateOutboxEvent } from "@/lib/events/outbox";
 
+export type VerifyUploadedArtifact = (
+  artifact: NonNullable<AnalysisEnvelope["rawArtifact"]>,
+) => Promise<StoredArtifact>;
+
 export interface AnalysisRepository {
   ingest(
     envelope: AnalysisEnvelope,
-    uploadedArtifact: StoredArtifact | null,
+    verifyUploadedArtifact: VerifyUploadedArtifact,
   ): Promise<{ duplicate: boolean }>;
 }
 
@@ -30,10 +34,10 @@ export class PrismaAnalysisRepository implements AnalysisRepository {
 
   async ingest(
     envelope: AnalysisEnvelope,
-    uploadedArtifact: StoredArtifact | null,
+    verifyUploadedArtifact: VerifyUploadedArtifact,
   ): Promise<{ duplicate: boolean }> {
     return this.prisma.$transaction((tx) =>
-      ingestEnvelope(tx, envelope, uploadedArtifact)
+      ingestEnvelope(tx, envelope, verifyUploadedArtifact)
     );
   }
 }
@@ -324,7 +328,7 @@ async function createIngestMarker(
 export async function ingestEnvelope(
   tx: Prisma.TransactionClient,
   envelope: AnalysisEnvelope,
-  uploadedArtifact?: StoredArtifact | null,
+  verifyUploadedArtifact?: VerifyUploadedArtifact,
 ): Promise<{ duplicate: boolean }> {
   const parsed = analysisEnvelopeSchema.parse(envelope);
   if (parsed.rawArtifact !== null) {
@@ -422,6 +426,10 @@ export async function ingestEnvelope(
       "Analysis envelope source contract does not match the run.",
     );
   }
+  const uploadedArtifact = parsed.rawArtifact === null ||
+      verifyUploadedArtifact === undefined
+    ? undefined
+    : await verifyUploadedArtifact(parsed.rawArtifact);
   assertUploadedArtifact(parsed, uploadedArtifact);
 
   const hash = envelopeHash(parsed);

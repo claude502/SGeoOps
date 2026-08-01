@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { signInternalRequest } from "@sgeo/internal-protocol";
+import { ArtifactStoreError } from "@/lib/artifacts/local-store";
 import type { ArtifactStore } from "@/lib/artifacts/store";
 import { createAnalysisArtifactRoute } from "./route";
 
@@ -10,19 +11,33 @@ const runId = "run_1";
 const pathname = `/api/internal/analysis-runs/${runId}/artifacts`;
 const originalSecret = process.env.SGEO_INTERNAL_SECRET;
 const body = new TextEncoder().encode('{"score":91}');
-const checksum = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+
+function checksumFor(bytes: Uint8Array) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
 
 function store() {
-  return {
-    put: vi.fn().mockResolvedValue({
-      uri: "artifact://run_1/report.json",
-      checksum,
-      mediaType: "application/json",
-      byteSize: body.byteLength,
-    }),
+  const upload = {
+    write: vi.fn().mockResolvedValue(undefined),
+    commit: vi.fn().mockImplementation(async (expected) => expected),
+    abort: vi.fn().mockResolvedValue(undefined),
+  };
+  const artifacts = {
+    put: vi.fn(),
+    beginUpload: vi.fn().mockResolvedValue(upload),
     getMetadata: vi.fn(),
     get: vi.fn(),
   } satisfies ArtifactStore;
+  return { artifacts, upload };
+}
+
+function chunkedBody(chunks: Uint8Array[]) {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
 }
 
 async function signedRequest(
@@ -30,6 +45,7 @@ async function signedRequest(
   headers: Record<string, string> = {},
   method = "POST",
   timestamp = Math.floor(Date.now() / 1_000),
+  chunks?: Uint8Array[],
 ) {
   const signed = await signInternalRequest(
     secret,
@@ -43,13 +59,15 @@ async function signedRequest(
     headers: {
       "content-type": "application/json",
       "x-sgeo-artifact-name": "report.json",
-      "x-sgeo-artifact-sha256": checksum,
+      "x-sgeo-artifact-sha256": checksumFor(bytes),
       "x-sgeo-timestamp": signed.timestamp,
       "x-sgeo-signature": signed.signature,
       ...headers,
     },
-    body: bytes,
-  });
+    body: chunks === undefined ? bytes : chunkedBody(chunks),
+    // Node's Request requires this for a ReadableStream request body.
+    duplex: "half",
+  } as RequestInit);
 }
 
 beforeEach(() => {
@@ -66,7 +84,7 @@ afterEach(() => {
 
 describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
   it("rejects a valid signature for another HTTP method", async () => {
-    const artifacts = store();
+    const { artifacts } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
 
     const response = await post(await signedRequest(body, {}, "PUT"), {
@@ -74,21 +92,26 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
     });
 
     expect(response.status).toBe(405);
-    expect(artifacts.put).not.toHaveBeenCalled();
+    expect(artifacts.beginUpload).not.toHaveBeenCalled();
   });
 
-  it("rejects absent and expired signatures before artifact persistence", async () => {
-    const artifacts = store();
+  it("rejects absent and expired signatures before reading or staging artifact bytes", async () => {
+    const { artifacts } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
     const unsigned = new Request(`http://localhost${pathname}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-sgeo-artifact-name": "report.json",
-        "x-sgeo-artifact-sha256": checksum,
+        "x-sgeo-artifact-sha256": checksumFor(body),
       },
-      body,
-    });
+      body: new ReadableStream<Uint8Array>({
+        pull() {
+          throw new Error("unsigned request body must not be read");
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
     const expired = await signedRequest(
       body,
       {},
@@ -100,40 +123,49 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
       .resolves.toMatchObject({ status: 401 });
     await expect(post(expired, { params: Promise.resolve({ id: runId }) }))
       .resolves.toMatchObject({ status: 401 });
-    expect(artifacts.put).not.toHaveBeenCalled();
+    expect(artifacts.beginUpload).not.toHaveBeenCalled();
   });
 
-  it("stores signed raw bytes and returns only verified metadata", async () => {
-    const artifacts = store();
+  it("streams signed raw bytes and publishes only verified metadata", async () => {
+    const { artifacts, upload } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
 
-    const response = await post(await signedRequest(), {
+    const response = await post(await signedRequest(
+      body,
+      {},
+      "POST",
+      Math.floor(Date.now() / 1_000),
+      [body.subarray(0, 4), body.subarray(4)],
+    ), {
       params: Promise.resolve({ id: runId }),
     });
 
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({
       uri: "artifact://run_1/report.json",
-      checksum,
+      checksum: checksumFor(body),
       mediaType: "application/json",
       byteSize: body.byteLength,
     });
-    expect(artifacts.put).toHaveBeenCalledWith(
+    expect(artifacts.beginUpload).toHaveBeenCalledWith(
       runId,
       "report.json",
-      body,
       "application/json",
+      expect.any(Number),
     );
+    expect(upload.write).toHaveBeenNthCalledWith(1, body.subarray(0, 4));
+    expect(upload.write).toHaveBeenNthCalledWith(2, body.subarray(4));
+    expect(upload.commit).toHaveBeenCalledWith({
+      uri: "artifact://run_1/report.json",
+      checksum: checksumFor(body),
+      mediaType: "application/json",
+      byteSize: body.byteLength,
+    });
+    expect(upload.abort).not.toHaveBeenCalled();
   });
 
   it("accepts signed octet-stream artifact bytes", async () => {
-    const artifacts = store();
-    artifacts.put.mockResolvedValueOnce({
-      uri: "artifact://run_1/report.json",
-      checksum,
-      mediaType: "application/octet-stream",
-      byteSize: body.byteLength,
-    });
+    const { artifacts, upload } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
 
     const response = await post(await signedRequest(body, {
@@ -141,16 +173,17 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
     }), { params: Promise.resolve({ id: runId }) });
 
     expect(response.status).toBe(201);
-    expect(artifacts.put).toHaveBeenCalledWith(
+    expect(artifacts.beginUpload).toHaveBeenCalledWith(
       runId,
       "report.json",
-      body,
       "application/octet-stream",
+      expect.any(Number),
     );
+    expect(upload.commit).toHaveBeenCalledTimes(1);
   });
 
   it("rejects missing artifact headers after authentication", async () => {
-    const artifacts = store();
+    const { artifacts } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
 
     const response = await post(await signedRequest(body, {
@@ -158,11 +191,11 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
     }), { params: Promise.resolve({ id: runId }) });
 
     expect(response.status).toBe(400);
-    expect(artifacts.put).not.toHaveBeenCalled();
+    expect(artifacts.beginUpload).not.toHaveBeenCalled();
   });
 
-  it("rejects a bad signature before artifact persistence", async () => {
-    const artifacts = store();
+  it("never publishes a fully-shaped request with an invalid HMAC", async () => {
+    const { artifacts, upload } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
     const request = await signedRequest(body, {
       "x-sgeo-signature": "0".repeat(64),
@@ -173,11 +206,14 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
     });
 
     expect(response.status).toBe(401);
-    expect(artifacts.put).not.toHaveBeenCalled();
+    expect(artifacts.beginUpload).toHaveBeenCalledTimes(1);
+    expect(upload.write).toHaveBeenCalledTimes(1);
+    expect(upload.abort).toHaveBeenCalledTimes(1);
+    expect(upload.commit).not.toHaveBeenCalled();
   });
 
-  it("rejects a signed checksum that does not match the exact bytes", async () => {
-    const artifacts = store();
+  it("never publishes a signed body whose claimed checksum is changed", async () => {
+    const { artifacts, upload } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
 
     const response = await post(await signedRequest(body, {
@@ -185,11 +221,49 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
     }), { params: Promise.resolve({ id: runId }) });
 
     expect(response.status).toBe(422);
-    expect(artifacts.put).not.toHaveBeenCalled();
+    expect(upload.abort).toHaveBeenCalledTimes(1);
+    expect(upload.commit).not.toHaveBeenCalled();
+  });
+
+  it("rejects streamed bodies over the byte ceiling without publishing", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const { artifacts, upload } = store();
+    const post = createAnalysisArtifactRoute(() => artifacts, 3);
+
+    const response = await post(await signedRequest(
+      bytes,
+      { "content-type": "application/octet-stream" },
+      "POST",
+      Math.floor(Date.now() / 1_000),
+      [bytes.subarray(0, 2), bytes.subarray(2)],
+    ), { params: Promise.resolve({ id: runId }) });
+
+    expect(response.status).toBe(413);
+    expect(upload.write).toHaveBeenCalledTimes(1);
+    expect(upload.abort).toHaveBeenCalledTimes(1);
+    expect(upload.commit).not.toHaveBeenCalled();
+  });
+
+  it("maps unavailable artifact storage to a safe 503 response", async () => {
+    const { artifacts } = store();
+    artifacts.beginUpload.mockRejectedValueOnce(new ArtifactStoreError(
+      "ARTIFACT_UNAVAILABLE",
+    ));
+    const post = createAnalysisArtifactRoute(() => artifacts);
+
+    const response = await post(await signedRequest(), {
+      params: Promise.resolve({ id: runId }),
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Artifact storage is temporarily unavailable",
+      code: "ARTIFACT_UNAVAILABLE",
+    });
   });
 
   it("rejects unsafe artifact names and unsupported media types", async () => {
-    const artifacts = store();
+    const { artifacts } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
 
     const unsafeName = await post(await signedRequest(body, {
@@ -201,6 +275,6 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
 
     expect(unsafeName.status).toBe(400);
     expect(unsupportedMediaType.status).toBe(415);
-    expect(artifacts.put).not.toHaveBeenCalled();
+    expect(artifacts.beginUpload).not.toHaveBeenCalled();
   });
 });

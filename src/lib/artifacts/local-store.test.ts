@@ -178,6 +178,119 @@ describe("LocalArtifactStore", () => {
     });
   });
 
+  it("keeps streamed bytes private until their exact metadata is committed", async () => {
+    const root = await temporaryRoot();
+    const store = new LocalArtifactStore(root);
+    const bytes = new TextEncoder().encode('{"score":91}');
+    const upload = await store.beginUpload(
+      "run_1",
+      "report.json",
+      "application/json",
+      1_024,
+    );
+
+    await upload.write(bytes.subarray(0, 4));
+    await upload.write(bytes.subarray(4));
+    expect(await readdir(root)).not.toContain(
+      objectName("run_1", "report.json"),
+    );
+
+    const stored = await upload.commit({
+      uri: "artifact://run_1/report.json",
+      checksum: checksum(bytes),
+      mediaType: "application/json",
+      byteSize: bytes.byteLength,
+    });
+
+    expect(stored).toEqual({
+      uri: "artifact://run_1/report.json",
+      checksum: checksum(bytes),
+      mediaType: "application/json",
+      byteSize: bytes.byteLength,
+    });
+    await expect(store.get(stored.uri)).resolves.toEqual(bytes);
+  });
+
+  it("preserves a concurrent artifact when streamed publication finds its target", async () => {
+    const root = await temporaryRoot();
+    const winner = new LocalArtifactStore(root);
+    const contender = new LocalArtifactStore(root);
+    const bytes = new Uint8Array([7, 8, 9]);
+    const expected = {
+      uri: "artifact://run_1/race.bin",
+      checksum: checksum(bytes),
+      mediaType: "application/octet-stream",
+      byteSize: bytes.byteLength,
+    };
+    await winner.put(
+      "run_1",
+      "race.bin",
+      bytes,
+      "application/octet-stream",
+    );
+    const upload = await contender.beginUpload(
+      "run_1",
+      "race.bin",
+      "application/octet-stream",
+      1_024,
+    );
+    await upload.write(bytes);
+
+    await expect(upload.commit(expected)).resolves.toEqual(expected);
+    await expect(winner.get(expected.uri)).resolves.toEqual(bytes);
+    expect((await readdir(root)).filter((name) =>
+      name.startsWith(".artifact-tmp-")
+    )).toEqual([]);
+  });
+
+  it("cleans staged bytes when streamed metadata does not match their checksum", async () => {
+    const root = await temporaryRoot();
+    const store = new LocalArtifactStore(root);
+    const bytes = new Uint8Array([3, 2, 1]);
+    const upload = await store.beginUpload(
+      "run_1",
+      "mismatch.bin",
+      "application/octet-stream",
+      1_024,
+    );
+    await upload.write(bytes);
+
+    await expect(upload.commit({
+      uri: "artifact://run_1/mismatch.bin",
+      checksum: `sha256:${"a".repeat(64)}`,
+      mediaType: "application/octet-stream",
+      byteSize: bytes.byteLength,
+    })).rejects.toMatchObject({ code: "ARTIFACT_CONFLICT" });
+
+    await expect(store.get("artifact://run_1/mismatch.bin")).rejects
+      .toMatchObject({ code: "ARTIFACT_NOT_FOUND" });
+    expect((await readdir(root)).filter((name) =>
+      name.startsWith(".artifact-tmp-")
+    )).toEqual([]);
+  });
+
+  it("removes a bounded streaming upload when it exceeds its byte ceiling", async () => {
+    const root = await temporaryRoot();
+    const store = new LocalArtifactStore(root);
+    const upload = await store.beginUpload(
+      "run_1",
+      "report.bin",
+      "application/octet-stream",
+      3,
+    );
+
+    await upload.write(new Uint8Array([1, 2]));
+    await expect(upload.write(new Uint8Array([3, 4]))).rejects
+      .toMatchObject({ code: "ARTIFACT_TOO_LARGE" });
+    await upload.abort();
+
+    await expect(store.get("artifact://run_1/report.bin")).rejects
+      .toMatchObject({ code: "ARTIFACT_NOT_FOUND" });
+    expect((await readdir(root)).filter((name) =>
+      name.startsWith(".artifact-tmp-")
+    )).toEqual([]);
+  });
+
   it.each([
     ["run id traversal", "../run", "report.json", "application/json"],
     ["run id separator", "run/1", "report.json", "application/json"],
@@ -376,6 +489,41 @@ describe("LocalArtifactStore", () => {
 
     const allocated = process.memoryUsage().arrayBuffers - before;
     expect(allocated).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it("streams large payload verification for metadata lookups", async () => {
+    const root = await temporaryRoot();
+    const byteSize = 16 * 1024 * 1024;
+    const uri = "artifact://run_1/metadata-large.bin";
+    const objectDir = objectDirectory(root, "run_1", "metadata-large.bin");
+    const payload = join(objectDir, "payload");
+    const hash = createHash("sha256");
+    const zeroes = Buffer.alloc(64 * 1024);
+    for (let offset = 0; offset < byteSize; offset += zeroes.byteLength) {
+      hash.update(zeroes.subarray(0, Math.min(zeroes.byteLength, byteSize - offset)));
+    }
+    const expectedChecksum = `sha256:${hash.digest("hex")}`;
+    await mkdir(objectDir);
+    await writeFile(payload, "");
+    await truncate(payload, byteSize);
+    await writeFile(join(objectDir, "metadata.json"), JSON.stringify({
+      version: 1,
+      uri,
+      checksum: expectedChecksum,
+      mediaType: "application/octet-stream",
+      byteSize,
+    }));
+    const before = process.memoryUsage().arrayBuffers;
+
+    await expect(new LocalArtifactStore(root).getMetadata(uri)).resolves.toEqual({
+      uri,
+      checksum: expectedChecksum,
+      mediaType: "application/octet-stream",
+      byteSize,
+    });
+
+    const allocated = process.memoryUsage().arrayBuffers - before;
+    expect(allocated).toBeLessThan(4 * 1024 * 1024);
   });
 
   it("distinguishes missing objects from incomplete stored objects", async () => {

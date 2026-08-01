@@ -6,6 +6,7 @@ import {
 import {
   AnalysisRepositoryError,
   type AnalysisRepository,
+  type VerifyUploadedArtifact,
 } from "@/lib/analysis/repository";
 import {
   ArtifactStoreError,
@@ -90,12 +91,11 @@ export class AnalysisIngestService {
 
   async ingest(envelope: AnalysisEnvelope): Promise<AnalysisIngestResult> {
     const parsed = analysisEnvelopeSchema.parse(envelope);
-    let uploadedArtifact: StoredArtifact | null = null;
-
-    if (parsed.rawArtifact !== null) {
+    const verifyUploadedArtifact: VerifyUploadedArtifact = async (artifact) => {
       try {
-        uploadedArtifact = await this.artifacts.getMetadata(parsed.rawArtifact.uri);
-        assertArtifactMetadata(parsed.rawArtifact, uploadedArtifact);
+        const stored = await this.artifacts.getMetadata(artifact.uri);
+        assertArtifactMetadata(artifact, stored);
+        return stored;
       } catch (error) {
         if (error instanceof AnalysisIngestError) throw error;
         if (error instanceof ArtifactStoreError) {
@@ -103,10 +103,10 @@ export class AnalysisIngestService {
         }
         throw error;
       }
-    }
+    };
 
     try {
-      const accepted = await this.repository.ingest(parsed, uploadedArtifact);
+      const accepted = await this.repository.ingest(parsed, verifyUploadedArtifact);
       return {
         runId: parsed.runId,
         status: "accepted",
