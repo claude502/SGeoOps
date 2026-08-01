@@ -1,16 +1,17 @@
 import { readFile } from "node:fs/promises";
 
 import { analysisEnvelopeSchema, type AnalysisEnvelope } from "@sgeo/analysis-contract";
-import { logger, metadata, task } from "@trigger.dev/sdk";
+import { AbortTaskRunError, logger, metadata, task } from "@trigger.dev/sdk";
 
 import {
   executeSiteOne,
   SITEONE_ARTIFACT_MEDIA_TYPE,
   SITEONE_ARTIFACT_NAME,
+  SiteOneInputError,
   type SiteOneExecution,
   type SiteOneInput,
 } from "../adapters/siteone";
-import { SgeoOpsClient } from "../clients/sgeo-ops";
+import { SgeoOpsClient, SgeoOpsClientError } from "../clients/sgeo-ops";
 
 type SiteOneOpsClient = Pick<SgeoOpsClient, "ingest" | "uploadArtifact">;
 
@@ -190,13 +191,27 @@ export async function runSiteOneCrawl(
   return envelope;
 }
 
+async function runSiteOneCrawlTask(input: SiteOneInput) {
+  try {
+    return await runSiteOneCrawl(input, {
+      checkpoint: createTriggerMetadataCheckpoint(),
+    });
+  } catch (error) {
+    if (
+      error instanceof SiteOneInputError ||
+      (error instanceof SgeoOpsClientError && !error.retryable)
+    ) {
+      throw new AbortTaskRunError(error.message);
+    }
+    throw error;
+  }
+}
+
 export const siteOneCrawlTask = task({
   id: "siteone-crawl",
   queue: { name: "siteone", concurrencyLimit: 2 },
   machine: "medium-1x",
   maxDuration: 900,
   // SGeoOps has no signed run-intent read API yet; scheduling and dispatch supply this payload externally.
-  run: async (input: SiteOneInput) => runSiteOneCrawl(input, {
-    checkpoint: createTriggerMetadataCheckpoint(),
-  }),
+  run: runSiteOneCrawlTask,
 });

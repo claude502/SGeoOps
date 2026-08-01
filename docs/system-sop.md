@@ -292,8 +292,8 @@ Postiz 如果继续使用，只作为可选下游分发系统之一，不再是�
 
 ### 9.2 文件 secret 与 worker
 
-1. 在生产主机带外创建 `/opt/geo-content-ops/secrets`，目录权限 `700`。
-2. 将 `sgeo_internal_secret` 通过 secret manager 或受控 SSH 放入该目录，文件权限 `600`；它不进入 Git、部署 archive、`.env` 或运行记录。
+1. 在生产主机带外创建 `/opt/geo-content-ops/secrets`，目录 owner/group 为 `root:10001`，权限 `0750`。
+2. 将 `sgeo_internal_secret` 通过 secret manager 或受控 SSH 放入该目录，文件 owner/group 为 `root:10001`，权限 `0640`；worker 以 UID/GID `10001` 的 group read/traverse 权限读取它。它不进入 Git、部署 archive、`.env` 或运行记录。
 3. 其他 integration secret 也以相对路径存于该目录，并用 `file:<relative-path>` 注册到 `POST /api/sites/<site-id>/integrations`。
 4. 确认 Compose 将目录只读挂载到 `/run/secrets`。`geo-worker` 只配置 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE`，绝不配置 `DATABASE_URL`。
 

@@ -361,9 +361,10 @@ docker compose --env-file .env -f deploy/docker-compose.prod.example.yml
 
 ```bash
 cd /opt/geo-content-ops
-install -d -m 700 secrets
+install -d -o root -g 10001 -m 0750 secrets
 # 通过受控 SSH 或 secret manager 放入 secrets/sgeo_internal_secret。
-chmod 600 secrets/sgeo_internal_secret
+chown root:10001 secrets/sgeo_internal_secret
+chmod 0640 secrets/sgeo_internal_secret
 ```
 
 生产 Compose 将该目录只读挂载为 `/run/secrets`，并将 artifact named volume 挂载为 `/var/lib/sgeo/artifacts`。`geo-worker` 只使用 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE` 与平台交互；不要为它设置 `DATABASE_URL`。

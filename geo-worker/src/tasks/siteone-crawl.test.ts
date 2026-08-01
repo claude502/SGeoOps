@@ -1,5 +1,10 @@
 import type { AnalysisEnvelope } from "@sgeo/analysis-contract";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+import type { SiteOneInput } from "../adapters/siteone";
 
 const triggerMocks = vi.hoisted(() => ({
   task: vi.fn((definition: { id: string; run: (input: unknown) => Promise<unknown> }) => ({
@@ -13,12 +18,19 @@ const triggerMocks = vi.hoisted(() => ({
     set: vi.fn(),
     flush: vi.fn(),
   },
+  AbortTaskRunError: class AbortTaskRunError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "AbortTaskRunError";
+    }
+  },
 }));
 
 vi.mock("@trigger.dev/sdk", () => ({
   task: triggerMocks.task,
   logger: { info: triggerMocks.info, warn: triggerMocks.warn },
   metadata: triggerMocks.metadata,
+  AbortTaskRunError: triggerMocks.AbortTaskRunError,
 }));
 
 const {
@@ -55,6 +67,50 @@ const envelope: AnalysisEnvelope = {
   observations: [],
   error: null,
 };
+
+function capturedTaskRun() {
+  const [definition] = triggerMocks.task.mock.calls[0] as [
+    { run: (input: SiteOneInput) => Promise<unknown> },
+  ];
+  return definition.run;
+}
+
+function savedCheckpoint() {
+  return {
+    siteoneDeliveryCheckpoint: {
+      version: 1,
+      envelope: {
+        ...envelope,
+        rawArtifact: {
+          uri: "artifact://run_123/siteone-report.json",
+          checksum: `sha256:${"e".repeat(64)}`,
+          mediaType: "application/json",
+          byteSize: 27,
+        },
+      },
+    },
+  };
+}
+
+async function withInternalTaskEnvironment(run: () => Promise<void>) {
+  const directory = await mkdtemp(join(tmpdir(), "sgeo-siteone-task-"));
+  const secretFile = join(directory, "internal-secret");
+  const previousUrl = process.env.SGEO_INTERNAL_URL;
+  const previousSecretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
+  await writeFile(secretFile, "test-secret\n", { mode: 0o600 });
+  process.env.SGEO_INTERNAL_URL = "https://geo-ops.test";
+  process.env.SGEO_INTERNAL_SECRET_FILE = secretFile;
+  try {
+    await run();
+  } finally {
+    if (previousUrl === undefined) delete process.env.SGEO_INTERNAL_URL;
+    else process.env.SGEO_INTERNAL_URL = previousUrl;
+    if (previousSecretFile === undefined) delete process.env.SGEO_INTERNAL_SECRET_FILE;
+    else process.env.SGEO_INTERNAL_SECRET_FILE = previousSecretFile;
+    vi.unstubAllGlobals();
+    await rm(directory, { recursive: true, force: true });
+  }
+}
 
 describe("siteOneCrawlTask", () => {
   it("registers a bounded Trigger v4 task", () => {
@@ -204,5 +260,26 @@ describe("siteOneCrawlTask", () => {
 
     expect(uploadArtifact).not.toHaveBeenCalled();
     expect(metadataApi.set).not.toHaveBeenCalled();
+  });
+
+  it("aborts the captured Trigger task run for a permanent SGeoOps client failure but retries a transient one", async () => {
+    const taskRun = capturedTaskRun();
+
+    await withInternalTaskEnvironment(async () => {
+      triggerMocks.metadata.current.mockReturnValue(savedCheckpoint());
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 403 })));
+
+      await expect(taskRun(input)).rejects.toMatchObject({ name: "AbortTaskRunError" });
+    });
+
+    await withInternalTaskEnvironment(async () => {
+      triggerMocks.metadata.current.mockReturnValue(savedCheckpoint());
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
+
+      await expect(taskRun(input)).rejects.toMatchObject({
+        name: "SgeoOpsClientError",
+        retryable: true,
+      });
+    });
   });
 });

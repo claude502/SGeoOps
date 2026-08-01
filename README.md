@@ -178,7 +178,7 @@ POSTIZ_WEBHOOK_URL=
 POSTIZ_API_KEY=
 ```
 
-创建 `./secrets/sgeo_internal_secret` 并以部署用户可读、非 Git 跟踪的方式保存内部签名密钥。`geo-worker` 通过 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE` 调用已签名的内部 API；不要为它设置 `DATABASE_URL`。
+创建 `./secrets/sgeo_internal_secret` 并以非 Git 跟踪方式保存内部签名密钥。Linux 部署中，该目录和文件必须分别为 `root:10001` 的 `0750` 和 `0640`，让非 root 的 `geo-worker`（UID/GID `10001`）仅有 group read/traverse 权限。`geo-worker` 通过 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE` 调用已签名的内部 API；不要为它设置 `DATABASE_URL`。
 
 ## GEOFlow Integration
 

@@ -2,6 +2,7 @@ import { createServer, connect, isIP, type Server, type Socket } from "node:net"
 
 const MAX_CLIENT_CONNECTIONS = 8;
 const MAX_HEADER_BYTES = 16 * 1024;
+const MAX_TLS_CLIENT_HELLO_BYTES = 64 * 1024;
 const CONNECT_TIMEOUT_MS = 10_000;
 const REQUEST_IDLE_TIMEOUT_MS = 75_000;
 
@@ -90,6 +91,11 @@ function sendError(socket: Socket, status: number, reason: string) {
   );
 }
 
+function setIdleTimeout(socket: Socket) {
+  socket.setTimeout(REQUEST_IDLE_TIMEOUT_MS);
+  socket.once("timeout", () => socket.destroy());
+}
+
 async function connectPinned(
   origin: PinnedOrigin,
   upstreamSockets: Set<Socket>,
@@ -126,6 +132,135 @@ function hostHeaderMatches(request: ParsedProxyRequest, origin: PinnedOrigin) {
   return host !== undefined && authorityMatchesOrigin(host.value, origin);
 }
 
+type TlsClientHelloResult =
+  | { kind: "incomplete" }
+  | { kind: "invalid" }
+  | { kind: "valid"; serverName: string };
+
+type ReceivedTlsClientHello = TlsClientHelloResult & { raw: Buffer };
+
+function readUint16(buffer: Buffer, offset: number) {
+  return buffer.readUInt16BE(offset);
+}
+
+function readUint24(buffer: Buffer, offset: number) {
+  return (buffer[offset]! << 16) | (buffer[offset + 1]! << 8) | buffer[offset + 2]!;
+}
+
+function parseClientHelloBody(body: Buffer): TlsClientHelloResult {
+  if (body.byteLength < 35) return { kind: "invalid" };
+  let offset = 34;
+  const sessionLength = body[offset]!;
+  offset += 1 + sessionLength;
+  if (offset + 2 > body.byteLength) return { kind: "invalid" };
+  const cipherSuitesLength = readUint16(body, offset);
+  offset += 2 + cipherSuitesLength;
+  if (cipherSuitesLength === 0 || cipherSuitesLength % 2 !== 0 || offset + 1 > body.byteLength) {
+    return { kind: "invalid" };
+  }
+  const compressionLength = body[offset]!;
+  offset += 1 + compressionLength;
+  if (compressionLength === 0 || offset + 2 > body.byteLength) return { kind: "invalid" };
+  const extensionsLength = readUint16(body, offset);
+  offset += 2;
+  const extensionsEnd = offset + extensionsLength;
+  if (extensionsEnd !== body.byteLength) return { kind: "invalid" };
+
+  let serverName: string | null = null;
+  while (offset < extensionsEnd) {
+    if (offset + 4 > extensionsEnd) return { kind: "invalid" };
+    const extensionType = readUint16(body, offset);
+    const extensionLength = readUint16(body, offset + 2);
+    offset += 4;
+    const extensionEnd = offset + extensionLength;
+    if (extensionEnd > extensionsEnd) return { kind: "invalid" };
+    if (extensionType === 0) {
+      if (serverName !== null || extensionLength < 5) return { kind: "invalid" };
+      const namesLength = readUint16(body, offset);
+      let nameOffset = offset + 2;
+      const namesEnd = nameOffset + namesLength;
+      if (namesEnd !== extensionEnd) return { kind: "invalid" };
+      while (nameOffset < namesEnd) {
+        if (nameOffset + 3 > namesEnd || body[nameOffset] !== 0) return { kind: "invalid" };
+        const nameLength = readUint16(body, nameOffset + 1);
+        nameOffset += 3;
+        if (nameLength === 0 || nameOffset + nameLength > namesEnd || serverName !== null) {
+          return { kind: "invalid" };
+        }
+        const encodedName = body.subarray(nameOffset, nameOffset + nameLength);
+        if (encodedName.some((byte) => byte < 0x21 || byte > 0x7e)) return { kind: "invalid" };
+        serverName = encodedName.toString("ascii").toLowerCase();
+        nameOffset += nameLength;
+      }
+    }
+    offset = extensionEnd;
+  }
+  return serverName === null ? { kind: "invalid" } : { kind: "valid", serverName };
+}
+
+function parseClientHello(buffer: Buffer): TlsClientHelloResult {
+  let recordOffset = 0;
+  let handshake = Buffer.alloc(0);
+  while (recordOffset < buffer.byteLength) {
+    if (buffer.byteLength - recordOffset < 5) return { kind: "incomplete" };
+    if (buffer[recordOffset] !== 0x16) return { kind: "invalid" };
+    const recordLength = readUint16(buffer, recordOffset + 3);
+    const recordEnd = recordOffset + 5 + recordLength;
+    if (recordEnd > MAX_TLS_CLIENT_HELLO_BYTES) return { kind: "invalid" };
+    if (recordEnd > buffer.byteLength) return { kind: "incomplete" };
+    handshake = Buffer.concat([handshake, buffer.subarray(recordOffset + 5, recordEnd)]);
+    if (handshake.byteLength > MAX_TLS_CLIENT_HELLO_BYTES) return { kind: "invalid" };
+    if (handshake.byteLength >= 4) {
+      if (handshake[0] !== 1) return { kind: "invalid" };
+      const bodyLength = readUint24(handshake, 1);
+      if (bodyLength > MAX_TLS_CLIENT_HELLO_BYTES - 4) return { kind: "invalid" };
+      if (handshake.byteLength >= bodyLength + 4) {
+        return parseClientHelloBody(handshake.subarray(4, bodyLength + 4));
+      }
+    }
+    recordOffset = recordEnd;
+  }
+  return { kind: "incomplete" };
+}
+
+async function waitForClientHello(client: Socket, remainder: Buffer): Promise<ReceivedTlsClientHello> {
+  return new Promise((resolve) => {
+    let received = Buffer.from(remainder);
+    let settled = false;
+    const timer = setTimeout(() => finish({ kind: "invalid" }), CONNECT_TIMEOUT_MS);
+    const onData = (chunk: Buffer) => {
+      received = Buffer.concat([received, chunk], received.byteLength + chunk.byteLength);
+      inspect();
+    };
+    const onClosed = () => finish({ kind: "invalid" });
+    const finish = (result: TlsClientHelloResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      client.off("data", onData);
+      client.off("error", onClosed);
+      client.off("end", onClosed);
+      client.off("close", onClosed);
+      resolve({ ...result, raw: received });
+    };
+    const inspect = () => {
+      if (received.byteLength > MAX_TLS_CLIENT_HELLO_BYTES) {
+        finish({ kind: "invalid" });
+        return;
+      }
+      const result = parseClientHello(received);
+      if (result.kind !== "incomplete") finish(result);
+    };
+
+    client.on("data", onData);
+    client.once("error", onClosed);
+    client.once("end", onClosed);
+    client.once("close", onClosed);
+    inspect();
+    if (!settled) client.resume();
+  });
+}
+
 async function forwardConnect(
   client: Socket,
   request: ParsedProxyRequest,
@@ -133,8 +268,25 @@ async function forwardConnect(
   origin: PinnedOrigin,
   upstreamSockets: Set<Socket>,
 ) {
-  if (origin.protocol !== "https:" || !authorityMatchesOrigin(request.target, origin)) {
+  if (
+    origin.protocol !== "https:" ||
+    !authorityMatchesOrigin(request.target, origin) ||
+    !hostHeaderMatches(request, origin)
+  ) {
     sendError(client, 403, "Forbidden");
+    return;
+  }
+
+  // The proxy acknowledgement is required before a standards-compliant TLS client
+  // sends its ClientHello. Keep the target unopened until its SNI is validated.
+  client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  const clientHello = await waitForClientHello(client, remainder);
+  if (
+    client.destroyed ||
+    clientHello.kind !== "valid" ||
+    clientHello.serverName !== origin.hostname
+  ) {
+    client.end();
     return;
   }
 
@@ -150,10 +302,10 @@ async function forwardConnect(
   client.once("close", () => upstream.destroy());
   upstream.once("close", () => client.end());
   // This leaves the client in control of TLS to the original hostname, including SNI.
-  client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-  if (remainder.byteLength > 0) upstream.write(remainder);
+  upstream.write(clientHello.raw);
   client.pipe(upstream);
   upstream.pipe(client);
+  setIdleTimeout(client);
   client.resume();
 }
 
@@ -199,6 +351,7 @@ async function forwardHttp(
   client.once("close", () => upstream.destroy());
   upstream.pipe(client);
   upstream.end(forwardedRequest);
+  setIdleTimeout(client);
   client.resume();
 }
 
@@ -214,7 +367,9 @@ function handleClient(
   }
   clientSockets.add(client);
   client.once("close", () => clientSockets.delete(client));
-  client.setTimeout(CONNECT_TIMEOUT_MS, () => sendError(client, 408, "Request Timeout"));
+  const onInitialTimeout = () => sendError(client, 408, "Request Timeout");
+  client.setTimeout(CONNECT_TIMEOUT_MS);
+  client.once("timeout", onInitialTimeout);
 
   let received = Buffer.alloc(0);
   const onData = (chunk: Buffer) => {
@@ -228,7 +383,8 @@ function handleClient(
     if (boundary === -1) return;
     client.off("data", onData);
     client.pause();
-    client.setTimeout(REQUEST_IDLE_TIMEOUT_MS, () => client.destroy());
+    client.off("timeout", onInitialTimeout);
+    client.setTimeout(0);
     const request = parseRequest(received.subarray(0, boundary + 4).toString("latin1"));
     if (request === null) {
       sendError(client, 400, "Bad Request");

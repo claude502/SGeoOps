@@ -76,9 +76,9 @@ try {
   $remoteCommands = @(
     "cd $RemoteDir",
     "test -f .env || (echo 'Missing $RemoteDir/.env. Create it from .env.example before starting services.' && exit 20)",
-    "install -d -m 700 secrets",
-    "test -f secrets/sgeo_internal_secret || (echo 'Missing $RemoteDir/secrets/sgeo_internal_secret. Provision it separately over SSH or your secret manager, then chmod 600 it.' && exit 21)",
-    "chmod 600 secrets/sgeo_internal_secret",
+    "install -d -o root -g 10001 -m 0750 secrets",
+    "test -f secrets/sgeo_internal_secret || (echo 'Missing $RemoteDir/secrets/sgeo_internal_secret. Provision it separately as root:10001 mode 0640 in a root:10001 mode 0750 directory over SSH or your secret manager.' && exit 21)",
+    "chown root:10001 secrets/sgeo_internal_secret && chmod 0640 secrets/sgeo_internal_secret",
     $(if ($UseIpCaddy) { "cp deploy/Caddyfile.ip.example deploy/Caddyfile.example" } else { "true" }),
     "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build",
     "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres"

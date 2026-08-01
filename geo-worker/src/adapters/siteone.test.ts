@@ -401,6 +401,22 @@ describe("SiteOne technical audit adapter", () => {
       .rejects.toThrow("timeoutSeconds");
   });
 
+  it.each([
+    "2001:3::1",
+    "2001:20::1",
+    "2002::1",
+    "3fff::1",
+  ])("rejects IANA special IPv6 resolver result %s before SiteOne or proxy starts", async (address) => {
+    const calls: ExecCall[] = [];
+
+    await expect(executeSiteOne(input, {
+      execFile: fixtureExec("success.json", calls),
+      lookup: async () => [{ address, family: 6 }],
+    })).rejects.toThrow("globally routable");
+
+    expect(calls).toEqual([]);
+  });
+
   it("rejects a missing or stale SiteOne report identity while retaining raw bytes for archival", async () => {
     for (const crawler of [
       undefined,
@@ -523,11 +539,16 @@ describe("SiteOne technical audit adapter", () => {
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).not.toMatch(/^CMD\s/m);
 
-    const deployReadme = await readFile(new URL("../../../deploy/README.md", import.meta.url), "utf8");
-    const compose = await readFile(new URL("../../../docker-compose.yml", import.meta.url), "utf8");
+    const [deployReadme, remoteDeploy, compose] = await Promise.all([
+      readFile(new URL("../../../deploy/README.md", import.meta.url), "utf8"),
+      readFile(new URL("../../../deploy/remote-deploy.ps1", import.meta.url), "utf8"),
+      readFile(new URL("../../../docker-compose.yml", import.meta.url), "utf8"),
+    ]);
     expect(deployReadme).toContain("root:10001");
     expect(deployReadme).toContain("0750");
     expect(deployReadme).toContain("0640");
     expect(compose).toContain("root:10001");
+    expect(remoteDeploy).toContain("install -d -o root -g 10001 -m 0750 secrets");
+    expect(remoteDeploy).toContain("chown root:10001 secrets/sgeo_internal_secret && chmod 0640 secrets/sgeo_internal_secret");
   });
 });
