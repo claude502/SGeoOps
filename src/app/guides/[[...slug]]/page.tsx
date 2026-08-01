@@ -23,7 +23,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     return {};
   }
 
-  const asset = await getTxpuroPublicAsset(route.slug, route.locale);
+  const asset = await getTxpuroPublicAsset(
+    route.siteId,
+    route.slug,
+    route.locale,
+  );
   if (!asset) {
     return {};
   }
@@ -56,7 +60,11 @@ export default async function TxpuroGuidesPage({ params }: PageProps) {
     notFound();
   }
 
-  const asset = await getTxpuroPublicAsset(route.slug, route.locale);
+  const asset = await getTxpuroPublicAsset(
+    route.siteId,
+    route.slug,
+    route.locale,
+  );
   if (!asset) {
     notFound();
   }

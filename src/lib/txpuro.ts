@@ -26,6 +26,7 @@ type TxpuroSpec = {
 const companyName = "Wing Heng Technology / 永亨佳邦科技";
 const productName = "Txpuro E-Invoice System";
 const chineseProductName = "智慧电子发票系统 Txpuro";
+const txpuroSiteId = "site_txpuro_com";
 
 export const txpuroProject: GeoProject = {
   id: "proj_txpuro_workspace",
@@ -738,16 +739,29 @@ export function txpuroSpecByPath(slug: string, locale: ContentLocale) {
   return txpuroStarterSpecs.find((spec) => spec.slug === slug && spec.locale === locale) ?? null;
 }
 
-export async function getTxpuroPublicAsset(slug: string, locale: ContentLocale) {
+export async function getTxpuroPublicAsset(
+  siteId: string,
+  slug: string,
+  locale: ContentLocale,
+) {
+  if (siteId !== txpuroSiteId) {
+    return null;
+  }
   if (isDatabaseConfigured()) {
     const repository = new PrismaGeoFlowBridgeRepository();
     const candidates = Array.from(new Set([slug, normalizeStoredSlug(slug), `guides/${normalizeStoredSlug(slug)}`]));
     for (const candidate of candidates) {
-      const persisted = await repository.findPublicContentAsset(candidate, locale, "txpuro");
+      const persisted = await repository.findPublicContentAsset(
+        siteId,
+        candidate,
+        locale,
+        "txpuro",
+      );
       if (persisted) {
         return normalizePublicAsset(persisted);
       }
     }
+    return null;
   }
   return (
     txpuroStarterAssets().find(
@@ -758,16 +772,14 @@ export async function getTxpuroPublicAsset(slug: string, locale: ContentLocale) 
   );
 }
 
-export async function listTxpuroPublicAssets() {
+export async function listTxpuroPublicAssets(siteId: string) {
+  if (siteId !== txpuroSiteId) {
+    return [];
+  }
   if (isDatabaseConfigured()) {
     const repository = new PrismaGeoFlowBridgeRepository();
-    const assets = await repository.listContentAssets();
-    const publicAssets = assets
-      .filter((asset) => asset.publishTarget === "txpuro" && asset.isPublic)
-      .map(normalizePublicAsset);
-    if (publicAssets.length) {
-      return publicAssets;
-    }
+    const assets = await repository.listPublicContentAssets(siteId, "txpuro");
+    return assets.map(normalizePublicAsset);
   }
   return txpuroStarterAssets();
 }

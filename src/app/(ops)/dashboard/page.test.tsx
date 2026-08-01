@@ -4,8 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccessScope } from "@/lib/authorization";
 import type { DashboardSnapshot } from "@/types/geo";
 
+const TestAuthorizationError = vi.hoisted(
+  () =>
+    class TestAuthorizationError extends Error {
+      constructor(readonly code: "UNAUTHENTICATED" | "WORKSPACE_FORBIDDEN") {
+        super(code);
+        this.name = "AuthorizationError";
+      }
+    },
+);
+
 const mocks = vi.hoisted(() => ({
   headers: vi.fn(),
+  notFound: vi.fn(),
   requireAccessScope: vi.fn(),
   listDashboardData: vi.fn(),
   listUnscopedAssets: vi.fn(),
@@ -20,7 +31,12 @@ vi.mock("next/headers", () => ({
   headers: mocks.headers,
 }));
 
+vi.mock("next/navigation", () => ({
+  notFound: mocks.notFound,
+}));
+
 vi.mock("@/lib/authorization", () => ({
+  AuthorizationError: TestAuthorizationError,
   requireAccessScope: mocks.requireAccessScope,
 }));
 
@@ -121,6 +137,9 @@ describe("Txpuro dashboard page", () => {
     vi.clearAllMocks();
     mocks.initialSnapshot = undefined;
     mocks.headers.mockResolvedValue(new Headers());
+    mocks.notFound.mockImplementation(() => {
+      throw new Error("NEXT_NOT_FOUND");
+    });
     mocks.requireAccessScope.mockResolvedValue(multiClientScope);
     mocks.listDashboardData.mockImplementation(async (scope: AccessScope) => ({
       assets: scope.clientIds.includes("client_other")
@@ -166,5 +185,14 @@ describe("Txpuro dashboard page", () => {
       }),
     ]);
     expect(JSON.stringify(snapshot)).not.toContain("other_client");
+  });
+
+  it("fails closed when access-scope resolution rejects the request", async () => {
+    mocks.requireAccessScope.mockRejectedValue(
+      new TestAuthorizationError("UNAUTHENTICATED"),
+    );
+
+    await expect(TxpuroDashboardPage()).rejects.toThrow("NEXT_NOT_FOUND");
+    expect(mocks.listDashboardData).not.toHaveBeenCalled();
   });
 });

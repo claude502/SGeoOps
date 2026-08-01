@@ -61,7 +61,16 @@ export interface ListContentAssetsOptions {
 export interface GeoFlowBridgeRepository {
   ensureContentAsset(asset: ContentAsset): Promise<void>;
   findContentAsset(contentAssetId: string): Promise<ContentAsset | null>;
-  findPublicContentAsset(slug: string, locale: string, publishTarget?: string): Promise<ContentAsset | null>;
+  findPublicContentAsset(
+    siteId: string,
+    slug: string,
+    locale: string,
+    publishTarget?: string,
+  ): Promise<ContentAsset | null>;
+  listPublicContentAssets(
+    siteId: string,
+    publishTarget?: string,
+  ): Promise<ContentAsset[]>;
   listContentAssets(options?: ListContentAssetsOptions): Promise<ContentAsset[]>;
   seedContentAssets(assets: ContentAsset[]): Promise<void>;
   findLinkByIdempotencyKey(idempotencyKey: string): Promise<GeoFlowTaskLinkRecord | null>;
@@ -282,12 +291,25 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
     return asset ? mapAsset(asset) : null;
   }
 
-  async findPublicContentAsset(slug: string, locale: string, publishTarget = "txpuro") {
+  async findPublicContentAsset(
+    siteId: string,
+    slug: string,
+    locale: string,
+    publishTarget = "txpuro",
+  ) {
     const asset = await getPrisma().contentAsset.findFirst({
-      where: { slug, locale, publishTarget, isPublic: true },
+      where: { siteId, slug, locale, publishTarget, isPublic: true },
       orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
     });
     return asset ? mapAsset(asset) : null;
+  }
+
+  async listPublicContentAssets(siteId: string, publishTarget = "txpuro") {
+    const assets = await getPrisma().contentAsset.findMany({
+      where: { siteId, publishTarget, isPublic: true },
+      orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
+    });
+    return assets.map(mapAsset);
   }
 
   async listContentAssets(options?: ListContentAssetsOptions) {
@@ -536,12 +558,14 @@ export class ScopedPrismaGeoFlowBridgeRepository
   }
 
   async findPublicContentAsset(
+    siteId: string,
     slug: string,
     locale: string,
     publishTarget = "txpuro",
   ) {
     const asset = await this.database.contentAsset.findFirst({
       where: {
+        siteId,
         slug,
         locale,
         publishTarget,
@@ -552,6 +576,28 @@ export class ScopedPrismaGeoFlowBridgeRepository
     return asset
       ? this.business.findContentAsset(this.scope, asset.id)
       : null;
+  }
+
+  async listPublicContentAssets(siteId: string, publishTarget = "txpuro") {
+    const assets = await this.database.contentAsset.findMany({
+      where: {
+        siteId,
+        publishTarget,
+        isPublic: true,
+        ...legacyScopeWhere(this.scope),
+      },
+      orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
+      select: { id: true },
+    });
+    return Promise.all(
+      assets.map(async ({ id }) => {
+        const asset = await this.business.findContentAsset(this.scope, id);
+        if (!asset) {
+          throw new ScopedBusinessError("RESOURCE_NOT_FOUND");
+        }
+        return asset;
+      }),
+    );
   }
 
   async listContentAssets(options?: ListContentAssetsOptions) {
@@ -924,7 +970,12 @@ export class InMemoryGeoFlowBridgeRepository implements GeoFlowBridgeRepository 
     return this.assets.get(contentAssetId) ?? null;
   }
 
-  async findPublicContentAsset(slug: string, locale: string, publishTarget = "txpuro") {
+  async findPublicContentAsset(
+    _siteId: string,
+    slug: string,
+    locale: string,
+    publishTarget = "txpuro",
+  ) {
     return (
       Array.from(this.assets.values()).find(
         (asset) =>
@@ -933,6 +984,12 @@ export class InMemoryGeoFlowBridgeRepository implements GeoFlowBridgeRepository 
           asset.publishTarget === publishTarget &&
           asset.isPublic,
       ) ?? null
+    );
+  }
+
+  async listPublicContentAssets(_siteId: string, publishTarget = "txpuro") {
+    return Array.from(this.assets.values()).filter(
+      (asset) => asset.publishTarget === publishTarget && asset.isPublic,
     );
   }
 
