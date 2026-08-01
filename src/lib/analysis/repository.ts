@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Prisma, RunStatus } from "@prisma/client";
+import type { Prisma, PrismaClient, RunStatus } from "@prisma/client";
 import {
   analysisEnvelopeSchema,
   type AnalysisEnvelope,
@@ -13,8 +13,30 @@ import {
   ArtifactUriError,
   parseArtifactUri,
 } from "@/lib/artifacts/uri";
+import type { StoredArtifact } from "@/lib/artifacts/store";
+import { getPrisma } from "@/lib/prisma";
 
 export type { CreateOutboxEvent } from "@/lib/events/outbox";
+
+export interface AnalysisRepository {
+  ingest(
+    envelope: AnalysisEnvelope,
+    uploadedArtifact: StoredArtifact | null,
+  ): Promise<{ duplicate: boolean }>;
+}
+
+export class PrismaAnalysisRepository implements AnalysisRepository {
+  constructor(private readonly prisma: PrismaClient = getPrisma()) {}
+
+  async ingest(
+    envelope: AnalysisEnvelope,
+    uploadedArtifact: StoredArtifact | null,
+  ): Promise<{ duplicate: boolean }> {
+    return this.prisma.$transaction((tx) =>
+      ingestEnvelope(tx, envelope, uploadedArtifact)
+    );
+  }
+}
 
 export const RAW_ARTIFACT_RETENTION_DAYS = 180;
 const retentionMilliseconds =
@@ -231,6 +253,35 @@ function assertArtifactFacts(
   }
 }
 
+function assertUploadedArtifact(
+  envelope: AnalysisEnvelope,
+  uploadedArtifact: StoredArtifact | null | undefined,
+) {
+  if (uploadedArtifact === undefined) {
+    return;
+  }
+  const expected = envelope.rawArtifact;
+  if (expected === null) {
+    if (uploadedArtifact === null) return;
+    throw new AnalysisRepositoryError(
+      "ANALYSIS_ARTIFACT_CONFLICT",
+      "Analysis envelope does not allow an uploaded raw artifact.",
+    );
+  }
+  if (
+    uploadedArtifact === null ||
+    uploadedArtifact.uri !== expected.uri ||
+    uploadedArtifact.checksum !== expected.checksum ||
+    uploadedArtifact.mediaType !== expected.mediaType ||
+    uploadedArtifact.byteSize !== expected.byteSize
+  ) {
+    throw new AnalysisRepositoryError(
+      "ANALYSIS_ARTIFACT_CONFLICT",
+      "Uploaded raw artifact metadata does not match the analysis envelope.",
+    );
+  }
+}
+
 function assertObservationFacts(
   observations: Array<{
     kind: string;
@@ -273,7 +324,8 @@ async function createIngestMarker(
 export async function ingestEnvelope(
   tx: Prisma.TransactionClient,
   envelope: AnalysisEnvelope,
-): Promise<void> {
+  uploadedArtifact?: StoredArtifact | null,
+): Promise<{ duplicate: boolean }> {
   const parsed = analysisEnvelopeSchema.parse(envelope);
   if (parsed.rawArtifact !== null) {
     try {
@@ -370,6 +422,7 @@ export async function ingestEnvelope(
       "Analysis envelope source contract does not match the run.",
     );
   }
+  assertUploadedArtifact(parsed, uploadedArtifact);
 
   const hash = envelopeHash(parsed);
   const markers = await tx.outboxEvent.findMany({
@@ -398,7 +451,7 @@ export async function ingestEnvelope(
       );
     }
     assertRunState(run, parsed);
-    return;
+    return { duplicate: true };
   }
 
   const hasImmutableFacts =
@@ -411,7 +464,7 @@ export async function ingestEnvelope(
       data: expectedRunState(parsed),
     });
     await createIngestMarker(tx, parsed.runId, hash);
-    return;
+    return { duplicate: false };
   }
 
   if (parsed.rawArtifact !== null) {
@@ -445,4 +498,5 @@ export async function ingestEnvelope(
     data: expectedRunState(parsed),
   });
   await createIngestMarker(tx, parsed.runId, hash);
+  return { duplicate: false };
 }

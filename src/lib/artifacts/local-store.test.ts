@@ -164,6 +164,7 @@ describe("LocalArtifactStore", () => {
       mediaType: "application/json",
       byteSize: bytes.byteLength,
     });
+    await expect(store.getMetadata(stored.uri)).resolves.toEqual(stored);
     const firstRead = await store.get(stored.uri);
     const secondRead = await store.get(stored.uri);
     expect(firstRead).toEqual(bytes);

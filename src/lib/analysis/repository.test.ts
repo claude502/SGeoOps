@@ -365,6 +365,27 @@ describe("ingestEnvelope", () => {
     expect(database.outboxEvent.create).not.toHaveBeenCalled();
   });
 
+  it("reports whether an accepted envelope was already ingested", async () => {
+    const initial = analysisDatabase();
+
+    await expect(ingestEnvelope(initial as never, envelope)).resolves.toEqual({
+      duplicate: false,
+    });
+    const markerPayload = initial.outboxEvent.create.mock.calls[0]?.[0].data.payload;
+    const replay = analysisDatabase(existingRun({
+      ...envelopeFacts(),
+      ...envelopeRunState(),
+    }));
+    replay.outboxEvent.findMany.mockResolvedValue([{
+      id: "marker_1",
+      payload: markerPayload,
+    }]);
+
+    await expect(ingestEnvelope(replay as never, envelope)).resolves.toEqual({
+      duplicate: true,
+    });
+  });
+
   it("rejects a replay with another artifact checksum", async () => {
     const database = analysisDatabase(existingRun({
       artifacts: [{
@@ -378,6 +399,21 @@ describe("ingestEnvelope", () => {
     await expect(
       ingestEnvelope(database as never, envelope),
     ).rejects.toMatchObject({ code: "ANALYSIS_ARTIFACT_CONFLICT" });
+  });
+
+  it("checks uploaded artifact metadata inside the ingestion transaction", async () => {
+    const database = analysisDatabase();
+
+    await expect(
+      ingestEnvelope(database as never, envelope, {
+        ...envelope.rawArtifact!,
+        checksum: `sha256:${"b".repeat(64)}`,
+      }),
+    ).rejects.toMatchObject({ code: "ANALYSIS_ARTIFACT_CONFLICT" });
+    expect(database.rawArtifact.create).not.toHaveBeenCalled();
+    expect(database.observation.createMany).not.toHaveBeenCalled();
+    expect(database.analysisRun.update).not.toHaveBeenCalled();
+    expect(database.outboxEvent.create).not.toHaveBeenCalled();
   });
 
   it("uses a stable marker for a null-artifact replay", async () => {

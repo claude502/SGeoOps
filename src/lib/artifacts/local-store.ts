@@ -589,6 +589,19 @@ export class LocalArtifactStore implements ArtifactStore {
     });
   }
 
+  async getMetadata(uri: string): Promise<StoredArtifact> {
+    const location = parseArtifactUri(uri);
+    return this.withLock(location.uri, async () => {
+      const artifact = await this.readStored(location);
+      return {
+        uri: artifact.metadata.uri,
+        checksum: artifact.metadata.checksum,
+        mediaType: artifact.metadata.mediaType,
+        byteSize: artifact.metadata.byteSize,
+      };
+    });
+  }
+
   private async withLock<T>(key: string, operation: () => Promise<T>) {
     const previous = this.locks.get(key) ?? Promise.resolve();
     let release!: () => void;

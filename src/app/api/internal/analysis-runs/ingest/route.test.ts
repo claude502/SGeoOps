@@ -1,0 +1,195 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { AnalysisEnvelope } from "@sgeo/analysis-contract";
+import { signInternalRequest } from "@sgeo/internal-protocol";
+import { AnalysisIngestError } from "@/lib/analysis/ingest-service";
+import { createAnalysisIngestRoute } from "./route";
+
+const secret = "task-2-test-secret";
+const pathname = "/api/internal/analysis-runs/ingest";
+const originalSecret = process.env.SGEO_INTERNAL_SECRET;
+const envelope: AnalysisEnvelope = {
+  contractVersion: "1",
+  runId: "run_1",
+  clientId: "client_1",
+  brandId: "brand_1",
+  siteId: "site_1",
+  siteMarketId: null,
+  source: "siteone",
+  sourceVersion: "2.5.1",
+  adapterVersion: "1.0.0",
+  status: "succeeded",
+  startedAt: "2026-08-01T01:00:00.000Z",
+  finishedAt: "2026-08-01T01:01:00.000Z",
+  rawArtifact: null,
+  observations: [],
+  error: null,
+};
+
+async function signedRequest(
+  rawBody: string,
+  timestamp = Math.floor(Date.now() / 1_000),
+  contentType = "application/json",
+  method = "POST",
+) {
+  const bytes = new TextEncoder().encode(rawBody);
+  const signed = await signInternalRequest(
+    secret,
+    method,
+    pathname,
+    bytes,
+    timestamp,
+  );
+  return new Request(`http://localhost${pathname}`, {
+    method,
+    headers: {
+      "content-type": contentType,
+      "x-sgeo-timestamp": signed.timestamp,
+      "x-sgeo-signature": signed.signature,
+    },
+    body: bytes,
+  });
+}
+
+function service() {
+  return {
+    ingest: vi.fn().mockResolvedValue({
+      runId: "run_1",
+      status: "accepted" as const,
+      duplicate: false,
+    }),
+  };
+}
+
+beforeEach(() => {
+  process.env.SGEO_INTERNAL_SECRET = secret;
+});
+
+afterEach(() => {
+  if (originalSecret === undefined) {
+    delete process.env.SGEO_INTERNAL_SECRET;
+  } else {
+    process.env.SGEO_INTERNAL_SECRET = originalSecret;
+  }
+});
+
+describe("POST /api/internal/analysis-runs/ingest", () => {
+  it("rejects a valid signature for another HTTP method", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest(
+      JSON.stringify(envelope),
+      Math.floor(Date.now() / 1_000),
+      "application/json",
+      "PUT",
+    ));
+
+    expect(response.status).toBe(405);
+    expect(created.ingest).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unsigned request before constructing the service", async () => {
+    const createService = vi.fn(service);
+    const post = createAnalysisIngestRoute(createService);
+
+    const response = await post(new Request(`http://localhost${pathname}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    }));
+
+    expect(response.status).toBe(401);
+    expect(createService).not.toHaveBeenCalled();
+  });
+
+  it("rejects an expired signature before parsing the envelope", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest(
+      JSON.stringify(envelope),
+      Math.floor(Date.now() / 1_000) - 301,
+    ));
+
+    expect(response.status).toBe(401);
+    expect(created.ingest).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed signed JSON with a safe client error", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest("{not-json"));
+
+    expect(response.status).toBe(400);
+    expect(created.ingest).not.toHaveBeenCalled();
+  });
+
+  it("passes a signed envelope to the service and returns its replay state", async () => {
+    const created = service();
+    created.ingest.mockResolvedValueOnce({
+      runId: "run_1",
+      status: "accepted",
+      duplicate: true,
+    });
+    const post = createAnalysisIngestRoute(() => created);
+    const rawBody = JSON.stringify(envelope);
+
+    const response = await post(await signedRequest(rawBody));
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({
+      runId: "run_1",
+      status: "accepted",
+      duplicate: true,
+    });
+    expect(created.ingest).toHaveBeenCalledWith(envelope);
+  });
+
+  it("maps ownership failures to a non-enumerating not-found response", async () => {
+    const created = service();
+    created.ingest.mockRejectedValueOnce(new AnalysisIngestError(
+      "RUN_OWNERSHIP_MISMATCH",
+    ));
+    const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest(JSON.stringify(envelope)));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "Analysis run not found",
+      code: "RUN_NOT_FOUND",
+    });
+  });
+
+  it("maps a changed artifact checksum to conflict", async () => {
+    const created = service();
+    created.ingest.mockRejectedValueOnce(new AnalysisIngestError(
+      "RUN_CHECKSUM_CONFLICT",
+    ));
+    const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest(JSON.stringify(envelope)));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Analysis artifact conflicts with the accepted run",
+      code: "RUN_CHECKSUM_CONFLICT",
+    });
+  });
+
+  it("rejects an unsupported signed content type", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+
+    const response = await post(await signedRequest(
+      JSON.stringify(envelope),
+      Math.floor(Date.now() / 1_000),
+      "text/plain",
+    ));
+
+    expect(response.status).toBe(415);
+    expect(created.ingest).not.toHaveBeenCalled();
+  });
+});

@@ -12,5 +12,6 @@ export interface ArtifactStore {
     body: Uint8Array,
     mediaType: string,
   ): Promise<StoredArtifact>;
+  getMetadata(uri: string): Promise<StoredArtifact>;
   get(uri: string): Promise<Uint8Array>;
 }
