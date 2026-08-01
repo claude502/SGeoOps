@@ -68,10 +68,6 @@ async function renderProductionComposeWithFixture(): Promise<RenderedCompose> {
         "DATABASE_URL=postgresql://geo_ops:fixture-postgres-password@postgres:5432/geo_content_ops?schema=public",
         "BETTER_AUTH_SECRET=fixture-better-auth-secret",
         "POSTGRES_PASSWORD=fixture-postgres-password",
-        "TRIGGER_API_URL=https://trigger.fixture.internal",
-        "TRIGGER_WORKER_API_KEY=fixture-trigger-api-key",
-        "TRIGGER_PROJECT_REF=proj_fixture",
-        "FIRECRAWL_API_KEY=fixture-firecrawl-key",
       ].join("\n"),
     );
 
@@ -96,21 +92,79 @@ async function renderProductionComposeWithFixture(): Promise<RenderedCompose> {
   }
 }
 
-describe("Compose worker isolation policy", () => {
-  it("does not give geo-worker direct database configuration", async () => {
-    for (const composePath of [
-      "docker-compose.yml",
-      "deploy/docker-compose.prod.example.yml",
-    ]) {
-      const compose = await readFile(resolve(process.cwd(), composePath), "utf8");
-      const worker = serviceBlock(compose, "geo-worker");
+async function renderDevelopmentComposeWithFixture(): Promise<RenderedCompose> {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "sgeo-compose-policy-"));
+  const fixtureEnv = join(fixtureRoot, ".env");
 
-      expect(worker, composePath).not.toMatch(directDatabaseCredentialPattern);
-      expect(worker, composePath).not.toMatch(/\b(?:postgres|postgresql):\/\//i);
-      expect(worker, composePath).not.toMatch(/^\s+env_file:/m);
-      expect(worker, composePath).toContain("SGEO_INTERNAL_URL");
-      expect(worker, composePath).toContain("SGEO_INTERNAL_SECRET_FILE");
-    }
+  try {
+    await writeFile(
+      join(fixtureRoot, "docker-compose.yml"),
+      await readFile(resolve(process.cwd(), "docker-compose.yml"), "utf8"),
+    );
+    await writeFile(
+      fixtureEnv,
+      "TRIGGER_ACCESS_TOKEN=fixture-trigger-access-token\n",
+    );
+
+    const { stdout } = await execFileAsync(
+      "docker",
+      [
+        "compose",
+        "--env-file",
+        fixtureEnv,
+        "-f",
+        join(fixtureRoot, "docker-compose.yml"),
+        "config",
+        "--format",
+        "json",
+      ],
+      { cwd: fixtureRoot },
+    );
+
+    return JSON.parse(stdout) as RenderedCompose;
+  } finally {
+    await rm(fixtureRoot, { recursive: true });
+  }
+}
+
+describe("Compose worker isolation policy", () => {
+  it("keeps the development geo-worker free of direct database configuration", async () => {
+    const composePath = "docker-compose.yml";
+    const compose = await readFile(resolve(process.cwd(), composePath), "utf8");
+    const worker = serviceBlock(compose, "geo-worker");
+
+    expect(worker, composePath).not.toMatch(directDatabaseCredentialPattern);
+    expect(worker, composePath).not.toMatch(/\b(?:postgres|postgresql):\/\//i);
+    expect(worker, composePath).not.toMatch(/^\s+env_file:/m);
+    expect(worker, composePath).toContain("SGEO_INTERNAL_URL");
+    expect(worker, composePath).toContain("SGEO_INTERNAL_SECRET_FILE");
+  });
+
+  it("keeps Trigger v4 dev lifecycle out of the production SGeoOps stack", async () => {
+    const [development, production, readme, workerDockerfile] = await Promise.all([
+      readFile(resolve(process.cwd(), "docker-compose.yml"), "utf8"),
+      readFile(
+        resolve(process.cwd(), "deploy/docker-compose.prod.example.yml"),
+        "utf8",
+      ),
+      readFile(resolve(process.cwd(), "deploy/README.md"), "utf8"),
+      readFile(resolve(process.cwd(), "geo-worker/Dockerfile"), "utf8"),
+    ]);
+    const developmentWorker = serviceBlock(development, "geo-worker");
+
+    expect(developmentWorker).toContain(
+      'command: ["npm", "run", "trigger:dev"]',
+    );
+    expect(developmentWorker).toContain(
+      "TRIGGER_ACCESS_TOKEN=${TRIGGER_ACCESS_TOKEN:-}",
+    );
+    expect(production).not.toContain("\n  geo-worker:");
+    expect(production).not.toContain("TRIGGER_ACCESS_TOKEN");
+    expect(production).not.toContain("TRIGGER_API_KEY");
+    expect(workerDockerfile).not.toMatch(/^CMD\s/m);
+    expect(readme).toContain("Trigger.dev v4.5.9");
+    expect(readme).toContain("Phase 2 Task 9");
+    expect(readme).toContain("`TRIGGER_API_URL` and `TRIGGER_ACCESS_TOKEN`");
   });
 
   it("does not publish PostgreSQL or Redis from production Compose", async () => {
@@ -167,28 +221,23 @@ describe("Compose worker isolation policy", () => {
     const rendered = await renderProductionComposeWithFixture();
     const postgres = rendered.services.postgres.environment ?? {};
     const ops = rendered.services["geo-ops"].environment ?? {};
-    const worker = rendered.services["geo-worker"].environment ?? {};
 
     expect(postgres.POSTGRES_PASSWORD).toBe("fixture-postgres-password");
     expect(ops.DATABASE_URL).toBe(
       "postgresql://geo_ops:fixture-postgres-password@postgres:5432/geo_content_ops?schema=public",
     );
     expect(ops.BETTER_AUTH_SECRET).toBe("fixture-better-auth-secret");
-    expect(worker).toMatchObject({
-      TRIGGER_API_URL: "https://trigger.fixture.internal",
-      TRIGGER_API_KEY: "fixture-trigger-api-key",
-      TRIGGER_PROJECT_REF: "proj_fixture",
-      FIRECRAWL_API_KEY: "fixture-firecrawl-key",
-    });
+    expect(rendered.services).not.toHaveProperty("geo-worker");
+    expect(JSON.stringify(rendered)).not.toContain("TRIGGER_ACCESS_TOKEN");
+    expect(JSON.stringify(rendered)).not.toContain("TRIGGER_API_KEY");
+  });
 
-    for (const key of [
-      "DATABASE_URL",
-      "DATABASE_URL_FILE",
-      "PRISMA_DATABASE_URL",
-      "PRISMA_DATABASE_URL_FILE",
-    ]) {
-      expect(worker).not.toHaveProperty(key);
-    }
+  it("renders the v4 access-token contract into the development worker only", async () => {
+    const rendered = await renderDevelopmentComposeWithFixture();
+    const worker = rendered.services["geo-worker"].environment ?? {};
+
+    expect(worker.TRIGGER_ACCESS_TOKEN).toBe("fixture-trigger-access-token");
+    expect(worker).not.toHaveProperty("TRIGGER_API_KEY");
   });
 
   it("uses root .env for production Compose interpolation in documentation and remote deploys", async () => {

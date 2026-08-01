@@ -23,22 +23,25 @@ describe("Trigger v4 worker configuration", () => {
     });
   });
 
-  it("injects the v4 access-token contract into both worker compose services", async () => {
-    const [development, production, environmentExample] = await Promise.all([
+  it("injects the v4 access-token contract into the development worker service", async () => {
+    const [development, environmentExample] = await Promise.all([
       readFile(rootFile("docker-compose.yml"), "utf8"),
-      readFile(rootFile("deploy/docker-compose.prod.example.yml"), "utf8"),
       readFile(rootFile(".env.example"), "utf8"),
     ]);
 
     expect(development).toContain(
       "- TRIGGER_ACCESS_TOKEN=${TRIGGER_ACCESS_TOKEN:-}",
     );
-    expect(production).toContain(
-      "TRIGGER_ACCESS_TOKEN: ${TRIGGER_ACCESS_TOKEN:-}",
-    );
     expect(environmentExample).toContain("TRIGGER_ACCESS_TOKEN=");
     expect(development).not.toContain("TRIGGER_API_KEY=");
-    expect(production).not.toContain("TRIGGER_API_KEY:");
     expect(environmentExample).not.toContain("TRIGGER_WORKER_API_KEY=");
+  });
+
+  it("prevents plain TypeScript compilation from emitting into worker source", async () => {
+    const tsconfig = JSON.parse(
+      await readFile(rootFile("geo-worker/tsconfig.json"), "utf8"),
+    ) as { compilerOptions?: { noEmit?: boolean } };
+
+    expect(tsconfig.compilerOptions?.noEmit).toBe(true);
   });
 });

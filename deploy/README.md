@@ -18,6 +18,12 @@ Before running it:
 
 The current `wingheng.technology` test deployment uses Cloudflare edge HTTPS with HTTP origin mode to avoid redirect loops under Cloudflare `Flexible`. For production, prefer Cloudflare `Full (strict)` plus an HTTPS Caddy site block.
 
+## Trigger.dev v4 Production Precondition
+
+This SGeoOps production Compose stack intentionally does not start `geo-worker` or deploy Trigger tasks. A local `trigger dev` process is for the development Compose lifecycle only and is not a production worker deployment.
+
+Provision Trigger.dev v4.5.9 separately with the official pinned webapp and worker/runner stack, then deploy this task project from CI/CD with `TRIGGER_API_URL` and `TRIGGER_ACCESS_TOKEN` supplied through the CI secret store. The concrete generated self-host configuration and production runbook are delivered in Phase 2 Task 9; this Compose file does not claim that Trigger.dev is already deployed.
+
 For a new database, run this mandatory fail-fast procedure before any full-stack start. The password is read without echo and is passed only to the one-time Compose runner; do not put it in `.env`, the archive, Git, or a command-line argument:
 
 ```bash
@@ -51,7 +57,7 @@ docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --r
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
 ```
 
-Migration, bootstrap, status, or cleanup failure stops before full-stack `up -d`; only PostgreSQL may remain up. Correct the failure and rerun this procedure rather than starting `geo-ops`, `reverse-proxy`, or `geo-worker` by hand. `remote-deploy.ps1` does not accept bootstrap credentials: it runs the read-only `auth:bootstrap:status` gate before full startup, so use the procedure above once for a fresh database and use the script only after it succeeds.
+Migration, bootstrap, status, or cleanup failure stops before full-stack `up -d`; only PostgreSQL may remain up. Correct the failure and rerun this procedure rather than starting `geo-ops` or `reverse-proxy` by hand. `remote-deploy.ps1` does not accept bootstrap credentials: it runs the read-only `auth:bootstrap:status` gate before full startup, so use the procedure above once for a fresh database and use the script only after it succeeds.
 
 Provision the internal signing secret separately from the code archive, using an encrypted operator channel:
 

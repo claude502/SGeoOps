@@ -66,6 +66,7 @@ services:
     build:
       context: .
       dockerfile: geo-worker/Dockerfile
+    command: ["npm", "run", "trigger:dev"]
     restart: unless-stopped
     depends_on:
       - trigger-dev

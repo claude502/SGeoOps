@@ -6,6 +6,7 @@
     "lib": ["ES2024", "DOM"],
     "strict": true,
     "skipLibCheck": true,
+    "noEmit": true,
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "trigger.config.ts"]

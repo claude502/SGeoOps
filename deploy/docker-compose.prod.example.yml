@@ -50,29 +50,6 @@ services:
     networks:
       - app
 
-  geo-worker:
-    build:
-      context: ..
-      dockerfile: geo-worker/Dockerfile
-    restart: unless-stopped
-    environment:
-      TRIGGER_API_URL: ${TRIGGER_API_URL:-}
-      TRIGGER_ACCESS_TOKEN: ${TRIGGER_ACCESS_TOKEN:-}
-      TRIGGER_PROJECT_REF: ${TRIGGER_PROJECT_REF:-proj_sgeo_ops}
-      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
-      SGEO_INTERNAL_URL: http://geo-ops:3000
-      SGEO_INTERNAL_SECRET_FILE: /run/secrets/sgeo_internal_secret
-      SGEO_ARTIFACT_ROOT: /var/lib/sgeo/artifacts
-      SGEO_SECRET_ROOT: /run/secrets
-    volumes:
-      - artifact-data:/var/lib/sgeo/artifacts
-      - ../secrets:/run/secrets:ro
-    depends_on:
-      geo-ops:
-        condition: service_healthy
-    networks:
-      - app
-
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped

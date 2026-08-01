@@ -9,4 +9,3 @@ COPY geo-worker ./geo-worker
 COPY packages/analysis-contract ./packages/analysis-contract
 COPY packages/internal-protocol ./packages/internal-protocol
 WORKDIR /app/geo-worker
-CMD ["npm", "run", "trigger:dev"]
