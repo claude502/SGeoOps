@@ -1,0 +1,41 @@
+{
+  "summary": {
+    "score": 0.78
+  },
+  "routes": [
+    {
+      "path": "/",
+      "score": 0.8,
+      "categories": {
+        "performance": { "score": 0.74 },
+        "accessibility": { "score": 0.93 },
+        "best-practices": { "score": 0.88 },
+        "seo": { "score": 0.95 }
+      },
+      "metrics": {
+        "largest-contentful-paint": { "numericValue": 2400 },
+        "cumulative-layout-shift": { "numericValue": 0.03 },
+        "total-blocking-time": { "numericValue": 100 }
+      }
+    },
+    {
+      "path": "/pricing",
+      "score": 0.76,
+      "categories": {
+        "performance": { "score": 0.7 },
+        "accessibility": { "score": 0.89 },
+        "best-practices": { "score": 0.84 },
+        "seo": { "score": 0.93 }
+      },
+      "metrics": {
+        "largest-contentful-paint": { "numericValue": 2460 },
+        "cumulative-layout-shift": { "numericValue": 0.05 },
+        "total-blocking-time": { "numericValue": 120 }
+      }
+    }
+  ],
+  "metadata": {
+    "categories": {},
+    "metrics": {}
+  }
+}

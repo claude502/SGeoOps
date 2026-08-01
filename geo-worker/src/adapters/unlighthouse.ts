@@ -239,6 +239,41 @@ function metricValue(metrics: JsonRecord, key: string): number | null {
   return value !== null && value >= 0 ? value : null;
 }
 
+function aggregateCategoryScore(categories: JsonRecord, key: string): number | null {
+  const category = asRecord(categories[key]);
+  return category === null ? null : scoreValue(category.averageScore);
+}
+
+function aggregateMetricValue(metrics: JsonRecord, key: string): number | null {
+  const metric = asRecord(metrics[key]);
+  const value = metric === null ? null : finiteNumber(metric.averageNumericValue);
+  return value !== null && value >= 0 ? value : null;
+}
+
+function hasRequiredSummaryAggregates(summary: JsonRecord) {
+  const categories = asRecord(summary.categories);
+  const metrics = asRecord(summary.metrics);
+  if (categories === null || metrics === null) return false;
+
+  const performance = aggregateCategoryScore(categories, "performance");
+  const accessibility = aggregateCategoryScore(categories, "accessibility");
+  const bestPractices = aggregateCategoryScore(categories, "best-practices");
+  const seo = aggregateCategoryScore(categories, "seo");
+  const lcp = aggregateMetricValue(metrics, "largest-contentful-paint");
+  const cls = aggregateMetricValue(metrics, "cumulative-layout-shift");
+  const inp = aggregateMetricValue(metrics, "interaction-to-next-paint");
+  const tbt = aggregateMetricValue(metrics, "total-blocking-time");
+  return (
+    performance !== null &&
+    accessibility !== null &&
+    bestPractices !== null &&
+    seo !== null &&
+    lcp !== null &&
+    cls !== null &&
+    (inp !== null || tbt !== null)
+  );
+}
+
 function normalizeReport(
   input: UnlighthouseInput,
   templateRoutes: string[],
@@ -257,6 +292,7 @@ function normalizeReport(
     document === null ||
     summary === null ||
     scoreValue(summary.score) === null ||
+    !hasRequiredSummaryAggregates(summary) ||
     !Array.isArray(rawRoutes) ||
     rawRoutes.length === 0 ||
     rawRoutes.length > templateRoutes.length

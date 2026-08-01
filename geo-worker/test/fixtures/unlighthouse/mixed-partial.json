@@ -1,8 +1,17 @@
 {
   "summary": {
     "score": 0.8,
-    "categories": {},
-    "metrics": {}
+    "categories": {
+      "performance": { "averageScore": 0.74 },
+      "accessibility": { "averageScore": 0.93 },
+      "best-practices": { "averageScore": 0.88 },
+      "seo": { "averageScore": 0.95 }
+    },
+    "metrics": {
+      "largest-contentful-paint": { "averageNumericValue": 2400 },
+      "cumulative-layout-shift": { "averageNumericValue": 0.03 },
+      "total-blocking-time": { "averageNumericValue": 100 }
+    }
   },
   "routes": [
     {

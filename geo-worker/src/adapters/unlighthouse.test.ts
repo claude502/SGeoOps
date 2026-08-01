@@ -173,6 +173,76 @@ describe("Unlighthouse adapter", () => {
     });
   });
 
+  it("rejects a score-only summary even when every route has complete metrics", async () => {
+    const rawReport = await fixture("invalid-summary-aggregate.json");
+
+    const result = await executeUnlighthouse(input, {
+      execFile: successfulCli(rawReport, []),
+      lookup: publicLookup(),
+    });
+
+    expect(result).toMatchObject({
+      rawReport: new Uint8Array(rawReport),
+      envelope: {
+        status: "failed",
+        error: { code: "UNLIGHTHOUSE_INVALID_REPORT", retryable: false },
+      },
+    });
+  });
+
+  it.each([
+    ["performance category", ["categories", "performance"]],
+    ["accessibility category", ["categories", "accessibility"]],
+    ["best-practices category", ["categories", "best-practices"]],
+    ["SEO category", ["categories", "seo"]],
+    ["LCP metric", ["metrics", "largest-contentful-paint"]],
+    ["CLS metric", ["metrics", "cumulative-layout-shift"]],
+    ["both INP and TBT metrics", ["metrics", "interaction-to-next-paint", "total-blocking-time"]],
+  ])("rejects a summary missing the required %s", async (_label, path) => {
+    const document = JSON.parse((await fixture("success.json")).toString("utf8")) as {
+      summary: { categories: Record<string, unknown>; metrics: Record<string, unknown> };
+    };
+    const [section, ...keys] = path;
+    const summarySection = document.summary[section as "categories" | "metrics"];
+    for (const key of keys) delete summarySection[key];
+    const rawReport = new TextEncoder().encode(JSON.stringify(document));
+
+    const result = await executeUnlighthouse(input, {
+      execFile: successfulCli(rawReport, []),
+      lookup: publicLookup(),
+    });
+
+    expect(result.envelope).toMatchObject({
+      status: "failed",
+      error: { code: "UNLIGHTHOUSE_INVALID_REPORT", retryable: false },
+    });
+  });
+
+  it("accepts aggregate INP when TBT is absent", async () => {
+    const document = JSON.parse((await fixture("success.json")).toString("utf8")) as {
+      summary: { metrics: Record<string, unknown> };
+      routes: Array<{ metrics: Record<string, unknown> }>;
+    };
+    delete document.summary.metrics["total-blocking-time"];
+    document.summary.metrics["interaction-to-next-paint"] = { averageNumericValue: 82 };
+    for (const route of document.routes) {
+      delete route.metrics["total-blocking-time"];
+      route.metrics["interaction-to-next-paint"] = { numericValue: 80 };
+    }
+    const rawReport = new TextEncoder().encode(JSON.stringify(document));
+
+    const result = await executeUnlighthouse(input, {
+      execFile: successfulCli(rawReport, []),
+      lookup: publicLookup(),
+    });
+
+    expect(result.envelope).toMatchObject({ status: "succeeded", error: null });
+    expect(result.envelope.observations).toContainEqual(expect.objectContaining({
+      kind: "unlighthouse.inp",
+      value: expect.objectContaining({ metric: "interaction-to-next-paint", fallback: false }),
+    }));
+  });
+
   it("rejects a private or mixed DNS response before it creates a proxy or spawns the CLI", async () => {
     const execFile = vi.fn();
 
