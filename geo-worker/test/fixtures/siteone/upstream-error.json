@@ -1,5 +1,5 @@
 {
-  "crawler": { "name": "SiteOne Crawler", "version": "2.5.1" },
+  "crawler": { "name": "SiteOne Crawler", "version": "2.5.1.20260627" },
   "results": [
     { "url": "https://example.test/", "status": "503", "type": 1 }
   ],

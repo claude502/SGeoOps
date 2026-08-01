@@ -1,4 +1,4 @@
-FROM node:24-alpine
+FROM node:24-alpine@sha256:f70403e87646dc51b45295f4b8b70cdad0b63d2297c4c9899119b03f7af7a6b3
 ARG TARGETARCH
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -33,7 +33,9 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/siteone-crawler; \
     rm -rf /tmp/siteone /tmp/siteone.tar.gz; \
     apk del .siteone-fetch
-COPY geo-worker ./geo-worker
-COPY packages/analysis-contract ./packages/analysis-contract
-COPY packages/internal-protocol ./packages/internal-protocol
+RUN addgroup -S sgeo && adduser -S -G sgeo sgeo
+COPY --chown=sgeo:sgeo geo-worker ./geo-worker
+COPY --chown=sgeo:sgeo packages/analysis-contract ./packages/analysis-contract
+COPY --chown=sgeo:sgeo packages/internal-protocol ./packages/internal-protocol
 WORKDIR /app/geo-worker
+USER sgeo

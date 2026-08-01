@@ -2,16 +2,30 @@ import type { AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { describe, expect, it, vi } from "vitest";
 
 const triggerMocks = vi.hoisted(() => ({
-  task: vi.fn((definition: { id: string }) => ({ id: definition.id })),
+  task: vi.fn((definition: { id: string; run: (input: unknown) => Promise<unknown> }) => ({
+    id: definition.id,
+    run: definition.run,
+  })),
   info: vi.fn(),
+  warn: vi.fn(),
+  metadata: {
+    current: vi.fn(),
+    set: vi.fn(),
+    flush: vi.fn(),
+  },
 }));
 
 vi.mock("@trigger.dev/sdk", () => ({
   task: triggerMocks.task,
-  logger: { info: triggerMocks.info },
+  logger: { info: triggerMocks.info, warn: triggerMocks.warn },
+  metadata: triggerMocks.metadata,
 }));
 
-const { runSiteOneCrawl, siteOneCrawlTask } = await import("./siteone-crawl");
+const {
+  createTriggerMetadataCheckpoint,
+  runSiteOneCrawl,
+  siteOneCrawlTask,
+} = await import("./siteone-crawl");
 
 const input = {
   runId: "run_123",
@@ -92,5 +106,77 @@ describe("siteOneCrawlTask", () => {
       "application/json",
     );
     expect(result.rawArtifact).not.toBeNull();
+  });
+
+  it("checkpoints a validated uploaded envelope before ingestion so a retry does not recrawl or re-upload", async () => {
+    let checkpoint: AnalysisEnvelope | null = null;
+    const checkpointStore = {
+      load: vi.fn(async () => checkpoint),
+      save: vi.fn(async (saved: AnalysisEnvelope) => {
+        checkpoint = saved;
+      }),
+    };
+    const rawReport = new TextEncoder().encode('{"crawler":"siteone"}\n');
+    const execute = vi.fn(async () => ({ envelope, rawReport }));
+    const uploadArtifact = vi.fn(async () => ({
+      uri: "artifact://run_123/siteone-report.json",
+      checksum: `sha256:${"b".repeat(64)}`,
+      mediaType: "application/json",
+      byteSize: rawReport.byteLength,
+    }));
+    const ingest = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary SGeoOps outage"))
+      .mockResolvedValueOnce(undefined);
+    const dependencies = {
+      execute,
+      client: { uploadArtifact, ingest },
+      checkpoint: checkpointStore,
+    };
+
+    await expect(runSiteOneCrawl(input, dependencies)).rejects.toThrow("temporary SGeoOps outage");
+    expect(checkpointStore.save).toHaveBeenCalledTimes(1);
+    const savedCheckpoint = checkpointStore.save.mock.calls[0]?.[0];
+    expect(savedCheckpoint?.rawArtifact).toEqual({
+      uri: "artifact://run_123/siteone-report.json",
+      checksum: `sha256:${"b".repeat(64)}`,
+      mediaType: "application/json",
+      byteSize: rawReport.byteLength,
+    });
+
+    const retried = await runSiteOneCrawl(input, dependencies);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(ingest).toHaveBeenCalledTimes(2);
+    expect(retried).toEqual(savedCheckpoint);
+    expect(ingest).toHaveBeenLastCalledWith(savedCheckpoint);
+  });
+
+  it("persists and flushes Trigger metadata checkpoints only after validating the envelope", async () => {
+    const state: Record<string, unknown> = {};
+    triggerMocks.metadata.current.mockReturnValue(state);
+    triggerMocks.metadata.flush.mockResolvedValue(undefined);
+    triggerMocks.metadata.set.mockImplementation((key: string, value: unknown) => {
+      state[key] = value;
+      return { flush: triggerMocks.metadata.flush };
+    });
+    const checkpoint = createTriggerMetadataCheckpoint();
+    const saved = {
+      ...envelope,
+      rawArtifact: {
+        uri: "artifact://run_123/siteone-report.json",
+        checksum: `sha256:${"c".repeat(64)}`,
+        mediaType: "application/json",
+        byteSize: 27,
+      },
+    };
+
+    await checkpoint.save(saved);
+
+    expect(triggerMocks.metadata.set).toHaveBeenCalledWith(
+      "siteoneDeliveryCheckpoint",
+      expect.objectContaining({ version: 1, envelope: saved }),
+    );
+    expect(triggerMocks.metadata.flush).toHaveBeenCalledTimes(1);
+    await expect(checkpoint.load(input)).resolves.toEqual(saved);
   });
 });

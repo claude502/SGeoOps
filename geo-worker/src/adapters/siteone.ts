@@ -1,5 +1,7 @@
 import { execFile as defaultExecFile } from "node:child_process";
+import { lookup as defaultLookup } from "node:dns/promises";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,14 +18,23 @@ export const SITEONE_ADAPTER_VERSION = "1.0.0";
 export const SITEONE_ARTIFACT_NAME = "siteone-report.json";
 export const SITEONE_ARTIFACT_MEDIA_TYPE = "application/json";
 export const SITEONE_STRUCTURED_DATA_COLUMN = "SgeoStructuredData";
+// SiteOne's ExtraColumn implementation passes this directly to Rust regex::Regex.
+// Inline flags are therefore required; JavaScript-style /pattern/i delimiters are literals.
+export const SITEONE_STRUCTURED_DATA_REGEXP =
+  String.raw`(?is)<script\b[^>]*\btype\s*=\s*(?:"application/ld\+json"|'application/ld\+json'|application/ld\+json)[^>]*>(.*?)</script>`;
 // The signed ingestion route accepts a compact 1 MiB envelope. Fifty pages keeps
 // the normalized URL-level facts safely below that boundary.
 export const SITEONE_MAX_URLS = 50;
-export const SITEONE_MAX_TIMEOUT_SECONDS = 900;
+// Leave the Trigger task at least three minutes to read, archive, and deliver the report.
+export const SITEONE_FINALIZATION_RESERVE_SECONDS = 180;
+export const SITEONE_MAX_TIMEOUT_SECONDS = 60;
 export const SITEONE_MAX_REPORT_BYTES = 64 * 1024 * 1024;
 const SITEONE_MAX_REPORTED_URL_LENGTH = 2_048;
 const SITEONE_MAX_TEXT_LENGTH = 512;
 const SITEONE_MAX_STRUCTURED_DATA_TYPES = 10;
+const SITEONE_MAX_STRUCTURED_DATA_BYTES = 4_096;
+const SITEONE_MAX_EXTRA_COLUMNS = 20;
+const SITEONE_MAX_PROCESS_SECONDS = 900 - SITEONE_FINALIZATION_RESERVE_SECONDS;
 
 export interface SiteOneInput {
   runId: string;
@@ -48,13 +59,19 @@ export class SiteOneInputError extends Error {
   }
 }
 
+export type SiteOneLookup = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<Array<{ address: string; family: number }>>;
+
 type SiteOneDependencies = {
   execFile?: typeof import("node:child_process").execFile;
+  lookup?: SiteOneLookup;
 };
 
 type JsonRecord = Record<string, unknown>;
 type SiteOneReport = {
-  crawler?: JsonRecord;
+  crawler: JsonRecord;
   results: JsonRecord[];
   stats?: JsonRecord;
   summary?: JsonRecord;
@@ -67,31 +84,81 @@ function nonEmptyIdentifier(value: string, name: string) {
   }
 }
 
-function isPrivateIpv4(hostname: string) {
-  const parts = hostname.split(".").map(Number);
-  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && (
-    parts[0] === 10 ||
-    parts[0] === 127 ||
-    parts[0] === 0 ||
-    (parts[0] === 169 && parts[1] === 254) ||
-    (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31) ||
-    (parts[0] === 192 && parts[1] === 168)
-  );
+type AuditedOrigin = {
+  hostname: string;
+  port: number;
+  includeRegex: string;
+};
+
+function unbracket(address: string) {
+  return address.startsWith("[") && address.endsWith("]")
+    ? address.slice(1, -1)
+    : address;
 }
 
-function isPrivateIpv6(hostname: string) {
-  if (!hostname.startsWith("[") || !hostname.endsWith("]")) return false;
-  const address = hostname.slice(1, -1).toLowerCase();
-  return (
-    address === "::" ||
-    address === "::1" ||
-    address.startsWith("::ffff:") ||
-    /^(?:fc|fd)[0-9a-f]{2}:/.test(address) ||
-    /^fe[89ab][0-9a-f]:/.test(address)
-  );
+function isGloballyRoutableIpv4(address: string) {
+  const octets = address.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [first, second, third] = octets;
+  if (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    first >= 224 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 0 && third === 0) ||
+    (first === 192 && second === 0 && third === 2) ||
+    (first === 192 && second === 88 && third === 99) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    (first === 198 && second === 51 && third === 100) ||
+    (first === 203 && second === 0 && third === 113)
+  ) {
+    return false;
+  }
+  return true;
 }
 
-function validateUrl(value: string) {
+function isGloballyRoutableIpv6(address: string) {
+  const normalized = address.toLowerCase();
+  const firstHextet = Number.parseInt(normalized.split(":", 1)[0] ?? "", 16);
+  if (
+    !Number.isInteger(firstHextet) ||
+    firstHextet < 0x2000 ||
+    firstHextet > 0x3fff ||
+    normalized.startsWith("2001:0:") ||
+    normalized.startsWith("2001:2:") ||
+    normalized.startsWith("2001:db8:")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isGloballyRoutableAddress(address: string, family: number) {
+  const ipFamily = isIP(address);
+  if (ipFamily === 0 || ipFamily !== family) return false;
+  return ipFamily === 4
+    ? isGloballyRoutableIpv4(address)
+    : isGloballyRoutableIpv6(address);
+}
+
+function escapePcreLiteral(value: string) {
+  return value.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+}
+
+function originRegex(parsed: URL, hostname: string, port: number) {
+  const defaultPort = (parsed.protocol === "http:" && port === 80) ||
+    (parsed.protocol === "https:" && port === 443);
+  const portPattern = defaultPort ? `(?::${port})?` : `:${port}`;
+  return `^${escapePcreLiteral(parsed.protocol)}\\/\\/${escapePcreLiteral(hostname)}${portPattern}(?:[\\/?#]|$)`;
+}
+
+function validateUrl(value: string): AuditedOrigin {
   if (value.length === 0 || value.length > 2_083 || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new SiteOneInputError("url must be a bounded HTTP(S) URL.");
   }
@@ -108,18 +175,22 @@ function validateUrl(value: string) {
   if (parsed.username !== "" || parsed.password !== "") {
     throw new SiteOneInputError("url must not include credentials.");
   }
-  const hostname = parsed.hostname.toLowerCase();
+  const hostname = unbracket(parsed.hostname.toLowerCase());
   if (
     hostname === "localhost" ||
     hostname.endsWith(".localhost") ||
-    isPrivateIpv4(hostname) ||
-    isPrivateIpv6(hostname)
+    hostname.endsWith(".local") ||
+    isIP(hostname) !== 0
   ) {
-    throw new SiteOneInputError("url must not target a local or private address.");
+    throw new SiteOneInputError("url hostname must be a public DNS name.");
   }
+  const port = parsed.port === ""
+    ? parsed.protocol === "https:" ? 443 : 80
+    : Number(parsed.port);
+  return { hostname, port, includeRegex: originRegex(parsed, hostname, port) };
 }
 
-function validateInput(input: SiteOneInput) {
+function validateInput(input: SiteOneInput): AuditedOrigin {
   nonEmptyIdentifier(input.runId, "runId");
   nonEmptyIdentifier(input.clientId, "clientId");
   nonEmptyIdentifier(input.brandId, "brandId");
@@ -127,7 +198,7 @@ function validateInput(input: SiteOneInput) {
   if (input.siteMarketId !== null) {
     nonEmptyIdentifier(input.siteMarketId, "siteMarketId");
   }
-  validateUrl(input.url);
+  const origin = validateUrl(input.url);
   if (!Number.isInteger(input.maxUrls) || input.maxUrls < 1 || input.maxUrls > SITEONE_MAX_URLS) {
     throw new SiteOneInputError(`maxUrls must be an integer between 1 and ${SITEONE_MAX_URLS}.`);
   }
@@ -140,6 +211,23 @@ function validateInput(input: SiteOneInput) {
       `timeoutSeconds must be an integer between 1 and ${SITEONE_MAX_TIMEOUT_SECONDS}.`,
     );
   }
+  return origin;
+}
+
+async function resolveAuditedOrigin(origin: AuditedOrigin, lookup: SiteOneLookup) {
+  let addresses: Array<{ address: string; family: number }>;
+  try {
+    addresses = await lookup(origin.hostname, { all: true, verbatim: true });
+  } catch {
+    throw new SiteOneInputError("url host could not be resolved.");
+  }
+  if (
+    addresses.length === 0 ||
+    addresses.some(({ address, family }) => !isGloballyRoutableAddress(address, family))
+  ) {
+    throw new SiteOneInputError("url host must resolve only to globally routable addresses.");
+  }
+  return [...new Set(addresses.map(({ address }) => address))];
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -308,6 +396,28 @@ function structuredTypes(value: unknown): string[] {
     .map((entry) => boundedText(entry));
 }
 
+function structuredDataExtra(result: JsonRecord): string | null {
+  const extras = result.extras;
+  let extracted: unknown;
+  if (Array.isArray(extras)) {
+    for (const extra of extras.slice(0, SITEONE_MAX_EXTRA_COLUMNS)) {
+      const record = asRecord(extra);
+      if (record !== null && record.name === SITEONE_STRUCTURED_DATA_COLUMN) {
+        extracted = record.value;
+        break;
+      }
+    }
+  } else {
+    // SiteOne's historical JSON exporters used a keyed object. Retain only the
+    // single bounded compatibility value rather than accepting arbitrary extras.
+    extracted = asRecord(extras)?.[SITEONE_STRUCTURED_DATA_COLUMN];
+  }
+  const value = stringValue(extracted);
+  return value !== null && value.length <= SITEONE_MAX_STRUCTURED_DATA_BYTES
+    ? value
+    : null;
+}
+
 function appendStructuredDataFacts(
   report: SiteOneReport,
   input: SiteOneInput,
@@ -318,10 +428,7 @@ function appendStructuredDataFacts(
     const rawSubject = stringValue(result.url);
     const subject = rawSubject === null ? null : absoluteUrl(rawSubject, input.url);
     if (subject === null) continue;
-    const extras = asRecord(result.extras);
-    const extractedJson = extras === null
-      ? null
-      : stringValue(extras[SITEONE_STRUCTURED_DATA_COLUMN]);
+    const extractedJson = structuredDataExtra(result);
     if (extractedJson === null || extractedJson.length === 0) continue;
     let parsed: JsonRecord | null;
     try {
@@ -421,6 +528,14 @@ function baseEnvelope(
   });
 }
 
+function hasExpectedCrawlerIdentity(crawler: JsonRecord | null) {
+  if (crawler === null || crawler.name !== "SiteOne Crawler") return false;
+  const version = stringValue(crawler.version);
+  // SiteOne's release artifact is 2.5.1 while its report includes the release-line
+  // build date (for example 2.5.1.20260627). Do not accept another release line.
+  return version === SITEONE_SOURCE_VERSION || /^2\.5\.1\.\d{8}$/.test(version ?? "");
+}
+
 function normalizeReport(
   input: SiteOneInput,
   rawReport: Uint8Array,
@@ -445,6 +560,14 @@ function normalizeReport(
       retryable: false,
     });
   }
+  const crawler = asRecord(document.crawler);
+  if (crawler === null || !hasExpectedCrawlerIdentity(crawler)) {
+    return baseEnvelope(input, startedAt, finishedAt, "failed", [], {
+      code: "SITEONE_INVALID_REPORT",
+      message: "SiteOne emitted a report without the expected crawler identity.",
+      retryable: false,
+    });
+  }
   const results = asRows(document.results);
   if (results.length !== document.results.length) {
     return baseEnvelope(input, startedAt, finishedAt, "failed", [], {
@@ -455,7 +578,7 @@ function normalizeReport(
   }
   const tablesRecord = asRecord(document.tables);
   const report: SiteOneReport = {
-    crawler: asRecord(document.crawler) ?? undefined,
+    crawler,
     results,
     stats: asRecord(document.stats) ?? undefined,
     summary: asRecord(document.summary) ?? undefined,
@@ -506,27 +629,38 @@ function executionFailure(
   });
 }
 
-function commandArgs(input: SiteOneInput, outputFile: string, configFile: string) {
+function commandArgs(
+  input: SiteOneInput,
+  origin: AuditedOrigin,
+  resolvedAddresses: string[],
+  outputFile: string,
+  configFile: string,
+) {
   return [
     `--url=${input.url}`,
     `--max-visited-urls=${input.maxUrls}`,
     `--timeout=${input.timeoutSeconds}`,
     "--workers=1",
     "--max-reqs-per-sec=2",
+    "--memory-limit=512M",
+    `--max-queue-length=${input.maxUrls}`,
+    `--max-skipped-urls=${input.maxUrls}`,
+    ...resolvedAddresses.map((address) => `--resolve=${origin.hostname}:${origin.port}:${address}`),
+    `--include-regex=${origin.includeRegex}`,
     `--output-json-file=${outputFile}`,
     "--output-html-report=",
     "--output-text-file=",
     "--disable-all-assets",
     "--no-cache",
     "--hide-progress-bar",
-    `--extra-columns=${SITEONE_STRUCTURED_DATA_COLUMN}=regexp:/<script[^>]*type=["']application\\/ld\\+json["'][^>]*>([\\s\\S]*?)<\\/script>/i#1(4096)`,
+    `--extra-columns=${SITEONE_STRUCTURED_DATA_COLUMN}=regexp:${SITEONE_STRUCTURED_DATA_REGEXP}#1(4096)`,
     `--config-file=${configFile}`,
   ];
 }
 
 function executionTimeout(input: SiteOneInput) {
   return Math.min(
-    895_000,
+    SITEONE_MAX_PROCESS_SECONDS * 1_000,
     Math.max(30_000, input.maxUrls * input.timeoutSeconds * 1_000),
   );
 }
@@ -555,13 +689,19 @@ async function invokeSiteOne(
   });
 }
 
-async function readRawReport(outputFile: string): Promise<Uint8Array | null> {
+type RawReportReadResult =
+  | { kind: "ok"; rawReport: Uint8Array }
+  | { kind: "missing" }
+  | { kind: "too_large" };
+
+async function readRawReport(outputFile: string): Promise<RawReportReadResult> {
   try {
     const metadata = await stat(outputFile);
-    if (metadata.size > SITEONE_MAX_REPORT_BYTES) return null;
-    return new Uint8Array(await readFile(outputFile));
+    if (!metadata.isFile()) return { kind: "missing" };
+    if (metadata.size > SITEONE_MAX_REPORT_BYTES) return { kind: "too_large" };
+    return { kind: "ok", rawReport: new Uint8Array(await readFile(outputFile)) };
   } catch {
-    return null;
+    return { kind: "missing" };
   }
 }
 
@@ -569,7 +709,11 @@ export async function executeSiteOne(
   input: SiteOneInput,
   dependencies?: SiteOneDependencies,
 ): Promise<SiteOneExecution> {
-  validateInput(input);
+  const origin = validateInput(input);
+  const resolvedAddresses = await resolveAuditedOrigin(
+    origin,
+    dependencies?.lookup ?? defaultLookup,
+  );
   const startedAt = new Date().toISOString();
   const workingDirectory = await mkdtemp(join(tmpdir(), "sgeo-siteone-"));
   const outputFile = join(workingDirectory, "report.json");
@@ -582,15 +726,27 @@ export async function executeSiteOne(
     try {
       await invokeSiteOne(
         execFile,
-        commandArgs(input, outputFile, configFile),
+        commandArgs(input, origin, resolvedAddresses, outputFile, configFile),
         workingDirectory,
         input,
       );
     } catch {
       commandFailed = true;
     }
-    const rawReport = await readRawReport(outputFile);
-    if (rawReport === null) {
+    const report = await readRawReport(outputFile);
+    if (report.kind === "too_large") {
+      return {
+        rawReport: null,
+        envelope: executionFailure(
+          input,
+          startedAt,
+          "SITEONE_REPORT_TOO_LARGE",
+          "SiteOne produced a JSON report larger than the 64 MiB safety limit.",
+          false,
+        ),
+      };
+    }
+    if (report.kind === "missing") {
       return {
         rawReport: null,
         envelope: executionFailure(
@@ -604,6 +760,7 @@ export async function executeSiteOne(
         ),
       };
     }
+    const rawReport = report.rawReport;
     if (commandFailed) {
       return {
         rawReport,
