@@ -152,6 +152,9 @@ describe("Compose worker isolation policy", () => {
     ]);
     const developmentWorker = serviceBlock(development, "geo-worker");
 
+    expect(development).toContain(
+      "image: ghcr.io/triggerdotdev/trigger.dev:v4.5.9",
+    );
     expect(developmentWorker).toContain(
       'command: ["npm", "run", "trigger:dev"]',
     );

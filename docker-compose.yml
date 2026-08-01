@@ -48,7 +48,7 @@ services:
       - trigger-postgres-data:/var/lib/postgresql/data
 
   trigger-dev:
-    image: ghcr.io/triggerdotdev/trigger.dev:4.5.9
+    image: ghcr.io/triggerdotdev/trigger.dev:v4.5.9
     restart: unless-stopped
     depends_on:
       - trigger-postgres
