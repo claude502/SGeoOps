@@ -56,6 +56,8 @@ npm run dev
 - PostgreSQL/Redis 不映射公网端口。
 - 所有公网入口必须 HTTPS。
 - GEO Ops 总控台和内部 API 使用 Better Auth 会话和租户范围授权；公开品牌页面保持匿名访问。
+- Worker 不持有 `DATABASE_URL` 或数据库凭据；它只能通过签名的内部 HTTP 合约访问 GEO Ops。
+- 生产 Compose 将 artifact 持久化在 `artifact-data`，并以只读方式挂载仓库的 `secrets` 目录到 `/run/secrets`。
 - `.env`、API key、数据库密码不进 Git。
 - 生产数据库开启备份和恢复演练。
 
@@ -119,6 +121,16 @@ SEED_DEMO_DATA=
 BETTER_AUTH_SECRET=
 BETTER_AUTH_URL=
 SGEO_ALLOW_BOOTSTRAP_SIGNUP=
+SGEO_ARTIFACT_ROOT=/var/lib/sgeo/artifacts
+SGEO_SECRET_ROOT=/run/secrets
+SGEO_INTERNAL_URL=http://geo-ops:3000
+SGEO_INTERNAL_SECRET_FILE=/run/secrets/sgeo_internal_secret
+
+# SGeoOps keeps DATABASE_URL. Trigger's local Compose service uses this separate URL.
+TRIGGER_DATABASE_URL=
+TRIGGER_POSTGRES_DB=
+TRIGGER_POSTGRES_USER=
+TRIGGER_POSTGRES_PASSWORD=
 
 GEOFLOW_BASE_URL=
 GEOFLOW_API_TOKEN=
@@ -139,6 +151,8 @@ POSTIZ_BASE_URL=
 POSTIZ_WEBHOOK_URL=
 POSTIZ_API_KEY=
 ```
+
+创建 `./secrets/sgeo_internal_secret` 并以部署用户可读、非 Git 跟踪的方式保存内部签名密钥。`geo-worker` 通过 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE` 调用已签名的内部 API；不要为它设置 `DATABASE_URL`。
 
 ## GEOFlow Integration
 

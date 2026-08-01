@@ -3,10 +3,11 @@ import "./jobs/content-generate";
 import "./jobs/seo-audit";
 
 const REQUIRED_ENV = {
-  DATABASE_URL: process.env.DATABASE_URL,
   TRIGGER_API_URL: process.env.TRIGGER_API_URL,
   TRIGGER_API_KEY: process.env.TRIGGER_API_KEY,
   TRIGGER_PROJECT_REF: process.env.TRIGGER_PROJECT_REF,
+  SGEO_INTERNAL_URL: process.env.SGEO_INTERNAL_URL,
+  SGEO_INTERNAL_SECRET_FILE: process.env.SGEO_INTERNAL_SECRET_FILE,
 };
 
 const missing = Object.entries(REQUIRED_ENV)

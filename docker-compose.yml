@@ -12,6 +12,12 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - DATABASE_URL=${DATABASE_URL:-postgresql://geo_ops:change-me-use-a-secret@postgres:5432/geo_content_ops?schema=public}
+      - SGEO_ARTIFACT_ROOT=/var/lib/sgeo/artifacts
+      - SGEO_SECRET_ROOT=/run/secrets
+      - SGEO_INTERNAL_SECRET_FILE=/run/secrets/sgeo_internal_secret
+    volumes:
+      - artifact-data:/var/lib/sgeo/artifacts
+      - ./secrets:/run/secrets:ro
 
   postgres:
     image: postgres:16-alpine
@@ -31,16 +37,26 @@ services:
     volumes:
       - redis-data:/data
 
+  trigger-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${TRIGGER_POSTGRES_DB:-trigger_dev}
+      - POSTGRES_USER=${TRIGGER_POSTGRES_USER:-trigger_dev}
+      - POSTGRES_PASSWORD=${TRIGGER_POSTGRES_PASSWORD:-change-me-trigger-secret}
+    volumes:
+      - trigger-postgres-data:/var/lib/postgresql/data
+
   trigger-dev:
     image: ghcr.io/triggerdotdev/trigger.dev:latest
     restart: unless-stopped
     depends_on:
-      - postgres
+      - trigger-postgres
       - redis
     ports:
       - "3040:3000"
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://geo_ops:change-me-use-a-secret@postgres:5432/geo_content_ops?schema=public}
+      - DATABASE_URL=${TRIGGER_DATABASE_URL:-postgresql://trigger_dev:change-me-trigger-secret@trigger-postgres:5432/trigger_dev?schema=public}
       - REDIS_URL=redis://redis:6379
       - SECRET_KEY=${TRIGGER_SECRET_KEY:-changeme-secret}
       - LOGIN_ORIGIN=http://localhost:3040
@@ -50,18 +66,23 @@ services:
     build: ./geo-worker
     restart: unless-stopped
     depends_on:
-      - postgres
-      - redis
       - trigger-dev
+      - geo-ops
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://geo_ops:change-me-use-a-secret@postgres:5432/geo_content_ops?schema=public}
-      - REDIS_URL=redis://redis:6379
       - TRIGGER_API_URL=http://trigger-dev:3000
       - TRIGGER_API_KEY=${TRIGGER_WORKER_API_KEY:-}
       - TRIGGER_PROJECT_REF=proj_geo_ops
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
-      - GEO_OPS_INTERNAL_URL=http://geo-ops:3000
+      - SGEO_INTERNAL_URL=http://geo-ops:3000
+      - SGEO_INTERNAL_SECRET_FILE=/run/secrets/sgeo_internal_secret
+      - SGEO_ARTIFACT_ROOT=/var/lib/sgeo/artifacts
+      - SGEO_SECRET_ROOT=/run/secrets
+    volumes:
+      - artifact-data:/var/lib/sgeo/artifacts
+      - ./secrets:/run/secrets:ro
 
 volumes:
   postgres-data:
   redis-data:
+  trigger-postgres-data:
+  artifact-data:

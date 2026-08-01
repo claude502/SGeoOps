@@ -25,8 +25,14 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      SGEO_ARTIFACT_ROOT: /var/lib/sgeo/artifacts
+      SGEO_SECRET_ROOT: /run/secrets
+      SGEO_INTERNAL_SECRET_FILE: /run/secrets/sgeo_internal_secret
     expose:
       - "3000"
+    volumes:
+      - artifact-data:/var/lib/sgeo/artifacts
+      - ../secrets:/run/secrets:ro
     healthcheck:
       test:
         [
@@ -39,6 +45,28 @@ services:
       start_period: 20s
     depends_on:
       postgres:
+        condition: service_healthy
+    networks:
+      - app
+
+  geo-worker:
+    build:
+      context: ../geo-worker
+    restart: unless-stopped
+    environment:
+      TRIGGER_API_URL: ${TRIGGER_API_URL:-}
+      TRIGGER_API_KEY: ${TRIGGER_WORKER_API_KEY:-}
+      TRIGGER_PROJECT_REF: ${TRIGGER_PROJECT_REF:-proj_geo_ops}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      SGEO_INTERNAL_URL: http://geo-ops:3000
+      SGEO_INTERNAL_SECRET_FILE: /run/secrets/sgeo_internal_secret
+      SGEO_ARTIFACT_ROOT: /var/lib/sgeo/artifacts
+      SGEO_SECRET_ROOT: /run/secrets
+    volumes:
+      - artifact-data:/var/lib/sgeo/artifacts
+      - ../secrets:/run/secrets:ro
+    depends_on:
+      geo-ops:
         condition: service_healthy
     networks:
       - app
@@ -80,3 +108,4 @@ volumes:
   caddy_config:
   postgres_data:
   redis_data:
+  artifact-data:
