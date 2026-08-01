@@ -47,13 +47,8 @@ DATABASE_URL=
 NEXT_PUBLIC_APP_URL=
 PUBLIC_CONTENT_BASE_URL=
 
-GEO_OPS_AUTH_ENABLED=
-GEO_OPS_ADMIN_USERNAME=
-GEO_OPS_ADMIN_PASSWORD=
-GEO_OPS_AUTH_REALM=
-GEO_OPS_AUTH_MAX_ATTEMPTS=
-GEO_OPS_AUTH_WINDOW_SECONDS=
-GEO_OPS_REQUIRE_ACTION_HEADER=
+BETTER_AUTH_SECRET=
+BETTER_AUTH_URL=
 
 GEOFLOW_BASE_URL=
 GEOFLOW_API_TOKEN=
@@ -101,20 +96,25 @@ npm run start
 
 Docker Compose MVP：
 
+首次部署必须在 Prisma migration 后、full `up -d` 前按 [server-47.239.166.249-deployment.md](./server-47.239.166.249-deployment.md) 的 procedure 创建首位 Better Auth 管理员。
+
 ```bash
-docker compose -f deploy/docker-compose.prod.example.yml build
-docker compose -f deploy/docker-compose.prod.example.yml up -d postgres
-docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
-docker compose -f deploy/docker-compose.prod.example.yml up -d
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
+```
+
+完成首位管理员 procedure 后，才启动全部服务：
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
 ```
 
 部署前需要把 `deploy/Caddyfile.example` 中的示例域名改为真实域名，并准备生产 `.env`。
 
 检查 GEOFlow bridge：
 
-```bash
-curl https://geo.example.com/api/integrations/geoflow/status
-```
+在 `https://geo.example.com/login` 使用 Better Auth 管理员账号登录，再从管理界面检查 GEOFlow bridge。管理员发起的 integration API 请求需要有效 Better Auth session，以及目标 client 的 membership role 和 client scope；公开 health check 仍是 `/api/healthz`。不要使用 Basic Auth 或 `x-geo-ops-action` header。
 
 ## 操作流程
 

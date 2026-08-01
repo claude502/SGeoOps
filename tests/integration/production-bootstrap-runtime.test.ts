@@ -74,4 +74,44 @@ describe("production bootstrap runtime", () => {
     );
     expect(systemReference).toContain("geo-ops npm run auth:bootstrap");
   });
+
+  it("keeps active rollout documentation on the first-admin Better Auth procedure", async () => {
+    const [deploymentGuide, geoFlowRollout, trendReview] = await Promise.all([
+      readFile(
+        resolve(projectRoot, "docs/server-47.239.166.249-deployment.md"),
+        "utf8",
+      ),
+      readFile(resolve(projectRoot, "docs/geoflow-rollout.md"), "utf8"),
+      readFile(
+        resolve(projectRoot, "docs/geo-seo-trend-engine-review.md"),
+        "utf8",
+      ),
+    ]);
+    const migration = deploymentGuide.indexOf("npm run prisma:deploy");
+    const bootstrap = deploymentGuide.indexOf("geo-ops npm run auth:bootstrap");
+    const verification = deploymentGuide.indexOf("### 7. 验证");
+
+    expect(migration).toBeGreaterThanOrEqual(0);
+    expect(bootstrap).toBeGreaterThan(migration);
+    expect(bootstrap).toBeLessThan(verification);
+    expect(deploymentGuide).toContain(
+      "docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm \\",
+    );
+    expect(deploymentGuide).toContain(
+      "read -r -s -p 'Admin password: ' SGEO_BOOTSTRAP_ADMIN_PASSWORD",
+    );
+    expect(deploymentGuide).toContain(
+      "unset SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD",
+    );
+
+    expect(geoFlowRollout).toContain("BETTER_AUTH_SECRET=");
+    expect(geoFlowRollout).toContain("BETTER_AUTH_URL=");
+    expect(geoFlowRollout).toContain("Better Auth session");
+    expect(geoFlowRollout).not.toMatch(/GEO_OPS_(?:AUTH|ADMIN)_/);
+
+    expect(trendReview).toContain("Better Auth session");
+    expect(trendReview).toContain("membership role and client scope");
+    expect(trendReview).not.toContain("x-geo-ops-action: true");
+    expect(trendReview).not.toContain("Basic Auth protected dashboard");
+  });
 });

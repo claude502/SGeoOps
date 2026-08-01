@@ -237,10 +237,23 @@ cp /opt/geo-content-ops/deploy/Caddyfile.ip.example /opt/geo-content-ops/deploy/
 
 ```bash
 cd /opt/geo-content-ops
-docker compose -f deploy/docker-compose.prod.example.yml build
-docker compose -f deploy/docker-compose.prod.example.yml up -d postgres
-docker compose -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
-docker compose -f deploy/docker-compose.prod.example.yml up -d
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml build
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
+
+read -r -p 'Admin email: ' SGEO_BOOTSTRAP_ADMIN_EMAIL
+read -r -p 'Admin name: ' SGEO_BOOTSTRAP_ADMIN_NAME
+read -r -s -p 'Admin password: ' SGEO_BOOTSTRAP_ADMIN_PASSWORD
+printf '\n'
+export SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm \
+  -e SGEO_BOOTSTRAP_ADMIN_EMAIL \
+  -e SGEO_BOOTSTRAP_ADMIN_NAME \
+  -e SGEO_BOOTSTRAP_ADMIN_PASSWORD \
+  geo-ops npm run auth:bootstrap
+unset SGEO_BOOTSTRAP_ADMIN_EMAIL SGEO_BOOTSTRAP_ADMIN_NAME SGEO_BOOTSTRAP_ADMIN_PASSWORD
+
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d
 ```
 
 ### 7. 验证
@@ -257,7 +270,7 @@ curl -i http://47.239.166.249/api/integrations/geoflow/status
 
 ```bash
 curl -fsS http://47.239.166.249/api/healthz
-docker compose -f deploy/docker-compose.prod.example.yml ps
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml ps
 ```
 
 写入 API 需要有效 Better Auth session，以及与目标 client 匹配的 membership role 和 client scope；未登录应返回 `401`，角色或 client scope 不足应返回 `403`。不再发送 `x-geo-ops-action` header。优先从已登录管理界面执行写入；不要把 session cookie 写入共享脚本、shell history 或 Git。

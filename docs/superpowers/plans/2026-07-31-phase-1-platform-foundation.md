@@ -1135,7 +1135,7 @@ npx vitest run src/lib/authorization.test.ts src/lib/basic-auth.test.ts
 npm run typecheck
 ```
 
-Expected: PASS. Basic Auth remains active until Task 10.
+Historical plan expectation: PASS. Basic Auth remained active until Task 10.
 
 ```bash
 git add package.json package-lock.json prisma src/lib/auth.ts \
@@ -1540,7 +1540,7 @@ until Phase 4, with tests proving unchanged output.
 
 - [ ] **Step 3: Separate public host middleware from authenticated ops layout**
 
-Middleware keeps request IDs, security headers, and public host routing. It no
+Historical Task 10 plan outcome: Middleware keeps request IDs, security headers, and public host routing. It no
 longer parses Basic Auth. Session enforcement belongs in `(ops)/layout.tsx`
 and every internal API handler.
 

@@ -59,14 +59,14 @@ Result:
 
 ### Runtime smoke test
 
-A temporary PostgreSQL container and a local `next start` instance were used for functional validation.
+A temporary PostgreSQL container and a local `next start` instance were used for functional validation. The access model below reflects the current Phase 1 Better Auth cutover, not the retired Basic Auth/action-header scheme.
 
 Validated successfully:
 
-- `GET /` without auth returns `401`
+- Unauthenticated internal pages redirect to `/login`
 - `GET /guides` returns `200`
 - `GET /api/healthz` returns `200`
-- Write APIs without `x-geo-ops-action: true` return `403`
+- Internal write APIs require a Better Auth session and membership role and client scope; no session returns `401`, and insufficient role or client scope returns `403`
 - `POST /api/trends/manual` creates a topic
 - `PATCH /api/trends/[id]/status` works
 - Invalid trend topic id returns `404`
@@ -82,7 +82,7 @@ Validated successfully:
 
 Verified in the in-app browser:
 
-- Basic Auth protected dashboard loads successfully after authentication
+- Better Auth session protected dashboard loads successfully after sign-in
 - Public `guides` page loads anonymously
 - Dashboard asset view can see assets created during smoke testing
 
