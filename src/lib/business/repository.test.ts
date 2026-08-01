@@ -245,3 +245,57 @@ describe("PrismaBusinessRepository internal content generation", () => {
     expect(result).toMatchObject({ reused: false, variantCount: 1 });
   });
 });
+
+describe("PrismaBusinessRepository.listDashboardData", () => {
+  it("selects and maps only public GEOFlow link fields", async () => {
+    const linksFindMany = vi.fn(async () => [
+      {
+        id: "link_private",
+        contentAssetId: "asset_a",
+        geoFlowTaskId: 1,
+        geoFlowJobId: 2,
+        geoFlowArticleId: null,
+        geoFlowArticleUrl: null,
+        status: "generating",
+        lastSyncedAt: null,
+        lastError: "authorization=Bearer top-secret",
+        idempotencyKey: "idem_a",
+        taskPayload: { authorization: "Bearer top-secret" },
+      },
+    ]);
+    const repository = new PrismaBusinessRepository({
+      contentAsset: { findMany: vi.fn(async () => []) },
+      geoRun: { findMany: vi.fn(async () => []) },
+      channelVariant: { findMany: vi.fn(async () => []) },
+      geoFlowTaskLink: { findMany: linksFindMany },
+      auditEvent: { findMany: vi.fn(async () => []) },
+    } as never);
+
+    const dashboard = await repository.listDashboardData(scope);
+
+    expect(linksFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          id: true,
+          contentAssetId: true,
+          idempotencyKey: true,
+        }),
+      }),
+    );
+    expect(dashboard.links).toEqual([
+      {
+        id: "link_private",
+        contentAssetId: "asset_a",
+        geoFlowTaskId: 1,
+        geoFlowJobId: 2,
+        geoFlowArticleId: null,
+        geoFlowArticleUrl: null,
+        status: "generating",
+        lastSyncedAt: null,
+        lastError: "GEOFLOW_READ_FAILED",
+        idempotencyKey: "idem_a",
+      },
+    ]);
+    expect(JSON.stringify(dashboard.links)).not.toContain("top-secret");
+  });
+});

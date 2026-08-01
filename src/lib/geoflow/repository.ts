@@ -5,6 +5,12 @@ import type { OwnedContext } from "@/lib/business/repository";
 import { legacyScopeWhere, PrismaBusinessRepository } from "@/lib/business/repository";
 import { ScopedBusinessError } from "@/lib/business/http";
 import { createOutboxEvent } from "@/lib/events/outbox";
+import {
+  publicGeoFlowLinkSelect,
+  stableGeoFlowErrorCode,
+  toPublicGeoFlowLink,
+  type PublicGeoFlowLinkInput,
+} from "@/lib/geoflow/public-link";
 import type { ContentAsset, GeoFlowTaskLinkView, GeoFlowTaskStatus } from "@/types/geo";
 import { db, getPrisma, isDatabaseConfigured } from "@/lib/prisma";
 
@@ -90,21 +96,8 @@ function toIso(value: Date | string | null | undefined) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-const publicLinkSelect = {
-  id: true,
-  contentAssetId: true,
-  geoFlowTaskId: true,
-  geoFlowJobId: true,
-  geoFlowArticleId: true,
-  geoFlowArticleUrl: true,
-  status: true,
-  lastSyncedAt: true,
-  lastError: true,
-  idempotencyKey: true,
-} satisfies Prisma.GeoFlowTaskLinkSelect;
-
 const privateLinkSelect = {
-  ...publicLinkSelect,
+  ...publicGeoFlowLinkSelect,
   clientId: true,
   brandId: true,
   siteId: true,
@@ -112,59 +105,16 @@ const privateLinkSelect = {
   taskPayload: true,
 } satisfies Prisma.GeoFlowTaskLinkSelect;
 
-function mapPublicLink(link: {
-  id: string;
-  contentAssetId: string;
-  geoFlowTaskId: number | null;
-  geoFlowJobId: number | null;
-  geoFlowArticleId: number | null;
-  geoFlowArticleUrl: string | null;
-  status: GeoFlowTaskStatus;
-  lastSyncedAt: Date | string | null;
-  lastError: string | null;
-  idempotencyKey: string;
-}): GeoFlowTaskLinkView {
-  return {
-    id: link.id,
-    contentAssetId: link.contentAssetId,
-    geoFlowTaskId: link.geoFlowTaskId,
-    geoFlowJobId: link.geoFlowJobId,
-    geoFlowArticleId: link.geoFlowArticleId,
-    geoFlowArticleUrl: link.geoFlowArticleUrl,
-    status: link.status,
-    lastSyncedAt: toIso(link.lastSyncedAt),
-    lastError: stableGeoFlowErrorCode(link.lastError),
-    idempotencyKey: link.idempotencyKey,
-  };
-}
-
 function mapPrivateLink(
-  link: Parameters<typeof mapPublicLink>[0] & { taskPayload: unknown },
+  link: PublicGeoFlowLinkInput & { taskPayload: unknown },
 ): GeoFlowTaskLinkRecord {
   return {
-    ...mapPublicLink(link),
+    ...toPublicGeoFlowLink(link),
     taskPayload: link.taskPayload ?? null,
   };
 }
 
-export function toPublicGeoFlowLink(
-  link: GeoFlowTaskLinkView,
-): GeoFlowTaskLinkView {
-  return mapPublicLink(link);
-}
-
-const geoFlowErrorCodes = new Set([
-  "GEOFLOW_CREATE_FAILED",
-  "GEOFLOW_ENQUEUE_FAILED",
-  "GEOFLOW_READ_FAILED",
-]);
-
-function stableGeoFlowErrorCode(value: string | null | undefined) {
-  if (!value) {
-    return value ?? null;
-  }
-  return geoFlowErrorCodes.has(value) ? value : "GEOFLOW_READ_FAILED";
-}
+export { publicGeoFlowLinkSelect, stableGeoFlowErrorCode, toPublicGeoFlowLink };
 
 function syncPageLimit(value: number | undefined) {
   if (!Number.isFinite(value)) return 25;
@@ -446,9 +396,9 @@ export class PrismaGeoFlowBridgeRepository implements GeoFlowBridgeRepository {
     const links = await getPrisma().geoFlowTaskLink.findMany({
       orderBy: { updatedAt: "desc" },
       take: 100,
-      select: publicLinkSelect,
+      select: publicGeoFlowLinkSelect,
     });
-    return links.map(mapPublicLink);
+    return links.map(toPublicGeoFlowLink);
   }
 
   async commitPublishedLink(
@@ -788,9 +738,9 @@ export class ScopedPrismaGeoFlowBridgeRepository
       where: legacyScopeWhere(this.scope),
       orderBy: { updatedAt: "desc" },
       take: 100,
-      select: publicLinkSelect,
+      select: publicGeoFlowLinkSelect,
     });
-    return links.map(mapPublicLink);
+    return links.map(toPublicGeoFlowLink);
   }
 
   async commitPublishedLink(
@@ -1060,7 +1010,7 @@ export class InMemoryGeoFlowBridgeRepository implements GeoFlowBridgeRepository 
   }
 
   async listLinks() {
-    return Array.from(this.links.values()).map(mapPublicLink);
+    return Array.from(this.links.values()).map(toPublicGeoFlowLink);
   }
 
   async commitPublishedLink(

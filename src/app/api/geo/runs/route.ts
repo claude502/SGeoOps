@@ -3,6 +3,7 @@ import { requireAccessScope, requireRole } from "@/lib/authorization";
 import { businessRouteError } from "@/lib/business/http";
 import { PrismaBusinessRepository, recommendations } from "@/lib/business/repository";
 import { getProjectFromEnvironment } from "@/lib/dashboard-snapshot";
+import { toPublicGeoFlowLink } from "@/lib/geoflow/public-link";
 
 export async function GET(request: Request) {
   try {
@@ -40,7 +41,7 @@ export async function GET(request: Request) {
       runs,
       assets: data.assets,
       variants: data.variants,
-      geoFlowLinks: data.links,
+      geoFlowLinks: data.links.map(toPublicGeoFlowLink),
       auditEvents: data.audits,
     });
   } catch (error) {

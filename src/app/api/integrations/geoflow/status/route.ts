@@ -3,10 +3,8 @@ import { requireAccessScope, requireRole } from "@/lib/authorization";
 import { businessRouteError } from "@/lib/business/http";
 import { GeoFlowClient } from "@/lib/geoflow/client";
 import { readGeoFlowConfig } from "@/lib/geoflow/config";
-import {
-  ScopedPrismaGeoFlowBridgeRepository,
-  toPublicGeoFlowLink,
-} from "@/lib/geoflow/repository";
+import { toPublicGeoFlowLink } from "@/lib/geoflow/public-link";
+import { ScopedPrismaGeoFlowBridgeRepository } from "@/lib/geoflow/repository";
 import { isDatabaseConfigured } from "@/lib/prisma";
 import type { GeoFlowTaskLinkView } from "@/types/geo";
 

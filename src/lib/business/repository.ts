@@ -4,6 +4,10 @@ import { createAuditEvent } from "@/lib/audit-log";
 import type { AccessScope } from "@/lib/authorization";
 import { ScopedBusinessError } from "@/lib/business/http";
 import { createOutboxEvent } from "@/lib/events/outbox";
+import {
+  publicGeoFlowLinkSelect,
+  toPublicGeoFlowLink,
+} from "@/lib/geoflow/public-link";
 import { scopedClientIds } from "@/lib/organization/scope";
 import { db } from "@/lib/prisma";
 import type {
@@ -964,6 +968,7 @@ export class PrismaBusinessRepository {
         where,
         orderBy: { updatedAt: "desc" },
         take: 100,
+        select: publicGeoFlowLinkSelect,
       }),
       this.database.auditEvent.findMany({
         where,
@@ -975,7 +980,7 @@ export class PrismaBusinessRepository {
       assets: assets.map(mapContentAsset),
       runs,
       variants,
-      links,
+      links: links.map(toPublicGeoFlowLink),
       audits,
     };
   }

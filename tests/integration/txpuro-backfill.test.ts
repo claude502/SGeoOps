@@ -3936,6 +3936,120 @@ describe.skipIf(!integrationEnabled).sequential(
       });
     });
 
+    it("quarantines duplicate generated content before adding its business key", async () => {
+      await withFreshSchema("generated_content_duplicates", async (target) => {
+        await prepareBaseEnforcedFreshSchema(target);
+        await applyMigration(target, contractMigrationPath);
+        await target.query(`
+          INSERT INTO "TrendTopic" (
+            "id", "clientId", "brandId", "siteId", "siteMarketId",
+            "keyword", "platform", "score", "region", "sourceType",
+            "status", "capturedAt"
+          ) VALUES (
+            'trend_generated_duplicate', 'client_wing_heng', 'brand_txpuro',
+            'site_txpuro_com', 'site_market_txpuro_my_en',
+            'generated duplicate migration', 'manual', 50, 'MY', 'manual',
+            'approved', CURRENT_TIMESTAMP
+          );
+
+          INSERT INTO "ContentAsset" (
+            "id", "clientId", "brandId", "siteId", "siteMarketId",
+            "title", "body", "summary", "brandEntity", "sourceUrl",
+            "targetKeywords", "canonicalUrl", "status", "geoScore", "owner",
+            "sourceSystem", "locale", "assetType", "schemaType", "ctaMode",
+            "publishTarget", "isPublic", "trendTopicId", "templateId",
+            "createdAt", "updatedAt"
+          ) VALUES
+          (
+            'asset_generated_canonical', 'client_wing_heng', 'brand_txpuro',
+            'site_txpuro_com', 'site_market_txpuro_my_en',
+            'Canonical generated asset', 'body', 'summary', 'Txpuro',
+            'https://txpuro.com/canonical', ARRAY['generated'],
+            'https://txpuro.com/canonical', 'Ready', 70, 'legacy',
+            'trend_engine', 'en', 'guide-page', 'article', 'self_signup',
+            'txpuro', true, 'trend_generated_duplicate', 'template_duplicate',
+            '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'
+          ),
+          (
+            'asset_generated_duplicate', 'client_wing_heng', 'brand_txpuro',
+            'site_txpuro_com', 'site_market_txpuro_my_en',
+            'Duplicate generated asset', 'body', 'summary', 'Txpuro',
+            'https://txpuro.com/duplicate', ARRAY['generated'],
+            'https://txpuro.com/duplicate', 'Ready', 70, 'legacy',
+            'trend_engine', 'en', 'guide-page', 'article', 'self_signup',
+            'txpuro', true, 'trend_generated_duplicate', 'template_duplicate',
+            '2026-07-02T00:00:00.000Z', '2026-07-02T00:00:00.000Z'
+          );
+
+          INSERT INTO "ChannelVariant" (
+            "id", "clientId", "brandId", "siteId", "siteMarketId",
+            "contentAssetId", "platform", "accountId", "copy", "mediaAssets",
+            "status", "createdAt", "updatedAt"
+          ) VALUES
+          (
+            'variant_generated_canonical', 'client_wing_heng', 'brand_txpuro',
+            'site_txpuro_com', 'site_market_txpuro_my_en',
+            'asset_generated_canonical', 'linkedin', 'txpuro-main', 'canonical',
+            ARRAY[]::text[], 'ready', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          ),
+          (
+            'variant_generated_duplicate', 'client_wing_heng', 'brand_txpuro',
+            'site_txpuro_com', 'site_market_txpuro_my_en',
+            'asset_generated_duplicate', 'linkedin', 'txpuro-main', 'duplicate',
+            ARRAY[]::text[], 'ready', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          );
+        `);
+
+        await applyMigration(target, generatedContentMigrationPath);
+
+        const assets = await target.query<{
+          id: string;
+          templateId: string;
+        }>(`
+          SELECT "id", "templateId"
+          FROM "ContentAsset"
+          WHERE "id" IN (
+            'asset_generated_canonical', 'asset_generated_duplicate'
+          )
+          ORDER BY "id"
+        `);
+        expect(assets.rows).toEqual([
+          {
+            id: "asset_generated_canonical",
+            templateId: "template_duplicate",
+          },
+          {
+            id: "asset_generated_duplicate",
+            templateId: "template_duplicate:duplicate:asset_generated_duplicate",
+          },
+        ]);
+        const variants = await target.query<{
+          id: string;
+          contentAssetId: string;
+        }>(`
+          SELECT "id", "contentAssetId"
+          FROM "ChannelVariant"
+          WHERE "id" IN (
+            'variant_generated_canonical', 'variant_generated_duplicate'
+          )
+          ORDER BY "id"
+        `);
+        expect(variants.rows).toEqual([
+          {
+            id: "variant_generated_canonical",
+            contentAssetId: "asset_generated_canonical",
+          },
+          {
+            id: "variant_generated_duplicate",
+            contentAssetId: "asset_generated_duplicate",
+          },
+        ]);
+        expect(await generatedContentUniqueIndexNames(target)).toEqual([
+          "ContentAsset_clientId_sourceSystem_trendTopicId_templateId_key",
+        ]);
+      });
+    });
+
     it("deploys fresh migrations and safely repeats deployment", async () => {
       await withFreshSchema("repeat_deploy", async (target, schema) => {
         await deployMigrations(schema);

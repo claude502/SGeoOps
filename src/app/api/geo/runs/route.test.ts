@@ -1,5 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DashboardSnapshot } from "@/types/geo";
+import type { DashboardSnapshot, GeoFlowTaskLinkView } from "@/types/geo";
+
+const privateGeoFlowLink = {
+  id: "link_private",
+  contentAssetId: "asset_private",
+  geoFlowTaskId: 11,
+  geoFlowJobId: 12,
+  geoFlowArticleId: null,
+  geoFlowArticleUrl: null,
+  status: "generating",
+  lastSyncedAt: null,
+  lastError: "authorization=Bearer legacy-secret",
+  idempotencyKey: "safe-key",
+  taskPayload: { authorization: "Bearer top-secret" },
+};
 
 const snapshot: DashboardSnapshot = {
   project: {
@@ -16,7 +30,7 @@ const snapshot: DashboardSnapshot = {
   runs: [],
   assets: [],
   variants: [],
-  geoFlowLinks: [],
+  geoFlowLinks: [privateGeoFlowLink as GeoFlowTaskLinkView],
   auditEvents: [
     {
       id: "audit_1",
@@ -62,7 +76,7 @@ vi.mock("@/lib/dashboard-snapshot", () => ({
 }));
 
 describe("GET /api/geo/runs", () => {
-  it("returns scoped audit events with the dashboard snapshot", async () => {
+  it("returns public GEOFlow links to a Viewer with the dashboard snapshot", async () => {
     const { GET } = await import("./route");
     const response = await GET(
       new Request("http://localhost/api/geo/runs"),
@@ -71,5 +85,21 @@ describe("GET /api/geo/runs", () => {
 
     expect(response.status).toBe(200);
     expect(body.auditEvents).toEqual(snapshot.auditEvents);
+    expect(body.geoFlowLinks).toEqual([
+      {
+        id: "link_private",
+        contentAssetId: "asset_private",
+        geoFlowTaskId: 11,
+        geoFlowJobId: 12,
+        geoFlowArticleId: null,
+        geoFlowArticleUrl: null,
+        status: "generating",
+        lastSyncedAt: null,
+        lastError: "GEOFLOW_READ_FAILED",
+        idempotencyKey: "safe-key",
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("top-secret");
+    expect(JSON.stringify(body)).not.toContain("legacy-secret");
   });
 });
