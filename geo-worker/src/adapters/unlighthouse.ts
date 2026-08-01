@@ -454,6 +454,8 @@ function buildConfig(
       userDataDir: browserCacheDirectory,
       args: [
         `--proxy-server=http://127.0.0.1:${proxyPort}`,
+        "--proxy-bypass-list=<-loopback>",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--disable-quic",
       ],
     },

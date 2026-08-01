@@ -68,7 +68,7 @@ function successfulCli(rawReport: Uint8Array, command: CapturedCommand[]) {
 }
 
 describe("Unlighthouse adapter", () => {
-  it("runs exact 0.18.0 jsonExpanded CLI arguments through the pinned proxy and normalizes every required metric", async () => {
+  it("forces every Chromium request through the pinned proxy while normalizing every required metric", async () => {
     const rawReport = await fixture("success.json");
     const command: CapturedCommand[] = [];
 
@@ -115,7 +115,13 @@ describe("Unlighthouse adapter", () => {
     expect(command[0]?.config).toContain('"urls":["/","/pricing"]');
     expect(command[0]?.config).toContain('"crawler":false');
     expect(command[0]?.config).toContain('"discovery":false');
+    // The loopback bypass removal sends all browser navigation through the pinned proxy,
+    // which rejects any host outside the validated origin; WebRTC must not bypass it via UDP.
     expect(command[0]?.config).toContain('"--proxy-server=http://127.0.0.1:');
+    expect(command[0]?.config).toContain('"--proxy-bypass-list=<-loopback>"');
+    expect(command[0]?.config).toContain('"--force-webrtc-ip-handling-policy=disable_non_proxied_udp"');
+    expect(command[0]?.config).toContain('"--disable-quic"');
+    expect(command[0]?.config).not.toContain("direct://");
     expect(command[0]?.config).toContain('"executablePath":"/usr/bin/chromium"');
     expect(command[0]?.env?.PUPPETEER_EXECUTABLE_PATH).toBe("/usr/bin/chromium");
     expect(command[0]?.env).toMatchObject({
