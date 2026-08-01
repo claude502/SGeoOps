@@ -466,16 +466,15 @@ Phase 1 ownership sequence is `20260731090000_platform_foundation_expand`、`202
 在专用非生产 PostgreSQL 16 实例上创建 disposable database `sgeo_task4_test`，或使用安全后缀如 `sgeo_task4_test_task12`。测试用户必须能创建和删除 schema。Txpuro backfill guard 只接受 `sgeo_task4_test` 或以 `sgeo_task4_test_` 开头的 database；任意名称如 `sgeo_test` 会被 guard 拒绝。绝不能指向生产或共享业务 database。
 
 ```bash
-export SGEO_DATABASE_INTEGRATION=1
 export TEST_DATABASE_URL='postgresql://<non-production-test-user>:<non-production-test-password>@127.0.0.1:5432/sgeo_task4_test?schema=public'
 npm run test:integration -- \
   tests/integration/client-isolation.test.ts \
   tests/integration/txpuro-backfill.test.ts \
   tests/integration/compose-policy.test.ts
-unset SGEO_DATABASE_INTEGRATION TEST_DATABASE_URL
+unset TEST_DATABASE_URL
 ```
 
-缺少 `TEST_DATABASE_URL` 时，database-backed integration suites 会明确报该前置条件并使该命令退出非零；缺少 `SGEO_DATABASE_INTEGRATION=1` 时不会执行实际 database coverage。应记录为外部测试服务缺失，不能把它记录为通过，也不要将生产 `DATABASE_URL` 作为替代。
+`npm run test:integration` 固定使用 `vitest.integration.config.ts`，该 config 已启用 database coverage。`TEST_DATABASE_URL` 是实际前置条件；缺少它时，database-backed integration suites 会明确报该前置条件并使该命令退出非零。应记录为外部测试服务缺失，不能把它记录为通过，也不要将生产 `DATABASE_URL` 作为替代。
 
 ### 11.5 恢复 PostgreSQL 与 artifacts
 
@@ -521,6 +520,17 @@ tar -tzf "$ARTIFACT_BACKUP" >/dev/null
 RESTORE_ID="$(date +%Y%m%d-%H%M%S)"
 ARTIFACT_BACKUP_NAME="$(basename "$ARTIFACT_BACKUP")"
 ARTIFACT_ROLLBACK="$BACKUP_DIR/artifacts-pre-restore-$RESTORE_ID.tar.gz"
+if tar -tzf "$ARTIFACT_BACKUP" | grep -c '/metadata.json$' >/dev/null; then
+  # 从所选 archive 内一个已知 metadata.json 读取 artifact:// URI；不含 secret。
+  read -r -p 'Representative artifact URI: ' VERIFY_ARTIFACT_URI
+  case "$VERIFY_ARTIFACT_URI" in
+    artifact://*/*) ;;
+    *) echo 'A canonical artifact://<run-id>/<name> URI is required.' >&2; exit 2 ;;
+  esac
+else
+  VERIFY_ARTIFACT_URI=''
+  printf 'Selected artifact archive has no metadata.json; record the no-artifact exception.\n' >&2
+fi
 
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml stop geo-ops geo-worker
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T geo-ops \
@@ -555,11 +565,63 @@ docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --r
     find "$stage" -mindepth 1 -maxdepth 1 -exec mv -- {} "$root"/ \;
     rmdir "$stage"
   '
-docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-ops geo-worker
-curl -fsS http://127.0.0.1/api/healthz
+
+stop_after_switch_failure() {
+  status=$?
+  trap - ERR
+  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
+    stop geo-worker geo-ops || true
+  printf 'Post-switch verification failed; services stopped. Keep .restore-previous-%s and %s for recovery.\n' \
+    "$RESTORE_ID" "$ARTIFACT_ROLLBACK" >&2
+  exit "$status"
+}
+trap stop_after_switch_failure ERR
+
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-ops
+health_ready=0
+attempt=1
+while [ "$attempt" -le 30 ]; do
+  if docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
+    exec -T geo-ops node -e \
+      'fetch("http://127.0.0.1:3000/api/healthz").then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))'
+  then
+    health_ready=1
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 2
+done
+test "$health_ready" -eq 1
+
+if [ -n "$VERIFY_ARTIFACT_URI" ]; then
+  docker compose --env-file .env -f deploy/docker-compose.prod.example.yml \
+    exec -T geo-ops node --input-type=module -e '
+      import { createHash } from "node:crypto";
+      import { readFile } from "node:fs/promises";
+      import { join } from "node:path";
+
+      const [uri] = process.argv.slice(1);
+      const root = process.env.SGEO_ARTIFACT_ROOT;
+      if (!uri || !root) throw new Error("ARTIFACT_VERIFY_INPUT_REQUIRED");
+      const objectName = `artifact-${createHash("sha256").update(uri).digest("hex")}`;
+      const objectPath = join(root, objectName);
+      const metadata = JSON.parse(await readFile(join(objectPath, "metadata.json"), "utf8"));
+      const payload = await readFile(join(objectPath, "payload"));
+      const checksum = `sha256:${createHash("sha256").update(payload).digest("hex")}`;
+      if (metadata.version !== 1 || metadata.uri !== uri || metadata.byteSize !== payload.byteLength || metadata.checksum !== checksum) {
+        throw new Error("ARTIFACT_READ_VERIFICATION_FAILED");
+      }
+      console.log(`Verified ${uri}`);
+    ' "$VERIFY_ARTIFACT_URI"
+fi
+
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d geo-worker
+trap - ERR
 ```
 
-selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持服务停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch 中任一步失败时也不要启动服务；pre-restore entries 可能分布在 root 和 volume 的 `.restore-previous-$RESTORE_ID`，但完整 rollback archive 在 `$ARTIFACT_ROLLBACK`，应将该 archive 作为 candidate 重跑 staging procedure。成功恢复后，先读取代表性的 artifact 并确认无 `ARTIFACT_CORRUPT`，再清理 volume 内的 previous directory：
+`geo-ops` 启动后最多等待 60 秒（30 次、每次 2 秒），使用 Compose healthcheck 同一 Node `fetch` contract 验证 `/api/healthz`。worker 在 health 和 representative artifact read 都成功前保持停止。artifact verification 以 `metadata.json` 的 canonical URI 定位其 SHA-256 physical object，读取 `payload` 并比对 metadata 的 version、URI、byte size 和 checksum，不依赖不存在的 public artifact endpoint。若所选 archive 没有 `metadata.json`，procedure 会记录 no-artifact exception，不执行 read verification；在恢复记录中注明该条件，且不要声称已完成 artifact read。
+
+selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持服务停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch 或 post-switch health/read/worker startup 任一步失败时，`ERR` trap 会停止 `geo-ops` 和 `geo-worker`，并保留 `.restore-previous-$RESTORE_ID` 与 `$ARTIFACT_ROLLBACK`；不要手动启动服务，使用 rollback archive 重跑 staging procedure。成功恢复后，再清理 volume 内的 previous directory：
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm --no-deps -T \
