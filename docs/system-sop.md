@@ -1,6 +1,6 @@
 # GEO Ops 系统操作手册
 
-Last updated: 2026-05-05
+Last updated: 2026-08-01
 
 ## 1. 这份手册给谁用
 
@@ -28,6 +28,8 @@ Last updated: 2026-05-05
 - 创建内容资产
 - 运行 GEO 审计
 - 管理 GEOFlow 和 Postiz
+
+内部后台使用 Better Auth session。未登录会跳转到 `/login`；公开 guides 不需要登录。不要再使用 Basic Auth 或 `x-geo-ops-action` header。
 
 ### 对外内容区
 
@@ -277,7 +279,60 @@ Postiz 如果继续使用，只作为可选下游分发系统之一，不再是�
 - [FAQ](https://txpuro.com/guides/faq)
 - [Txpuro vs MyInvois Portal](https://txpuro.com/guides/compare/txpuro-vs-myinvois-portal)
 
-## 9. 相关文档
+## 9. Phase 1 管理与恢复 SOP
+
+### 9.1 新租户上线
+
+1. 由 `Admin` 先创建 client；只有 `Admin` 可以创建 client 和 site integration。
+2. 由 `Admin` 或 `Operator` 在已获 client scope 内依次创建 brand、site、market。
+3. 从每个 API 响应记录新的 `client.id`、`brand.id`、`site.id` 和 `siteMarket.id`，再作为下一步路径参数或 integration 的 `siteMarketId`。
+4. site 的 `canonicalHost` / `originHosts` 只填写 host（可带 port），不能填 URL、path、query 或 credentials。遇到 `409 Host already claimed` 时先核对现有 site，不能绕过唯一 host ownership。
+
+完整的请求 payload 和 endpoint 见 [system-reference.md](./system-reference.md)。执行 API 请求必须保留已登录的 Better Auth session；不要把 session cookie 保存到共享脚本或工单。
+
+### 9.2 文件 secret 与 worker
+
+1. 在生产主机带外创建 `/opt/geo-content-ops/secrets`，目录权限 `700`。
+2. 将 `sgeo_internal_secret` 通过 secret manager 或受控 SSH 放入该目录，文件权限 `600`；它不进入 Git、部署 archive、`.env` 或运行记录。
+3. 其他 integration secret 也以相对路径存于该目录，并用 `file:<relative-path>` 注册到 `POST /api/sites/<site-id>/integrations`。
+4. 确认 Compose 将目录只读挂载到 `/run/secrets`。`geo-worker` 只配置 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE`，绝不配置 `DATABASE_URL`。
+
+### 9.3 发布前 migration 与验收
+
+在 `/opt/geo-content-ops`，生产部署和 migration 必须带 env file：
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml config --quiet
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml up -d postgres
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npm run prisma:deploy
+docker compose --env-file .env -f deploy/docker-compose.prod.example.yml run --rm geo-ops npx prisma migrate status
+```
+
+验收命令：
+
+```bash
+npm test
+npm run test:integration
+npm run typecheck
+npm run build
+npm run test:integration -- \
+  tests/integration/client-isolation.test.ts \
+  tests/integration/txpuro-backfill.test.ts \
+  tests/integration/compose-policy.test.ts
+```
+
+`npm run test:integration` 与 isolation/backfill evidence 需要专用 PostgreSQL 16 的 `TEST_DATABASE_URL` 和 schema 创建/删除权限。没有该变量时，database-backed suites 会以 `TEST_DATABASE_URL is required for database integration tests` 退出非零；记录为测试环境缺失，不得以生产数据库替代或标记通过。
+
+### 9.4 PostgreSQL、artifact 与应用回退
+
+1. 每日运行 `APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh`，并在同一时间点建立 `artifact-data` archive。
+2. 恢复前停止 `geo-ops` 与 `geo-worker`；先恢复 PostgreSQL，再恢复同一时间点的 artifacts。
+3. 保留 `postgres_data`、`artifact-data` 和 `_prisma_migrations`。恢复和回退时不要运行 `prisma migrate reset`、`docker compose down -v` 或手工删除新 schema。
+4. 应用回退仅重新部署已验证的旧应用 release，且不传 `-RunMigrations`。如果旧 release 不能读取新 schema，恢复与该 release 配对的数据库和 artifact backup。
+
+完整的 PostgreSQL / artifact restore 命令和安全回退步骤见 [system-reference.md](./system-reference.md)。
+
+## 10. 相关文档
 
 - [system-reference.md](./system-reference.md)
 - [server-47.239.166.249-deployment.md](./server-47.239.166.249-deployment.md)
