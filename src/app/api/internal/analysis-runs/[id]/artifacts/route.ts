@@ -128,6 +128,7 @@ export function createAnalysisArtifactRoute(
       let byteSize = 0;
       const reader = request.body?.getReader();
       if (reader !== undefined) {
+        let completed = false;
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -148,8 +149,20 @@ export function createAnalysisArtifactRoute(
             hash.update(value);
             byteSize += value.byteLength;
           }
+          completed = true;
         } finally {
-          reader.releaseLock();
+          if (!completed) {
+            try {
+              await reader.cancel();
+            } catch {
+              // The original reader or storage failure controls the response.
+            }
+          }
+          try {
+            reader.releaseLock();
+          } catch {
+            // Reader cleanup must not escape the internal route boundary.
+          }
         }
       }
       const bodyDigest = hash.digest("hex");

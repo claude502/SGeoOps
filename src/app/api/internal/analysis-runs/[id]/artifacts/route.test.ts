@@ -31,12 +31,17 @@ function store() {
   return { artifacts, upload };
 }
 
-function chunkedBody(chunks: Uint8Array[]) {
+function chunkedBody(
+  chunks: Uint8Array[],
+  onCancel?: () => void,
+  keepOpen = false,
+) {
   return new ReadableStream<Uint8Array>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(chunk);
-      controller.close();
+      if (!keepOpen) controller.close();
     },
+    cancel: onCancel,
   });
 }
 
@@ -47,6 +52,8 @@ async function signedRequest(
   timestamp = Math.floor(Date.now() / 1_000),
   chunks?: Uint8Array[],
   signedBytes = bytes,
+  onCancel?: () => void,
+  keepOpen = false,
 ) {
   const signed = await signInternalRequest(
     secret,
@@ -65,7 +72,7 @@ async function signedRequest(
       "x-sgeo-signature": signed.signature,
       ...headers,
     },
-    body: chunks === undefined ? bytes : chunkedBody(chunks),
+    body: chunks === undefined ? bytes : chunkedBody(chunks, onCancel, keepOpen),
     // Node's Request requires this for a ReadableStream request body.
     duplex: "half",
   } as RequestInit);
@@ -130,6 +137,7 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
   it("streams signed raw bytes and publishes only verified metadata", async () => {
     const { artifacts, upload } = store();
     const post = createAnalysisArtifactRoute(() => artifacts);
+    let cancellations = 0;
 
     const response = await post(await signedRequest(
       body,
@@ -137,6 +145,10 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
       "POST",
       Math.floor(Date.now() / 1_000),
       [body.subarray(0, 4), body.subarray(4)],
+      body,
+      () => {
+        cancellations += 1;
+      },
     ), {
       params: Promise.resolve({ id: runId }),
     });
@@ -162,6 +174,7 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
       mediaType: "application/json",
       byteSize: body.byteLength,
     });
+    expect(cancellations).toBe(0);
     expect(upload.abort).not.toHaveBeenCalled();
   });
 
@@ -235,6 +248,7 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const { artifacts, upload } = store();
     const post = createAnalysisArtifactRoute(() => artifacts, 3);
+    let cancellations = 0;
 
     const response = await post(await signedRequest(
       bytes,
@@ -242,10 +256,45 @@ describe("POST /api/internal/analysis-runs/[id]/artifacts", () => {
       "POST",
       Math.floor(Date.now() / 1_000),
       [bytes.subarray(0, 2), bytes.subarray(2)],
+      bytes,
+      () => {
+        cancellations += 1;
+      },
+      true,
     ), { params: Promise.resolve({ id: runId }) });
 
     expect(response.status).toBe(413);
+    expect(cancellations).toBe(1);
     expect(upload.write).toHaveBeenCalledTimes(1);
+    expect(upload.abort).toHaveBeenCalledTimes(1);
+    expect(upload.commit).not.toHaveBeenCalled();
+  });
+
+  it("cancels and aborts staging when artifact stream reading fails", async () => {
+    const { artifacts, upload } = store();
+    const post = createAnalysisArtifactRoute(() => artifacts);
+    const request = await signedRequest();
+    const order: string[] = [];
+    const reader = {
+      read: vi.fn().mockRejectedValue(new Error("stream failed")),
+      cancel: vi.fn().mockImplementation(async () => {
+        order.push("cancel");
+      }),
+      releaseLock: vi.fn().mockImplementation(() => {
+        order.push("release");
+      }),
+    };
+    Object.defineProperty(request, "body", {
+      value: { getReader: () => reader },
+    });
+
+    const response = await post(request, {
+      params: Promise.resolve({ id: runId }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(reader.cancel).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["cancel", "release"]);
     expect(upload.abort).toHaveBeenCalledTimes(1);
     expect(upload.commit).not.toHaveBeenCalled();
   });

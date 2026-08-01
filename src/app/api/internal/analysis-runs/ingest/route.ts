@@ -45,7 +45,7 @@ function isJsonContentType(request: Request) {
 function contentLength(request: Request): number | null {
   const received = request.headers.get("content-length");
   if (received === null) return null;
-  if (!/^(0|[1-9]\d*)$/.test(received)) {
+  if (!/^\d+$/.test(received)) {
     throw new AnalysisBodyError("INVALID");
   }
   const parsed = Number(received);
@@ -53,6 +53,14 @@ function contentLength(request: Request): number | null {
     throw new AnalysisBodyError("INVALID");
   }
   return parsed;
+}
+
+async function cancelRequestBody(request: Request) {
+  try {
+    await request.body?.cancel();
+  } catch {
+    // The early size response must not be replaced by a stream cleanup error.
+  }
 }
 
 async function readBoundedJsonBody(request: Request, maximumByteSize: number) {
@@ -176,6 +184,7 @@ export function createAnalysisIngestRoute(
     try {
       const declaredLength = contentLength(request);
       if (declaredLength !== null && declaredLength > maximumByteSize) {
+        await cancelRequestBody(request);
         return jsonError(413, "Analysis envelope exceeds the byte limit", "ENVELOPE_TOO_LARGE");
       }
       ({ bytes: rawBody, digest: bodyDigest } = await readBoundedJsonBody(

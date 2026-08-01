@@ -161,6 +161,7 @@ describe("POST /api/internal/analysis-runs/ingest", () => {
     const post = createAnalysisIngestRoute(() => created);
     const bytes = new TextEncoder().encode(JSON.stringify(envelope));
     const signed = await signInternalRequest(secret, "POST", pathname, bytes);
+    let cancellations = 0;
     const request = new Request(`http://localhost${pathname}`, {
       method: "POST",
       headers: {
@@ -171,7 +172,10 @@ describe("POST /api/internal/analysis-runs/ingest", () => {
       },
       body: new ReadableStream<Uint8Array>({
         pull() {
-          throw new Error("oversized declared body must not be read");
+          return new Promise<void>(() => {});
+        },
+        cancel() {
+          cancellations += 1;
         },
       }),
       duplex: "half",
@@ -180,8 +184,49 @@ describe("POST /api/internal/analysis-runs/ingest", () => {
     const response = await post(request);
 
     expect(response.status).toBe(413);
+    expect(cancellations).toBe(1);
     expect(created.ingest).not.toHaveBeenCalled();
   });
+
+  it("accepts a legal leading-zero Content-Length", async () => {
+    const created = service();
+    const post = createAnalysisIngestRoute(() => created);
+    const rawBody = JSON.stringify(envelope);
+    const byteSize = new TextEncoder().encode(rawBody).byteLength;
+
+    const response = await post(await signedRequest(
+      rawBody,
+      Math.floor(Date.now() / 1_000),
+      "application/json",
+      "POST",
+      { "content-length": `000${byteSize}` },
+    ));
+
+    expect(response.status).toBe(202);
+    expect(created.ingest).toHaveBeenCalledWith(envelope);
+  });
+
+  it.each(["+1", "-1", " 1", "1 ", "1.0", "1e3"])(
+    "rejects non-decimal Content-Length %j",
+    async (declaredLength) => {
+      const created = service();
+      const post = createAnalysisIngestRoute(() => created);
+      const request = await signedRequest(JSON.stringify(envelope));
+      const headers = request.headers;
+      Object.defineProperty(request, "headers", {
+        value: {
+          get: (name: string) => name.toLowerCase() === "content-length"
+            ? declaredLength
+            : headers.get(name),
+        },
+      });
+
+      const response = await post(request);
+
+      expect(response.status).toBe(400);
+      expect(created.ingest).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects chunked JSON bodies that exceed the configured byte cap", async () => {
     const created = service();
