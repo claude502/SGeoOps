@@ -1,0 +1,57 @@
+{
+  "crawler": { "name": "SiteOne Crawler", "version": "2.5.1" },
+  "results": [
+    {
+      "url": "https://example.test/",
+      "status": "200",
+      "type": 1,
+      "extras": {
+        "SgeoStructuredData": "{\"@graph\":[{\"@type\":\"Organization\"},{\"@type\":[\"BreadcrumbList\"]}]}"
+      }
+    },
+    { "url": "https://example.test/missing", "status": "404", "type": 1 }
+  ],
+  "stats": { "countByStatus": { "200": 1, "404": 1 } },
+  "summary": {
+    "items": [
+      {
+        "aplCode": "seo-canonical-mismatch",
+        "status": "WARNING",
+        "text": "1 page(s) with a canonical pointing to a different host"
+      }
+    ]
+  },
+  "tables": {
+    "seo": {
+      "rows": [
+        {
+          "urlPathAndQuery": "/",
+          "indexing": "index, follow",
+          "robotsIndex": "1",
+          "deniedByRobotsTxt": "false",
+          "title": "Example home",
+          "h1": "Welcome"
+        }
+      ]
+    },
+    "seo-headings": {
+      "rows": [
+        {
+          "urlPathAndQuery": "/",
+          "headings": "<h1> Welcome <h2> Details",
+          "headingsCount": "2",
+          "headingsErrorsCount": "0"
+        }
+      ]
+    },
+    "404": {
+      "rows": [
+        {
+          "url": "https://example.test/missing",
+          "sourceUqId": "https://example.test/",
+          "statusCode": "404"
+        }
+      ]
+    }
+  }
+}

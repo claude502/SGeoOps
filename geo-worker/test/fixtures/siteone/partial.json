@@ -1,0 +1,20 @@
+{
+  "crawler": { "name": "SiteOne Crawler", "version": "2.5.1" },
+  "results": [
+    { "url": "https://example.test/", "status": "200", "type": 1 }
+  ],
+  "stats": {
+    "countByStatus": { "200": 1 },
+    "visitedUrlLimitReached": true
+  },
+  "summary": {
+    "items": [
+      {
+        "aplCode": "crawler-partial",
+        "status": "WARNING",
+        "text": "Crawl stopped at the configured visited URL limit"
+      }
+    ]
+  },
+  "tables": { "seo": { "rows": [] } }
+}

@@ -1,0 +1,8 @@
+{
+  "crawler": { "name": "SiteOne Crawler", "version": "2.5.1" },
+  "results": [
+    { "url": "https://example.test/", "status": "503", "type": 1 }
+  ],
+  "stats": { "countByStatus": { "503": 1 } },
+  "tables": {}
+}
