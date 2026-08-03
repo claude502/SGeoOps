@@ -146,6 +146,13 @@ describe("SeoReportQueries", () => {
       ...succeededRunWhere,
       status: { in: ["succeeded", "partial"] },
     };
+    const completedAtWindow = {
+      finishedAt: {
+        not: null,
+        gte: new Date(request.startAt),
+        lte: new Date(request.endAt),
+      },
+    };
     expect(database.site.findFirst).toHaveBeenCalledWith({
       where: {
         ...siteWhere,
@@ -231,10 +238,7 @@ describe("SeoReportQueries", () => {
         brand: { id: request.brandId, client: { id: request.clientId } },
         site: siteWhere,
         siteMarket: marketWhere,
-        createdAt: {
-          gte: new Date(request.startAt),
-          lte: new Date(request.endAt),
-        },
+        ...completedAtWindow,
         source: { in: ["siteone", "unlighthouse", "search-console", "matomo"] },
       },
       select: {
@@ -256,10 +260,7 @@ describe("SeoReportQueries", () => {
         brand: { id: request.brandId, client: { id: request.clientId } },
         site: siteWhere,
         siteMarket: marketWhere,
-        createdAt: {
-          gte: new Date(request.startAt),
-          lte: new Date(request.endAt),
-        },
+        ...completedAtWindow,
         source: { in: ["siteone", "unlighthouse", "search-console", "matomo"] },
       },
       select: {
@@ -271,7 +272,7 @@ describe("SeoReportQueries", () => {
         finishedAt: true,
         createdAt: true,
       },
-      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      orderBy: [{ finishedAt: "desc" }, { id: "asc" }],
       take: 50,
     });
     expect(database.analysisRun.findMany).toHaveBeenNthCalledWith(3, {

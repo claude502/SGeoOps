@@ -537,6 +537,8 @@ function buildCoverage(rows: readonly CoverageRunRow[]): SeoReportCoverageDto[] 
   );
   for (const row of rows) {
     if (!isCoverageSource(row.source)) continue;
+    const runAt = isoDate(row.finishedAt);
+    if (runAt === null) continue;
     const current = coverage.get(row.source);
     if (current === undefined) continue;
     current.runCounts.total += 1;
@@ -556,9 +558,7 @@ function buildCoverage(rows: readonly CoverageRunRow[]): SeoReportCoverageDto[] 
             end: observedAt > previous.end ? observedAt : previous.end,
           };
     }
-    const runAt = isoDate(row.finishedAt) ?? isoDate(row.startedAt) ?? isoDate(row.createdAt);
     if (
-      runAt !== null &&
       isRunStatus(row.status) &&
       (current.latestRunAt === null || runAt > current.latestRunAt)
     ) {
@@ -584,7 +584,7 @@ function mapRunHistory(row: RunHistoryRow): SeoReportRunDto | null {
     typeof row.status !== "string" ||
     !isRunStatus(row.status)
   ) return null;
-  const capturedAt = isoDate(row.finishedAt) ?? isoDate(row.startedAt) ?? isoDate(row.createdAt);
+  const capturedAt = isoDate(row.finishedAt);
   const startedAt = isoDate(row.startedAt);
   const finishedAt = isoDate(row.finishedAt);
   const kind = boundedText(row.kind, 128);
@@ -679,14 +679,17 @@ export class SeoReportQueries {
       ...scopedRunWhere,
       source: { in: [...SEO_REPORT_COVERAGE_SOURCES] },
     };
-    const anchorRunWhere: Prisma.AnalysisRunWhereInput = {
-      ...sourceRunWhere,
-      status: { in: ["succeeded", "partial"] },
+    const completedRunWindow: Prisma.AnalysisRunWhereInput = {
       finishedAt: {
         not: null,
         gte: parsed.data.startAt,
         lte: parsed.data.endAt,
       },
+    };
+    const anchorRunWhere: Prisma.AnalysisRunWhereInput = {
+      ...sourceRunWhere,
+      status: { in: ["succeeded", "partial"] },
+      ...completedRunWindow,
     };
 
     const [
@@ -769,7 +772,7 @@ export class SeoReportQueries {
       this.database.analysisRun.findMany({
         where: {
           ...sourceRunWhere,
-          createdAt: dateRange,
+          ...completedRunWindow,
         },
         select: {
           source: true,
@@ -787,7 +790,7 @@ export class SeoReportQueries {
       this.database.analysisRun.findMany({
         where: {
           ...sourceRunWhere,
-          createdAt: dateRange,
+          ...completedRunWindow,
         },
         select: {
           id: true,
@@ -798,7 +801,7 @@ export class SeoReportQueries {
           finishedAt: true,
           createdAt: true,
         },
-        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        orderBy: [{ finishedAt: "desc" }, { id: "asc" }],
         take: 50,
       }),
       this.database.analysisRun.findFirst({

@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { requireAccessScope } from "@/lib/authorization";
-import {
-  organizationRouteError,
-} from "@/lib/organization/http";
+import { organizationRouteError } from "@/lib/organization/http";
 import { ScopedOrganizationError } from "@/lib/organization/repository";
 import { pathIdSchema } from "@/lib/organization/schemas";
 import {

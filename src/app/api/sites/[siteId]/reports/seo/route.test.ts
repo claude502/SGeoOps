@@ -46,7 +46,7 @@ const emptyReport = {
   isEmpty: true,
 };
 
-describe("GET /api/sites/[siteId]/seo", () => {
+describe("GET /api/sites/[siteId]/reports/seo", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireAccessScope.mockResolvedValue(access);
@@ -60,7 +60,7 @@ describe("GET /api/sites/[siteId]/seo", () => {
   it("returns the scoped empty contract without accepting ownership IDs", async () => {
     const { GET } = await import("./route");
     const response = await GET(
-      new Request("http://localhost/api/sites/site_a/seo?start=2026-07-01&end=2026-07-31"),
+      new Request("http://localhost/api/sites/site_a/reports/seo?start=2026-07-01&end=2026-07-31"),
       { params: Promise.resolve({ siteId: "site_a" }) },
     );
 
@@ -77,15 +77,15 @@ describe("GET /api/sites/[siteId]/seo", () => {
     );
   });
 
-  it("returns the same safe 404 for a foreign site and inconsistent market", async () => {
+  it("returns the same safe 404 for Client B's site and an inconsistent market", async () => {
     const { GET } = await import("./route");
     mocks.loadScopedSeoReport.mockRejectedValue(
       new ScopedOrganizationError("RESOURCE_NOT_FOUND"),
     );
 
     for (const url of [
-      "http://localhost/api/sites/site_client_b/seo?start=2026-07-01&end=2026-07-31",
-      "http://localhost/api/sites/site_a/seo?start=2026-07-01&end=2026-07-31&siteMarketId=market_client_b",
+      "http://localhost/api/sites/site_client_b/reports/seo?start=2026-07-01&end=2026-07-31",
+      "http://localhost/api/sites/site_a/reports/seo?start=2026-07-01&end=2026-07-31&siteMarketId=market_client_b",
     ]) {
       const siteId = url.includes("site_client_b") ? "site_client_b" : "site_a";
       const response = await GET(new Request(url), {
@@ -104,7 +104,7 @@ describe("GET /api/sites/[siteId]/seo", () => {
   ])("returns 400 before loading data for invalid query: %s", async (query) => {
     const { GET } = await import("./route");
     const response = await GET(
-      new Request(`http://localhost/api/sites/site_a/seo?${query}`),
+      new Request(`http://localhost/api/sites/site_a/reports/seo?${query}`),
       { params: Promise.resolve({ siteId: "site_a" }) },
     );
 
@@ -116,25 +116,12 @@ describe("GET /api/sites/[siteId]/seo", () => {
   it("rejects malformed path IDs before loading data", async () => {
     const { GET } = await import("./route");
     const response = await GET(
-      new Request("http://localhost/api/sites/site_a/seo?start=2026-07-01&end=2026-07-31"),
+      new Request("http://localhost/api/sites/site_a/reports/seo?start=2026-07-01&end=2026-07-31"),
       { params: Promise.resolve({ siteId: " site_a " }) },
     );
 
     expect(response.status).toBe(400);
     expect(mocks.loadScopedSeoReport).not.toHaveBeenCalled();
-  });
-
-  it("maps a report-domain input rejection to the same safe 400", async () => {
-    const { GET } = await import("./route");
-    mocks.loadScopedSeoReport.mockRejectedValue(new SeoReportQueryInputError());
-
-    const response = await GET(
-      new Request("http://localhost/api/sites/site_a/seo?start=2026-07-01&end=2026-07-31"),
-      { params: Promise.resolve({ siteId: "site_a" }) },
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({ error: "Invalid SEO report request" });
   });
 
   it.each([
@@ -145,11 +132,24 @@ describe("GET /api/sites/[siteId]/seo", () => {
     mocks.requireAccessScope.mockRejectedValue(error);
 
     const response = await GET(
-      new Request("http://localhost/api/sites/site_a/seo?start=2026-07-01&end=2026-07-31"),
+      new Request("http://localhost/api/sites/site_a/reports/seo?start=2026-07-01&end=2026-07-31"),
       { params: Promise.resolve({ siteId: "site_a" }) },
     );
 
     expect(response.status).toBe(status);
     expect(mocks.loadScopedSeoReport).not.toHaveBeenCalled();
+  });
+
+  it("maps report-domain input errors to the same safe 400", async () => {
+    const { GET } = await import("./route");
+    mocks.loadScopedSeoReport.mockRejectedValue(new SeoReportQueryInputError());
+
+    const response = await GET(
+      new Request("http://localhost/api/sites/site_a/reports/seo?start=2026-07-01&end=2026-07-31"),
+      { params: Promise.resolve({ siteId: "site_a" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid SEO report request" });
   });
 });
