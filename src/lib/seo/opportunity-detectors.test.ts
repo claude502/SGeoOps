@@ -326,6 +326,171 @@ describe("detectSeoRecommendations", () => {
     expect(recommendations).toEqual([]);
   });
 
+  it("does not let a whitespace-padded property replace a canonical Search Console snapshot", () => {
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [
+        run("canonical_snapshot", [
+          observation("canonical_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("canonical_query", "search_console.search_analytics", "/guides", {
+            date: "2026-07-01",
+            query: "canonical demand",
+            page: "https://example.test/guides",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-02T00:00:00.000Z" }),
+        run("padded_empty_snapshot", [
+          observation("padded_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: " sc-domain:example.test ",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 0,
+            rowsIncluded: 0,
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+      ],
+    });
+
+    expect(recommendations).toMatchObject([{
+      kind: "new_content",
+      subject: "query:canonical demand",
+      observationIds: ["canonical_query"],
+    }]);
+  });
+
+  it("rejects forged Search Console properties before they can draft content or measurement repairs", () => {
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [
+        run("forged_query_snapshot", [
+          observation("forged_query_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "ftp://example.test/",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("forged_query", "search_console.search_analytics", "/guides", {
+            date: "2026-07-01",
+            query: "forged demand",
+            page: "https://example.test/guides",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ]),
+        run("forged_measurement_snapshot", [
+          observation("forged_measurement_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "https://example.test/?forged=true",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 25_000,
+            rowsIncluded: 10_000,
+            pagination: { truncated: true },
+          }),
+        ], { status: "partial" }),
+      ],
+    });
+
+    expect(recommendations).toEqual([]);
+  });
+
+  it("accepts canonical URL-prefix and sc-domain Search Console properties", () => {
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [
+        run("domain_property", [
+          observation("domain_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("domain_query", "search_console.search_analytics", "/domain", {
+            date: "2026-07-01",
+            query: "domain demand",
+            page: "https://example.test/domain",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ]),
+        run("url_property", [
+          observation("url_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "https://shop.example.test/",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("url_query", "search_console.search_analytics", "/shop", {
+            date: "2026-07-01",
+            query: "url demand",
+            page: "https://shop.example.test/shop",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ]),
+      ],
+    });
+
+    expect(recommendations.map(({ subject }) => subject)).toEqual([
+      "query:domain demand",
+      "query:url demand",
+    ]);
+  });
+
   it("keeps independent Search Console windows and rejects facts without a trusted snapshot summary", () => {
     const recommendations = detectSeoRecommendations({
       scope,

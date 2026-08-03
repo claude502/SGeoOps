@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
+import { parseSearchConsoleProperty } from "@/lib/search-console/property";
 import {
   priority,
   SEO_FORMULA_VERSION,
@@ -146,7 +147,7 @@ const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => 
 const searchConsoleSnapshotSummarySchema = z.object({
   startDate: isoDateSchema,
   endDate: isoDateSchema,
-  property: z.string().trim().min(1).max(2_048).refine((value) => !containsControl(value)),
+  property: z.string().min(1).max(2_048),
   scope: z.literal("top_rows"),
   dataState: z.literal("final"),
   rowsFetched: z.number().finite().int().min(0),
@@ -327,9 +328,11 @@ function searchConsoleSnapshotKey(run: z.infer<typeof runSchema>) {
   const summary = searchConsoleSnapshotSummarySchema.safeParse(summaries[0]!.value);
   if (!summary.success) return null;
   const data = summary.data;
+  const property = parseSearchConsoleProperty(data.property);
+  if (property === null || property !== data.property) return null;
   return JSON.stringify([
     "search-console",
-    data.property,
+    property,
     data.startDate,
     data.endDate,
     data.scope,
