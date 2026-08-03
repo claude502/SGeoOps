@@ -84,6 +84,16 @@ describe("detectSeoRecommendations", () => {
       runs: [run("run_siteone", [
         observation("technical", "siteone.http_status", "https://example.test/broken", { statusCode: 500 }),
       ]), run("run_search", [
+        observation("search_summary", "search_console.sync_summary", "search-console", {
+          startDate: "2026-07-01",
+          endDate: "2026-07-01",
+          property: "sc-domain:example.test",
+          scope: "top_rows",
+          dataState: "final",
+          rowsFetched: 2,
+          rowsIncluded: 2,
+          pagination: { truncated: false },
+        }),
         observation("improve", "search_console.search_analytics", "https://example.test/pricing", {
           date: "2026-07-01",
           query: "pricing",
@@ -114,6 +124,9 @@ describe("detectSeoRecommendations", () => {
         }),
       ]), run("run_partial", [
         observation("measurement", "search_console.sync_summary", "search-console", {
+          startDate: "2026-07-02",
+          endDate: "2026-07-02",
+          property: "sc-domain:example.test",
           scope: "top_rows",
           dataState: "final",
           rowsFetched: 25_000,
@@ -228,6 +241,197 @@ describe("detectSeoRecommendations", () => {
     expect(recommendations).toEqual([]);
   });
 
+  it("suppresses a stale high-demand query when a newer successful Search Console snapshot is empty", () => {
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [
+        run("search_old", [
+          observation("old_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("old_query", "search_console.search_analytics", "/guides", {
+            date: "2026-07-01",
+            query: "stale demand",
+            page: "https://example.test/guides",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-02T00:00:00.000Z" }),
+        run("search_new_empty", [
+          observation("new_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 0,
+            rowsIncluded: 0,
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+      ],
+    });
+
+    expect(recommendations).toEqual([]);
+  });
+
+  it("suppresses a stale partial measurement repair when a newer Search Console snapshot is complete", () => {
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [
+        run("search_partial", [
+          observation("partial_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 25_000,
+            rowsIncluded: 10_000,
+            pagination: { truncated: true },
+          }),
+        ], {
+          status: "partial",
+          finishedAt: "2026-07-02T00:00:00.000Z",
+        }),
+        run("search_complete", [
+          observation("complete_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 0,
+            rowsIncluded: 0,
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+      ],
+    });
+
+    expect(recommendations).toEqual([]);
+  });
+
+  it("keeps independent Search Console windows and rejects facts without a trusted snapshot summary", () => {
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [
+        run("search_window_one", [
+          observation("window_one_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("window_one_query", "search_console.search_analytics", "/guides", {
+            date: "2026-07-01",
+            query: "still relevant",
+            page: "https://example.test/guides",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-02T00:00:00.000Z" }),
+        run("search_other_window_empty", [
+          observation("other_window_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-02",
+            endDate: "2026-07-02",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 0,
+            rowsIncluded: 0,
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+        run("search_other_property_empty", [
+          observation("other_property_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:other.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 0,
+            rowsIncluded: 0,
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+        run("search_without_summary", [
+          observation("untrusted_query", "search_console.search_analytics", "/ignored", {
+            date: "2026-07-01",
+            query: "must not be emitted",
+            page: "https://example.test/ignored",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-04T00:00:00.000Z" }),
+        run("search_invalid_summary", [
+          observation("invalid_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:unsafe\u202E.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("invalid_summary_query", "search_console.search_analytics", "/invalid", {
+            date: "2026-07-01",
+            query: "must also not be emitted",
+            page: "https://example.test/invalid",
+            country: "usa",
+            device: "desktop",
+            clicks: 0,
+            impressions: 150,
+            ctr: 0,
+            position: 18,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-04T00:00:00.000Z" }),
+      ],
+    });
+
+    expect(recommendations).toMatchObject([{
+      kind: "new_content",
+      subject: "query:still relevant",
+      observationIds: ["window_one_query"],
+    }]);
+  });
+
   it("ignores cross-scope, failed issue, malformed, and unsafe untrusted data", () => {
     const longInjection = `https://example.test/${"x".repeat(600)}\n<script>alert(1)</script>`;
     const recommendations = detectSeoRecommendations({
@@ -264,6 +468,16 @@ describe("detectSeoRecommendations", () => {
     const recommendations = detectSeoRecommendations({
       scope,
       runs: [run("run_1", [
+        observation("search_summary", "search_console.sync_summary", "search-console", {
+          startDate: "2026-07-01",
+          endDate: "2026-07-01",
+          property: "sc-domain:example.test",
+          scope: "top_rows",
+          dataState: "final",
+          rowsFetched: 1,
+          rowsIncluded: 1,
+          pagination: { truncated: false },
+        }),
         observation("bidi_query", "search_console.search_analytics", "/ignored", {
           date: "2026-07-01",
           query: unsafeQuery,

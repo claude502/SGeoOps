@@ -139,6 +139,22 @@ const truncatedSummarySchema = z.object({
   rowsIncluded: z.number().finite().int().min(0),
   pagination: z.object({ truncated: z.literal(true) }).passthrough(),
 });
+const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+});
+const searchConsoleSnapshotSummarySchema = z.object({
+  startDate: isoDateSchema,
+  endDate: isoDateSchema,
+  property: z.string().trim().min(1).max(2_048).refine((value) => !containsControl(value)),
+  scope: z.literal("top_rows"),
+  dataState: z.literal("final"),
+  rowsFetched: z.number().finite().int().min(0),
+  rowsIncluded: z.number().finite().int().min(0),
+  pagination: z.object({ truncated: z.boolean() }).passthrough(),
+}).refine(({ startDate, endDate, rowsFetched, rowsIncluded }) =>
+  startDate <= endDate && rowsIncluded <= rowsFetched
+);
 
 const kindOrder: readonly SeoRecommendationKind[] = [
   "technical_fix",
@@ -303,6 +319,52 @@ function latestSnapshotRunIds(
   return new Set([...latest.values()].map(({ id }) => id));
 }
 
+function searchConsoleSnapshotKey(run: z.infer<typeof runSchema>) {
+  const summaries = run.observations.filter(
+    (observation) => observation.kind === "search_console.sync_summary",
+  );
+  if (summaries.length !== 1) return null;
+  const summary = searchConsoleSnapshotSummarySchema.safeParse(summaries[0]!.value);
+  if (!summary.success) return null;
+  const data = summary.data;
+  return JSON.stringify([
+    "search-console",
+    data.property,
+    data.startDate,
+    data.endDate,
+    data.scope,
+    data.dataState,
+    "date",
+    "query",
+    "page",
+    "country",
+    "device",
+  ]);
+}
+
+function latestSearchConsoleSnapshotRuns(
+  runs: readonly z.infer<typeof runSchema>[],
+  scope: SeoOwnershipScope,
+) {
+  const latest = new Map<string, z.infer<typeof runSchema>>();
+  for (const run of runs) {
+    if (
+      !exactScope(run, scope) ||
+      run.source !== "search-console" ||
+      (run.status !== "succeeded" && run.status !== "partial")
+    ) continue;
+    const key = searchConsoleSnapshotKey(run);
+    if (key === null) continue;
+    const existing = latest.get(key);
+    if (
+      existing === undefined ||
+      runCompletion(run) > runCompletion(existing) ||
+      (runCompletion(run) === runCompletion(existing) && run.id < existing.id)
+    ) latest.set(key, run);
+  }
+  return new Set(latest.values());
+}
+
 function issueSignal(
   kind: SeoRecommendationKind,
   subject: unknown,
@@ -452,12 +514,14 @@ export function detectSeoRecommendations(value: unknown): SeoRecommendationDraft
   const { scope } = parsed.data;
   const groups = new Map<string, Group>();
   const snapshotRunIds = latestSnapshotRunIds(parsed.data.runs, scope);
+  const searchConsoleSnapshotRuns = latestSearchConsoleSnapshotRuns(parsed.data.runs, scope);
   for (const run of parsed.data.runs) {
     if (!exactScope(run, scope)) continue;
     if (
       (run.source === "siteone" || run.source === "unlighthouse") &&
       !snapshotRunIds.has(run.id)
     ) continue;
+    if (run.source === "search-console" && !searchConsoleSnapshotRuns.has(run)) continue;
     for (const observation of run.observations) {
       if (!sourceAllowsKind(run.source, observation.kind)) continue;
       const signal = run.status === "succeeded"
