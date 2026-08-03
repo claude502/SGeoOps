@@ -175,6 +175,32 @@ describe("organization schemas", () => {
     }).success).toBe(false);
   });
 
+  it("canonicalizes Matomo integration endpoints to the exact HTTP(S) origin", () => {
+    expect(createIntegrationSchema.parse({
+      type: "matomo",
+      endpoint: "https://analytics.example:443/",
+      capabilities: ["reporting"],
+      adapterVersion: "1.0.0",
+      secretRef: "file:matomo/reporting-token",
+    }).endpoint).toBe("https://analytics.example");
+  });
+
+  it.each([
+    "https://analytics.example/index.php",
+    "https://analytics.example/?module=API",
+    "https://analytics.example/#report",
+    "https://user:secret@analytics.example/",
+    "ftp://analytics.example/",
+  ])("rejects unsafe Matomo integration endpoint %s", (endpoint) => {
+    expect(createIntegrationSchema.safeParse({
+      type: "matomo",
+      endpoint,
+      capabilities: ["reporting"],
+      adapterVersion: "1.0.0",
+      secretRef: "file:matomo/reporting-token",
+    }).success).toBe(false);
+  });
+
   it.each([
     "sc-domain:localhost",
     "sc-domain:-shop.example",

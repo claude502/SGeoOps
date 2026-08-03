@@ -27,6 +27,15 @@ export type SearchConsoleControlScope = {
   property: string;
 };
 
+export type MatomoControlScope = {
+  clientId: string;
+  brandId: string;
+  siteId: string;
+  siteMarketId: string | null;
+  integrationId: string;
+  endpoint: string;
+};
+
 export type SearchConsoleDispatchPage = {
   runs: SearchConsoleInput[];
   cursor: string | null;
@@ -263,6 +272,55 @@ export class SgeoOpsClient {
       throw new SgeoOpsClientError("SGeoOps returned an invalid authentication-failure response.", {
         retryable: false,
       });
+    }
+    return { disabled: true, recommendationId: payload.recommendationId };
+  }
+
+  async getMatomoCredential(
+    runId: string,
+    scope: MatomoControlScope,
+  ): Promise<{ token: string }> {
+    const pathname = `/api/internal/analysis-runs/${encodeURIComponent(runId)}/matomo/credential`;
+    const body = JSON.stringify(scope);
+    const response = await this.signedPost(pathname, body, {
+      "content-type": "application/json",
+    });
+    const payload = exactRecord(await boundedJsonResponse(response), ["token"]);
+    const token = payload?.token;
+    if (
+      typeof token !== "string" ||
+      token.length === 0 ||
+      Buffer.byteLength(token, "utf8") > MAX_CONTROL_RESPONSE_BYTES ||
+      /[\u0000-\u001f\u007f]/.test(token)
+    ) {
+      throw new SgeoOpsClientError("SGeoOps returned an invalid credential response.", {
+        retryable: false,
+      });
+    }
+    return { token };
+  }
+
+  async reportMatomoAuthenticationFailure(
+    runId: string,
+    scope: MatomoControlScope,
+  ): Promise<{ disabled: true; recommendationId: string }> {
+    const pathname = `/api/internal/analysis-runs/${encodeURIComponent(runId)}/matomo/auth-failure`;
+    const body = JSON.stringify(scope);
+    const response = await this.signedPost(pathname, body, {
+      "content-type": "application/json",
+    });
+    const payload = exactRecord(await boundedJsonResponse(response), ["disabled", "recommendationId"]);
+    if (
+      payload?.disabled !== true ||
+      typeof payload.recommendationId !== "string" ||
+      payload.recommendationId.length === 0 ||
+      payload.recommendationId.length > 200 ||
+      /[\u0000-\u001f\u007f]/.test(payload.recommendationId)
+    ) {
+      throw new SgeoOpsClientError(
+        "SGeoOps returned an invalid authentication-failure response.",
+        { retryable: false },
+      );
     }
     return { disabled: true, recommendationId: payload.recommendationId };
   }

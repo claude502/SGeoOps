@@ -19,6 +19,7 @@ const supportedMediaTypes = new Set([
   "application/octet-stream",
   "application/json",
   "application/vnd.sgeo.search-console-pages.v1",
+  "application/vnd.sgeo.matomo-reports.v1",
 ]);
 
 type ArtifactRouteContext = {

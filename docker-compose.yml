@@ -18,6 +18,7 @@ services:
     volumes:
       - artifact-data:/var/lib/sgeo/artifacts
       - ./secrets:/run/secrets:ro
+    networks: [default, matomo-reporting]
 
   postgres:
     image: postgres:16-alpine
@@ -84,9 +85,87 @@ services:
       - artifact-data:/var/lib/sgeo/artifacts
       # Host secret directory/file: root:10001 0750 / root:10001 0640.
       - ./secrets:/run/secrets:ro
+    networks: [default, matomo-reporting]
+
+  matomo-db:
+    image: mariadb:11.4.5
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${MATOMO_DATABASE_NAME:-matomo}
+      MARIADB_USER: ${MATOMO_DATABASE_USER:-matomo}
+      MARIADB_PASSWORD: ${MATOMO_DATABASE_PASSWORD:?set MATOMO_DATABASE_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${MATOMO_DATABASE_ROOT_PASSWORD:?set MATOMO_DATABASE_ROOT_PASSWORD}
+    volumes: [matomo-db-data:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [matomo-private]
+
+  matomo:
+    image: matomo:5.12.0-apache
+    restart: unless-stopped
+    depends_on:
+      matomo-db:
+        condition: service_healthy
+    environment:
+      MATOMO_DATABASE_HOST: matomo-db
+      MATOMO_DATABASE_DBNAME: ${MATOMO_DATABASE_NAME:-matomo}
+      MATOMO_DATABASE_USERNAME: ${MATOMO_DATABASE_USER:-matomo}
+      MATOMO_DATABASE_PASSWORD: ${MATOMO_DATABASE_PASSWORD:?set MATOMO_DATABASE_PASSWORD}
+    volumes: [matomo-data:/var/www/html]
+    expose: ["80"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "php -r '$$socket = @fsockopen(\"127.0.0.1\", 80); if (!$$socket) exit(1); fclose($$socket);'",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks: [matomo-private, matomo-reporting]
+
+  matomo-archive-cron:
+    image: matomo:5.12.0-apache
+    restart: unless-stopped
+    depends_on:
+      matomo:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        while true; do
+          php /var/www/html/console core:archive --url=http://matomo
+          date +%s > /tmp/matomo-archive-last-success
+          sleep 3600
+        done
+    volumes: [matomo-data:/var/www/html]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -s /tmp/matomo-archive-last-success && now=$$(date +%s) && last=$$(cat /tmp/matomo-archive-last-success) && test $$((now - last)) -lt 5400",
+        ]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 20m
+    networks: [matomo-private]
+
+networks:
+  matomo-private:
+    internal: true
+  matomo-reporting:
+    internal: true
 
 volumes:
   postgres-data:
   redis-data:
   trigger-postgres-data:
   artifact-data:
+  matomo-db-data:
+  matomo-data:

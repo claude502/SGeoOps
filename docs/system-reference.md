@@ -293,6 +293,9 @@ GEO Ops 资产和 GEOFlow task/article 的映射。
 - `POST /api/internal/analysis-runs/:runId/search-console/auth-failure` 在同一 owned scope 内以事务禁用唯一的 `type=search_console` Integration，并用确定性 ID 幂等 upsert 当前 AnalysisRun 的 operator Recommendation。两个 Search Console contract 都不记录 token，worker payload、Trigger metadata 和 raw artifact 也不得包含 token。
 - `POST /api/internal/analysis-runs/search-console/dispatch` 接受签名的 Trigger scheduled timestamp，按 `America/Los_Angeles` 日历回退 3 天，只枚举 active owner/site 下启用且配置安全 file secret 与合法 property 的 Search Console Integration，并以 integration/date 幂等创建 AnalysisRun 与 `analysis_run.created` outbox event。返回值只包含严格的 run/client/brand/site/integration/property/date scope。
 - `search-console-daily-dispatch` 以 `0 4 * * *` 注册 Trigger declarative schedule，调用上述控制面后使用 runId 作为 Trigger idempotency key 批量触发 `search-console-sync`；daily 与 sync worker 均不连接数据库。
+- `POST /api/internal/analysis-runs/:runId/matomo/credential` 只接受签名且完整匹配 run/client/brand/site/site-market/integration/canonical-endpoint 的 scope。它通过启用状态的 `type=matomo` Integration、`secretRef` 和 `FileSecretResolver` 取 token，响应设置 `no-store`；跨 client、禁用 integration、unsafe file reference 与缺失 secret 使用同一非枚举失败。
+- `POST /api/internal/analysis-runs/:runId/matomo/auth-failure` 在同一 owned scope 内事务禁用唯一 Integration，并以 run/integration digest 生成确定性 Recommendation ID。畸形 JSON 仍须先核对已读取 body 的 HMAC digest，不能在认证前进入控制面。
+- `matomo-sync` payload 只含 owned scope、canonical Matomo origin、最多 366 天的日期、`idSite`、segment、IANA timezone、`idGoal` 与 bounded goal name，不含 token。worker 只通过 signed control route 取 token，并只把 token 放进 Matomo Reporting API POST body；raw response 先上传 artifact，再 checkpoint 和 ingest，worker 不连接业务数据库。
 
 ### 8.3 健康检查
 
@@ -454,6 +457,21 @@ unset BETTER_AUTH_SESSION_COOKIE
 ```
 
 此操作需要 `Admin` 和目标 site 的 client scope。使用 `GET /api/sites/<site-id>/integrations` 核对已注册的 integration；不要尝试从 API 读取 secret。
+
+Matomo integration 的 endpoint 必须是 origin-only，例如 `https://analytics.example.com`；API 会把尾随 `/`、默认 port 和 host 大小写规范化后再存储。path、query、fragment 和 userinfo 会被拒绝。将只读 Reporting API token 放在 `SGEO_SECRET_ROOT` 下的受限文件中，然后注册：
+
+```bash
+install -d -m 700 secrets/integrations/matomo
+# 通过受控 secret channel 写入 secrets/integrations/matomo/reporting_token。
+chmod 600 secrets/integrations/matomo/reporting_token
+
+curl --fail-with-body -sS -X POST "$OPS_URL/api/sites/<site-id>/integrations" \
+  -H 'content-type: application/json' \
+  -H "cookie: $BETTER_AUTH_SESSION_COOKIE" \
+  --data '{"siteMarketId":"<site-market-id>","type":"matomo","endpoint":"https://analytics.example.com/","capabilities":["reporting"],"adapterVersion":"1.0.0","secretRef":"file:integrations/matomo/reporting_token"}'
+```
+
+Matomo task 运行时还必须由受信任控制面提供匹配该 Matomo site 的 `idSite`、`idGoal`、goal name、segment、timezone 和 date range；不要把 `token_auth` 放进 payload、Trigger metadata、日志或 artifact。
 
 ### 11.4 migration expand、backfill 和 contract 检查
 

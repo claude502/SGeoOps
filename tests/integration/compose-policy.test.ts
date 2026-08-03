@@ -75,6 +75,8 @@ async function renderProductionComposeWithFixture(): Promise<RenderedCompose> {
         "DATABASE_URL=postgresql://geo_ops:fixture-postgres-password@postgres:5432/geo_content_ops?schema=public",
         "BETTER_AUTH_SECRET=fixture-better-auth-secret",
         "POSTGRES_PASSWORD=fixture-postgres-password",
+        "MATOMO_DATABASE_PASSWORD=fixture-matomo-password",
+        "MATOMO_DATABASE_ROOT_PASSWORD=fixture-matomo-root-password",
       ].join("\n"),
     );
 
@@ -110,7 +112,11 @@ async function renderDevelopmentComposeWithFixture(): Promise<RenderedCompose> {
     );
     await writeFile(
       fixtureEnv,
-      "TRIGGER_ACCESS_TOKEN=fixture-trigger-access-token\n",
+      [
+        "TRIGGER_ACCESS_TOKEN=fixture-trigger-access-token",
+        "MATOMO_DATABASE_PASSWORD=fixture-matomo-password",
+        "MATOMO_DATABASE_ROOT_PASSWORD=fixture-matomo-root-password",
+      ].join("\n"),
     );
 
     const { stdout } = await execFileAsync(
@@ -205,7 +211,7 @@ describe("Compose worker isolation policy", () => {
     expect(publishesPort(compose, 6379)).toBe(false);
   });
 
-  it("allows production Compose to render before operators provide runtime env", async () => {
+  it("keeps the root env file optional while requiring Matomo passwords at interpolation", async () => {
     const compose = await readFile(
       resolve(process.cwd(), "deploy/docker-compose.prod.example.yml"),
       "utf8",
@@ -214,6 +220,8 @@ describe("Compose worker isolation policy", () => {
     expect(compose).toMatch(
       /env_file:\n\s+- path: \.\.\/\.env\n\s+required: false/,
     );
+    expect(compose).toContain("${MATOMO_DATABASE_PASSWORD:?set MATOMO_DATABASE_PASSWORD}");
+    expect(compose).toContain("${MATOMO_DATABASE_ROOT_PASSWORD:?set MATOMO_DATABASE_ROOT_PASSWORD}");
   });
 
   it("does not provide a production database password fallback", async () => {
@@ -249,12 +257,14 @@ describe("Compose worker isolation policy", () => {
     const rendered = await renderProductionComposeWithFixture();
     const postgres = rendered.services.postgres.environment ?? {};
     const ops = rendered.services["geo-ops"].environment ?? {};
+    const matomo = rendered.services.matomo.environment ?? {};
 
     expect(postgres.POSTGRES_PASSWORD).toBe("fixture-postgres-password");
     expect(ops.DATABASE_URL).toBe(
       "postgresql://geo_ops:fixture-postgres-password@postgres:5432/geo_content_ops?schema=public",
     );
     expect(ops.BETTER_AUTH_SECRET).toBe("fixture-better-auth-secret");
+    expect(matomo.MATOMO_DATABASE_PASSWORD).toBe("fixture-matomo-password");
     expect(rendered.services).not.toHaveProperty("geo-worker");
     expect(JSON.stringify(rendered)).not.toContain("TRIGGER_ACCESS_TOKEN");
     expect(JSON.stringify(rendered)).not.toContain("TRIGGER_API_KEY");

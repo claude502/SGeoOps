@@ -93,6 +93,52 @@ gzip -dc /opt/geo-content-ops/backups/geo_content_ops-YYYYMMDD-HHMMSS.sql.gz | \
   docker compose --env-file .env -f deploy/docker-compose.prod.example.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
+Matomo Core is pinned to `5.12.0` and runs with a pinned separate MariaDB,
+an hourly archive service, dedicated volumes, and private networks. Neither Matomo nor
+MariaDB publishes a host port. Only `geo-ops` and the development worker join
+`matomo-reporting`; the reverse proxy and archive service do not. Supply
+`MATOMO_DATABASE_PASSWORD` and `MATOMO_DATABASE_ROOT_PASSWORD` through the deployment
+secret environment with no defaults. After initial Matomo setup, disable browser-triggered
+archiving in Matomo so the healthy hourly archive container is the only report archiver.
+
+Create a permission-restricted backup only while `matomo-db` is running:
+
+```bash
+MATOMO_BACKUP_DIR=/opt/geo-content-ops/backups/matomo \
+MATOMO_COMPOSE_FILE=deploy/docker-compose.prod.example.yml \
+bash deploy/backup-matomo.sh
+```
+
+The script requires an absolute non-symlink backup directory, validates Docker/Compose and
+the running database service, writes atomically with mode `0600`, and removes expired dumps.
+It builds a temporary MariaDB option file inside the database container so the password does
+not appear in process arguments or output.
+
+For restore, stop `matomo` and `matomo-archive-cron`, validate the selected backup with
+`gzip -t`, take a fresh safety backup, and use the same temporary option-file pattern:
+
+```bash
+BACKUP=/opt/geo-content-ops/backups/matomo/matomo-YYYYMMDDTHHMMSSZ.sql.gz
+gzip -t "$BACKUP"
+gzip -dc "$BACKUP" | docker compose --env-file .env \
+  -f deploy/docker-compose.prod.example.yml exec -T matomo-db sh -ec '
+    set -eu
+    umask 077
+    defaults=$(mktemp /tmp/matomo-client.XXXXXX)
+    trap '\''rm -f -- "$defaults"'\'' EXIT HUP INT TERM
+    {
+      printf '\''[client]\n'\''
+      printf '\''user=%s\n'\'' "$MARIADB_USER"
+      printf '\''password=%s\n'\'' "$MARIADB_PASSWORD"
+    } >"$defaults"
+    mariadb --defaults-extra-file="$defaults" "$MARIADB_DATABASE"
+  '
+```
+
+Restart both services and run `php /var/www/html/console core:archive --force-all-websites`
+inside `matomo-archive-cron`. A restore replaces Matomo database state. Production Trigger
+worker deployment is still delivered by Phase 2 Task 9; this Compose change does not claim it exists.
+
 Optional Redis service:
 
 ```bash

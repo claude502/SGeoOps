@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { parseSearchConsoleProperty } from "@/lib/search-console/property";
+import { parseMatomoOrigin } from "@/lib/matomo/origin";
 
 const shortText = z
   .string()
@@ -253,17 +254,24 @@ export const createIntegrationSchema = z
     if (value.endpoint === null) return;
     const valid = value.type === "search_console"
       ? parseSearchConsoleProperty(value.endpoint) !== null
-      : isHttpEndpoint(value.endpoint);
+      : value.type === "matomo"
+        ? parseMatomoOrigin(value.endpoint) !== null
+        : isHttpEndpoint(value.endpoint);
     if (!valid) {
       context.addIssue({
         code: "custom",
         path: ["endpoint"],
         message: value.type === "search_console"
           ? "Invalid Search Console property"
-          : "Endpoint must use HTTP or HTTPS",
+          : value.type === "matomo"
+            ? "Matomo endpoint must be an HTTP(S) origin"
+            : "Endpoint must use HTTP or HTTPS",
       });
     }
-  });
+  })
+  .transform((value) => value.type === "matomo" && value.endpoint !== null
+    ? { ...value, endpoint: parseMatomoOrigin(value.endpoint)! }
+    : value);
 
 export type CreateClientBody = z.infer<typeof createClientSchema>;
 export type CreateBrandBody = z.infer<typeof createBrandSchema>;

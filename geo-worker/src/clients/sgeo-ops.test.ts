@@ -40,6 +40,14 @@ describe("SgeoOpsClient", () => {
     integrationId: "integration_1",
     property: "sc-domain:shop.example",
   };
+  const matomoScope = {
+    clientId: "client_1",
+    brandId: "brand_1",
+    siteId: "site_1",
+    siteMarketId: null,
+    integrationId: "integration_1",
+    endpoint: "https://analytics.example",
+  };
 
   it("serializes a validated envelope once before signing and sending it", async () => {
     const expectedBody = JSON.stringify(envelope);
@@ -290,6 +298,73 @@ describe("SgeoOpsClient", () => {
     const body = init.body as string;
     const headers = requestHeaders(init);
     expect(url).toBe(`${baseUrl}${pathname}`);
+    await expect(verifyInternalRequest(secret, {
+      timestamp: headers.get("x-sgeo-timestamp") ?? "",
+      signature: headers.get("x-sgeo-signature") ?? "",
+    }, "POST", pathname, body)).resolves.toBe(true);
+  });
+
+  it("obtains a Matomo credential through the signed exact owned-run contract", async () => {
+    const token = "matomo-token-never-persist";
+    const fetch = vi.fn().mockResolvedValue(Response.json({ token }));
+    const client = new SgeoOpsClient({ baseUrl, secret, fetch });
+
+    await expect(client.getMatomoCredential("run_1", matomoScope)).resolves.toEqual({ token });
+
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const pathname = "/api/internal/analysis-runs/run_1/matomo/credential";
+    const body = init.body as string;
+    const headers = requestHeaders(init);
+    expect(url).toBe(`${baseUrl}${pathname}`);
+    expect(JSON.parse(body)).toEqual(matomoScope);
+    await expect(verifyInternalRequest(secret, {
+      timestamp: headers.get("x-sgeo-timestamp") ?? "",
+      signature: headers.get("x-sgeo-signature") ?? "",
+    }, "POST", pathname, body)).resolves.toBe(true);
+    expect(JSON.stringify({ url, body, headers: Object.fromEntries(headers) })).not.toContain(token);
+  });
+
+  it("strictly validates Matomo credential and auth-failure control responses", async () => {
+    const returnedToken = "returned-matomo-secret";
+    const credentialClient = new SgeoOpsClient({
+      baseUrl,
+      secret,
+      fetch: vi.fn().mockResolvedValue(Response.json({ token: returnedToken, extra: true })),
+    });
+    await expect(credentialClient.getMatomoCredential("run_1", matomoScope))
+      .rejects.toMatchObject({
+        name: "SgeoOpsClientError",
+        message: expect.not.stringContaining(returnedToken),
+        retryable: false,
+      });
+
+    const failureClient = new SgeoOpsClient({
+      baseUrl,
+      secret,
+      fetch: vi.fn().mockResolvedValue(Response.json({
+        disabled: true,
+        recommendationId: "matomo-auth-1",
+        token: returnedToken,
+      }, { status: 202 })),
+    });
+    await expect(failureClient.reportMatomoAuthenticationFailure("run_1", matomoScope))
+      .rejects.toMatchObject({ name: "SgeoOpsClientError", retryable: false });
+  });
+
+  it("reports Matomo authentication failure through a signed idempotent contract", async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({
+      disabled: true,
+      recommendationId: "matomo-auth-deterministic",
+    }, { status: 202 }));
+    const client = new SgeoOpsClient({ baseUrl, secret, fetch });
+
+    await expect(client.reportMatomoAuthenticationFailure("run_1", matomoScope))
+      .resolves.toEqual({ disabled: true, recommendationId: "matomo-auth-deterministic" });
+
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const pathname = "/api/internal/analysis-runs/run_1/matomo/auth-failure";
+    const body = init.body as string;
+    const headers = requestHeaders(init);
     await expect(verifyInternalRequest(secret, {
       timestamp: headers.get("x-sgeo-timestamp") ?? "",
       signature: headers.get("x-sgeo-signature") ?? "",
