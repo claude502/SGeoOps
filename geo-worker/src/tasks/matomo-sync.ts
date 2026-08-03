@@ -333,7 +333,12 @@ async function reconcileArtifactPending(
   if (expected === null) {
     throw new MatomoTaskConfigurationError("Matomo artifact checkpoint is invalid.");
   }
-  if (!await client.reconcileArtifact(input.runId, MATOMO_ARTIFACT_NAME, expected)) {
+  if (!await client.reconcileArtifact(
+    input.runId,
+    MATOMO_ARTIFACT_NAME,
+    controlScope(input),
+    expected,
+  )) {
     return null;
   }
   return finalizeArtifactPending(client, checkpoint, envelope);

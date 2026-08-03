@@ -8,6 +8,20 @@ geo-origin.winghengtech.com {
   reverse_proxy geo-ops:3000
 }
 
+{$MATOMO_TRACKING_PUBLIC_HOST} {
+  encode gzip zstd
+
+  @matomo_tracking {
+    path /matomo.php /matomo.js /piwik.php /piwik.js
+  }
+  handle @matomo_tracking {
+    reverse_proxy matomo:80
+  }
+  handle {
+    reverse_proxy geo-ops:3000
+  }
+}
+
 # If GEOFlow and Postiz are deployed on the same private Docker network,
 # add their services here. Otherwise point these domains at their own hosts.
 #

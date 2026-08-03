@@ -52,6 +52,37 @@ describe("Matomo deployment isolation", () => {
     expect(service(compose, "geo-ops")).toContain("matomo-reporting");
   });
 
+  it("exposes only Matomo tracking through a dedicated proxy network", async () => {
+    const [compose, caddy, env, readme] = await Promise.all([
+      source("deploy/docker-compose.prod.example.yml"),
+      source("deploy/Caddyfile.example"),
+      source(".env.example"),
+      source("deploy/README.md"),
+    ]);
+    const proxy = service(compose, "reverse-proxy");
+    const matomo = service(compose, "matomo");
+
+    expect(proxy).toContain("matomo-tracking");
+    expect(matomo).toContain("matomo-tracking");
+    expect(service(compose, "geo-ops")).not.toContain("matomo-tracking");
+    expect(service(compose, "matomo-db")).not.toContain("matomo-tracking");
+    expect(proxy).not.toContain("matomo-reporting");
+    expect(matomo).toContain("matomo-reporting");
+    expect(compose).toMatch(/matomo-tracking:\n\s+internal: true/);
+
+    expect(caddy).toContain("{$MATOMO_TRACKING_PUBLIC_HOST}");
+    expect(caddy).toContain("path /matomo.php /matomo.js /piwik.php /piwik.js");
+    expect(caddy).toMatch(/handle @matomo_tracking \{\s*reverse_proxy matomo:80\s*\}/m);
+    expect(caddy).toMatch(/handle \{\s*reverse_proxy geo-ops:3000\s*\}/m);
+    expect(caddy.indexOf("handle @matomo_tracking")).toBeLessThan(caddy.indexOf("handle {"));
+    expect(caddy).not.toContain("/index.php");
+    expect(caddy).not.toContain("API.get");
+    expect(env).toContain("MATOMO_TRACKING_PUBLIC_BASE_URL");
+    expect(env).toContain("MATOMO_TRACKING_JS_URL");
+    expect(readme).toContain("MATOMO_TRACKING_PUBLIC_BASE_URL");
+    expect(readme).toContain("/matomo.js");
+  });
+
   it("keeps the development reporting network limited to SGeoOps and its worker", async () => {
     const compose = await source("docker-compose.yml");
     expect(service(compose, "geo-ops")).toContain("matomo-reporting");

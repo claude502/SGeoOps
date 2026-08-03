@@ -96,10 +96,19 @@ gzip -dc /opt/geo-content-ops/backups/geo_content_ops-YYYYMMDD-HHMMSS.sql.gz | \
 Matomo Core is pinned to `5.12.0` and runs with a pinned separate MariaDB,
 an hourly archive service, dedicated volumes, and private networks. Neither Matomo nor
 MariaDB publishes a host port. Only `geo-ops` and the development worker join
-`matomo-reporting`; the reverse proxy and archive service do not. Supply
+`matomo-reporting`; the reverse proxy and archive service do not. Production browser
+tracking uses the separate internal `matomo-tracking` network, shared only by `matomo`
+and `reverse-proxy`. Supply
 `MATOMO_DATABASE_PASSWORD` and `MATOMO_DATABASE_ROOT_PASSWORD` through the deployment
 secret environment with no defaults. After initial Matomo setup, disable browser-triggered
 archiving in Matomo so the healthy hourly archive container is the only report archiver.
+
+Set `MATOMO_TRACKING_PUBLIC_HOST` for the Caddy tracking host, then configure browser
+sites with `MATOMO_TRACKING_PUBLIC_BASE_URL` and load
+`MATOMO_TRACKING_JS_URL` (normally `${MATOMO_TRACKING_PUBLIC_BASE_URL}/matomo.js`).
+The proxy sends only `/matomo.php`, `/matomo.js`, and legacy `/piwik.php`, `/piwik.js`
+to Matomo. Every other tracking-host path stays on `geo-ops`; `/index.php` and the
+Reporting API are never proxied to Matomo. Reporting tokens remain private.
 
 Create a permission-restricted backup only while `matomo-db` is running:
 

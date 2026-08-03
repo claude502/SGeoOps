@@ -252,6 +252,7 @@ export class SgeoOpsClient {
   async reconcileArtifact(
     runId: string,
     name: string,
+    scope: MatomoControlScope,
     expected: ArtifactMetadata,
   ): Promise<boolean> {
     const expectedUri = artifactUri(runId, name);
@@ -260,7 +261,7 @@ export class SgeoOpsClient {
       uri: expectedUri,
     });
     const pathname = `/api/internal/analysis-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(name)}/reconcile`;
-    const response = await this.signedPost(pathname, JSON.stringify({ artifact: validated }), {
+    const response = await this.signedPost(pathname, JSON.stringify({ scope, artifact: validated }), {
       "content-type": "application/json",
     });
     const payload = exactRecord(await boundedJsonResponse(response), ["exists"]);

@@ -11,9 +11,13 @@ services:
       - caddy_config:/config
     depends_on:
       - geo-ops
+      - matomo
     networks:
       - edge
       - app
+      - matomo-tracking
+    environment:
+      MATOMO_TRACKING_PUBLIC_HOST: ${MATOMO_TRACKING_PUBLIC_HOST:?set MATOMO_TRACKING_PUBLIC_HOST}
 
   geo-ops:
     build:
@@ -119,7 +123,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
-    networks: [matomo-private, matomo-reporting]
+    networks: [matomo-private, matomo-reporting, matomo-tracking]
 
   matomo-archive-cron:
     image: matomo:5.12.0-apache
@@ -154,6 +158,8 @@ networks:
   matomo-private:
     internal: true
   matomo-reporting:
+    internal: true
+  matomo-tracking:
     internal: true
 
 volumes:

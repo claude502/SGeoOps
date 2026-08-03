@@ -202,7 +202,7 @@ describe("SgeoOpsClient", () => {
     const fetch = vi.fn().mockResolvedValue(Response.json({ exists: true }));
     const client = new SgeoOpsClient({ baseUrl, secret, fetch });
 
-    await expect(client.reconcileArtifact("run_1", "matomo-reports-v1.bin", artifact))
+    await expect(client.reconcileArtifact("run_1", "matomo-reports-v1.bin", matomoScope, artifact))
       .resolves.toBe(true);
 
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
@@ -210,7 +210,7 @@ describe("SgeoOpsClient", () => {
     const body = init.body as string;
     const headers = requestHeaders(init);
     expect(url).toBe(`${baseUrl}${pathname}`);
-    expect(JSON.parse(body)).toEqual({ artifact });
+    expect(JSON.parse(body)).toEqual({ scope: matomoScope, artifact });
     await expect(verifyInternalRequest(secret, {
       timestamp: headers.get("x-sgeo-timestamp") ?? "",
       signature: headers.get("x-sgeo-signature") ?? "",

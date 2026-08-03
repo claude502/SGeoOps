@@ -32,6 +32,7 @@ export class MatomoControlError extends Error {
 }
 
 export interface MatomoControlRepository {
+  assertOwnedScope(scope: MatomoControlScope): Promise<void>;
   getCredentialReference(scope: MatomoControlScope): Promise<SecretRef>;
   disableForAuthenticationFailure(
     scope: MatomoControlScope,
@@ -106,8 +107,38 @@ async function findOwnedIntegration(
   return integration;
 }
 
+async function assertOwnedIntegration(
+  tx: ControlTransaction,
+  scope: MatomoControlScope,
+) {
+  const endpoint = parseMatomoOrigin(scope.endpoint);
+  if (endpoint === null) resourceNotFound();
+  const integration = await tx.integration.findFirst({
+    where: {
+      id: scope.integrationId,
+      siteId: scope.siteId,
+      siteMarketId: scope.siteMarketId,
+      type: "matomo",
+      endpoint,
+      site: {
+        brandId: scope.brandId,
+        brand: { clientId: scope.clientId },
+      },
+    },
+    select: { id: true },
+  });
+  if (integration === null) resourceNotFound();
+}
+
 export class PrismaMatomoControlRepository implements MatomoControlRepository {
   constructor(private readonly database: ControlDatabase = db) {}
+
+  async assertOwnedScope(scope: MatomoControlScope): Promise<void> {
+    await this.database.$transaction(async (tx) => {
+      await findOwnedRun(tx, scope);
+      await assertOwnedIntegration(tx, scope);
+    });
+  }
 
   async getCredentialReference(scope: MatomoControlScope): Promise<SecretRef> {
     return this.database.$transaction(async (tx) => {
@@ -165,6 +196,10 @@ export class MatomoControlPlane {
     } catch {
       throw new MatomoControlError("CREDENTIAL_UNAVAILABLE");
     }
+  }
+
+  assertOwnedScope(scope: MatomoControlScope) {
+    return this.repository.assertOwnedScope(scope);
   }
 
   disableAfterAuthenticationFailure(scope: MatomoControlScope) {

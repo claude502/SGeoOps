@@ -8,6 +8,14 @@ import { SgeoOpsClient } from "../../../geo-worker/src/clients/sgeo-ops";
 const secret = "matomo-artifact-chain-secret";
 const runId = "run_matomo_1";
 const mediaType = "application/vnd.sgeo.matomo-reports.v1";
+const scope = {
+  clientId: "client_1",
+  brandId: "brand_1",
+  siteId: "site_1",
+  siteMarketId: null,
+  integrationId: "integration_1",
+  endpoint: "https://analytics.example",
+};
 const originalSecret = process.env.SGEO_INTERNAL_SECRET;
 
 function routeBackedClient() {
@@ -23,7 +31,10 @@ function routeBackedClient() {
     get: vi.fn(),
   } satisfies ArtifactStore;
   const post = createAnalysisArtifactRoute(() => artifacts);
-  const reconcile = createAnalysisArtifactReconcileRoute(() => artifacts);
+  const reconcile = createAnalysisArtifactReconcileRoute(
+    () => artifacts,
+    () => ({ assertOwnedScope: vi.fn().mockResolvedValue(undefined) }),
+  );
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(String(input), init);
     if (new URL(request.url).pathname.endsWith("/reconcile")) {
@@ -94,7 +105,7 @@ describe("Matomo artifact upload chain", () => {
     };
     artifacts.getMetadata.mockResolvedValue(artifact);
 
-    await expect(client.reconcileArtifact(runId, "matomo-reports-v1.bin", artifact))
+    await expect(client.reconcileArtifact(runId, "matomo-reports-v1.bin", scope, artifact))
       .resolves.toBe(true);
     expect(artifacts.getMetadata).toHaveBeenCalledWith(artifact.uri);
   });

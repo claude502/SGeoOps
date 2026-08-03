@@ -77,6 +77,7 @@ async function renderProductionComposeWithFixture(): Promise<RenderedCompose> {
         "POSTGRES_PASSWORD=fixture-postgres-password",
         "MATOMO_DATABASE_PASSWORD=fixture-matomo-password",
         "MATOMO_DATABASE_ROOT_PASSWORD=fixture-matomo-root-password",
+        "MATOMO_TRACKING_PUBLIC_HOST=tracking.example.test",
       ].join("\n"),
     );
 

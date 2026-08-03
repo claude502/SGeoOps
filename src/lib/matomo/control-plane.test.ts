@@ -20,6 +20,7 @@ const scope: MatomoControlScope = {
 describe("MatomoControlPlane", () => {
   it("resolves only the scoped file secret and returns only the token", async () => {
     const repository = {
+      assertOwnedScope: vi.fn(),
       getCredentialReference: vi.fn().mockResolvedValue("file:matomo/reporting-token"),
       disableForAuthenticationFailure: vi.fn(),
     };
@@ -33,6 +34,7 @@ describe("MatomoControlPlane", () => {
 
   it("maps secret traversal and resolver failures to a non-enumerating error", async () => {
     const control = new MatomoControlPlane({
+      assertOwnedScope: vi.fn(),
       getCredentialReference: vi.fn().mockResolvedValue("file:../outside"),
       disableForAuthenticationFailure: vi.fn(),
     }, { resolve: vi.fn().mockRejectedValue(new Error("SECRET_REFERENCE_INVALID")) });
@@ -41,6 +43,20 @@ describe("MatomoControlPlane", () => {
       name: "MatomoControlError",
       code: "CREDENTIAL_UNAVAILABLE",
     } satisfies Partial<MatomoControlError>);
+  });
+
+  it("checks owned Matomo scope without resolving credential material", async () => {
+    const repository = {
+      getCredentialReference: vi.fn(),
+      disableForAuthenticationFailure: vi.fn(),
+      assertOwnedScope: vi.fn().mockResolvedValue(undefined),
+    };
+    const secrets = { resolve: vi.fn() };
+    const control = new MatomoControlPlane(repository, secrets);
+
+    await expect(control.assertOwnedScope(scope)).resolves.toBeUndefined();
+    expect(repository.assertOwnedScope).toHaveBeenCalledWith(scope);
+    expect(secrets.resolve).not.toHaveBeenCalled();
   });
 });
 
@@ -124,6 +140,24 @@ describe("PrismaMatomoControlRepository", () => {
       });
     },
   );
+
+  it("matches owned Matomo scope without requiring an enabled credential", async () => {
+    const { repository, transaction } = harness();
+
+    await expect(repository.assertOwnedScope(scope)).resolves.toBeUndefined();
+
+    expect(transaction.integration.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: scope.integrationId,
+        siteId: scope.siteId,
+        siteMarketId: scope.siteMarketId,
+        type: "matomo",
+        endpoint: scope.endpoint,
+        site: { brandId: scope.brandId, brand: { clientId: scope.clientId } },
+      },
+      select: { id: true },
+    });
+  });
 
   it("atomically disables exactly one integration and deterministically upserts one recommendation", async () => {
     const { repository, transaction } = harness();

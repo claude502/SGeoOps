@@ -263,6 +263,14 @@ describe("Matomo sync task", () => {
     expect(client.reconcileArtifact).toHaveBeenCalledWith(
       input.runId,
       "matomo-reports-v1.bin",
+      {
+        clientId: input.clientId,
+        brandId: input.brandId,
+        siteId: input.siteId,
+        siteMarketId: input.siteMarketId,
+        integrationId: input.integrationId,
+        endpoint: input.endpoint,
+      },
       expect.objectContaining({ checksum: rawChecksum }),
     );
     expect(client.ingest).toHaveBeenCalledTimes(1);
