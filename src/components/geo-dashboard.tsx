@@ -19,6 +19,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Send,
   ShieldCheck,
   Sparkles,
@@ -292,6 +293,10 @@ function Header({
         <h1>{snapshot.project.name}</h1>
       </div>
       <div className="top-actions">
+        <Link className="button button-ghost" href="/sites/site_txpuro_com/seo">
+          <Search aria-hidden="true" size={16} />
+          <span>SEO workspace</span>
+        </Link>
         <Button
           disabled={isBusy || !hasAsset}
           icon={action === "audit" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}

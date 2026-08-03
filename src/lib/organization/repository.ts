@@ -87,6 +87,14 @@ export interface SiteMarketSummary {
   updatedAt: Date;
 }
 
+export interface SeoSiteContext {
+  clientId: string;
+  brandId: string;
+  siteMarketId: string | null;
+  site: SiteSummary;
+  markets: SiteMarketSummary[];
+}
+
 export interface ResolvedPublicSite {
   workspaceId: string;
   clientId: string;
@@ -123,6 +131,11 @@ export interface OrganizationRepository {
     input: CreateSiteMarketInput,
   ): Promise<SiteMarketSummary>;
   getSite(scope: AccessScope, siteId: string): Promise<SiteSummary>;
+  getSeoSiteContext(
+    scope: AccessScope,
+    siteId: string,
+    siteMarketId: string | null,
+  ): Promise<SeoSiteContext>;
   resolveSiteByHost(host: string): Promise<ResolvedPublicSite | null>;
 }
 
@@ -214,6 +227,19 @@ const siteMarketSelect = {
   updatedAt: true,
 } satisfies Prisma.SiteMarketSelect;
 
+const seoSiteSelect = {
+  ...siteSelect,
+  brand: { select: { clientId: true } },
+  markets: {
+    select: siteMarketSelect,
+    orderBy: [{ country: "asc" }, { locale: "asc" }, { id: "asc" }],
+  },
+} satisfies Prisma.SiteSelect;
+
+type SeoSiteRecord = Prisma.SiteGetPayload<{
+  select: typeof seoSiteSelect;
+}>;
+
 const publicSiteSelect = {
   id: true,
   brandId: true,
@@ -251,6 +277,20 @@ function requireRecord<T>(record: T | null): T {
     throw new ScopedOrganizationError("RESOURCE_NOT_FOUND");
   }
   return record;
+}
+
+function toSeoSiteContext(
+  record: SeoSiteRecord,
+  siteMarketId: string | null,
+): SeoSiteContext {
+  const { brand, markets, ...site } = record;
+  return {
+    clientId: brand.clientId,
+    brandId: site.brandId,
+    siteMarketId,
+    site,
+    markets,
+  };
 }
 
 function hasPrismaCode(error: unknown, code: string) {
@@ -446,6 +486,26 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
         select: siteSelect,
       }),
     );
+  }
+
+  async getSeoSiteContext(
+    scope: AccessScope,
+    siteId: string,
+    siteMarketId: string | null,
+  ): Promise<SeoSiteContext> {
+    const record = requireRecord(
+      await this.database.site.findFirst({
+        where: {
+          id: siteId,
+          brand: { client: scopedClientRelation(scope) },
+          ...(siteMarketId === null
+            ? {}
+            : { markets: { some: { id: siteMarketId } } }),
+        },
+        select: seoSiteSelect,
+      }),
+    );
+    return toSeoSiteContext(record, siteMarketId);
   }
 
   async resolveSiteByHost(host: string): Promise<ResolvedPublicSite | null> {

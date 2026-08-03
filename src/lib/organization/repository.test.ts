@@ -238,6 +238,79 @@ describe("PrismaOrganizationRepository", () => {
     );
   });
 
+  it("derives an SEO report scope from the owned site hierarchy", async () => {
+    const database = organizationDatabase();
+    database.site.findFirst.mockResolvedValue({
+      ...publicSiteRecord("site_a", "site-a.example.com"),
+      ownershipVerifiedAt: null,
+      createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-02T00:00:00.000Z"),
+      markets: [{
+        id: "market_a",
+        siteId: "site_a",
+        country: "MY",
+        locale: "en-MY",
+        defaultDevice: "desktop",
+        timezone: "Asia/Kuala_Lumpur",
+        settings: null,
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-02T00:00:00.000Z"),
+      }],
+    });
+    const repository = new PrismaOrganizationRepository(database as never);
+
+    const context = await repository.getSeoSiteContext(
+      scope,
+      "site_a",
+      "market_a",
+    );
+
+    expect(context).toMatchObject({
+      clientId: "client_a",
+      brandId: "brand_a",
+      siteMarketId: "market_a",
+      site: { id: "site_a", canonicalHost: "site-a.example.com" },
+      markets: [{ id: "market_a", siteId: "site_a" }],
+    });
+    expect(database.site.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: "site_a",
+        brand: {
+          client: {
+            workspaceId: "workspace_internal",
+            id: { in: ["client_a"] },
+          },
+        },
+        markets: { some: { id: "market_a" } },
+      },
+      select: expect.objectContaining({
+        id: true,
+        brand: { select: { clientId: true } },
+        markets: expect.objectContaining({
+          orderBy: [{ country: "asc" }, { locale: "asc" }, { id: "asc" }],
+        }),
+      }),
+    });
+  });
+
+  it("uses the same missing result for a foreign site and inconsistent market", async () => {
+    const database = organizationDatabase();
+    database.site.findFirst.mockResolvedValue(null);
+    const repository = new PrismaOrganizationRepository(database as never);
+
+    for (const [siteId, marketId] of [
+      ["site_client_b", null],
+      ["site_a", "market_client_b"],
+    ] as const) {
+      await expect(
+        repository.getSeoSiteContext(scope, siteId, marketId),
+      ).rejects.toMatchObject({
+        name: "ScopedOrganizationError",
+        code: "RESOURCE_NOT_FOUND",
+      });
+    }
+  });
+
   it("validates a site's full ownership chain before creating a market", async () => {
     const database = organizationDatabase();
     database.site.findFirst.mockResolvedValue({ id: "site_a" });

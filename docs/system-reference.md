@@ -296,6 +296,8 @@ GEO Ops 资产和 GEOFlow task/article 的映射。
 - `POST /api/internal/analysis-runs/:runId/matomo/credential` 只接受签名且完整匹配 run/client/brand/site/site-market/integration/canonical-endpoint 的 scope。它通过启用状态的 `type=matomo` Integration、`secretRef` 和 `FileSecretResolver` 取 token，响应设置 `no-store`；跨 client、禁用 integration、unsafe file reference 与缺失 secret 使用同一非枚举失败。
 - `POST /api/internal/analysis-runs/:runId/matomo/auth-failure` 在同一 owned scope 内事务禁用唯一 Integration，并以 run/integration digest 生成确定性 Recommendation ID。畸形 JSON 仍须先核对已读取 body 的 HMAC digest，不能在认证前进入控制面。
 - `matomo-sync` payload 只含 owned scope、canonical Matomo origin、最多 366 天的日期、`idSite`、segment、IANA timezone、`idGoal` 与 bounded goal name，不含 token。worker 只通过 signed control route 取 token，并只把 token 放进 Matomo Reporting API POST body；raw response 先上传 artifact，再 checkpoint 和 ingest，worker 不连接业务数据库。
+- `GET /api/sites/:siteId/seo` 只接受 `start`、`end` 和可选 `siteMarketId`。日期是严格 `YYYY-MM-DD` calendar date、最多 366 个包含首尾的日历日；重复或额外参数返回 `400`。client/brand 永远从 session 可访问的 site relationship 推导，missing、cross-client 和 inconsistent market 使用相同 `404`。省略或提交空 `siteMarketId` 表示严格 site-level run，不扩大到所有 markets。
+- SEO report 的 `baseline` 是窗口内 supported source 中最早完成的 `succeeded`/`partial` AnalysisRun，`latest` 是最晚完成的同类 run；两者以 `finishedAt`、再以 run ID 确定性排序。它们是 report-window anchors，不代表单一 source 覆盖全部 metrics。每个 metric 只按相同 name、definition 和 aggregation 计算自己的 value/delta，并返回独立 source run IDs 与 comparison status。run history 最多返回 50 条，响应不包含 artifact URI、raw observation value、integration secret 或 token。
 
 ### 8.3 健康检查
 

@@ -59,6 +59,18 @@ export const SEO_REPORT_COVERAGE_SOURCES = [
 
 export type SeoReportCoverageSource = (typeof SEO_REPORT_COVERAGE_SOURCES)[number];
 
+export const SEO_REPORT_RUN_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "partial",
+  "retrying",
+  "failed",
+  "cancelled",
+] as const;
+
+export type SeoReportRunStatus = (typeof SEO_REPORT_RUN_STATUSES)[number];
+
 export interface SeoReportCoverageDto {
   source: SeoReportCoverageSource;
   runCounts: {
@@ -70,7 +82,23 @@ export interface SeoReportCoverageDto {
   };
   observedAt: { start: string; end: string } | null;
   latestRunAt: string | null;
+  latestStatus: SeoReportRunStatus | null;
   formulaVersion: typeof SEO_FORMULA_VERSION;
+}
+
+export interface SeoReportAnchorDto {
+  runId: string;
+  capturedAt: string;
+}
+
+export interface SeoReportRunDto {
+  id: string;
+  source: SeoReportCoverageSource;
+  kind: string;
+  status: SeoReportRunStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  capturedAt: string;
 }
 
 export interface SeoReportRecommendationDto {
@@ -106,6 +134,9 @@ export interface SeoReportDto {
   metrics: Record<SeoMetricFamily, SeoReportMetricDto[]>;
   comparisons: SeoMetricComparisonDto[];
   coverage: SeoReportCoverageDto[];
+  baseline: SeoReportAnchorDto | null;
+  latest: SeoReportAnchorDto | null;
+  runHistory: SeoReportRunDto[];
   recommendations: SeoReportRecommendationDto[];
   opportunities: SeoReportOpportunityDto[];
   isEmpty: boolean;
@@ -227,6 +258,21 @@ interface CoverageRunRow {
   finishedAt: Date | null;
   createdAt: Date;
   observations: Array<{ observedAt: Date }>;
+}
+
+interface RunHistoryRow {
+  id: string;
+  source: string;
+  kind: string;
+  status: string;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  createdAt: Date;
+}
+
+interface AnchorRunRow {
+  id: string;
+  finishedAt: Date | null;
 }
 
 function boundedText(value: string, maximumLength: number) {
@@ -470,12 +516,17 @@ function isCoverageSource(value: string): value is SeoReportCoverageSource {
   return (SEO_REPORT_COVERAGE_SOURCES as readonly string[]).includes(value);
 }
 
+function isRunStatus(value: string): value is SeoReportRunStatus {
+  return (SEO_REPORT_RUN_STATUSES as readonly string[]).includes(value);
+}
+
 function emptyCoverage(source: SeoReportCoverageSource): SeoReportCoverageDto {
   return {
     source,
     runCounts: { total: 0, succeeded: 0, partial: 0, failed: 0, other: 0 },
     observedAt: null,
     latestRunAt: null,
+    latestStatus: null,
     formulaVersion: SEO_FORMULA_VERSION,
   };
 }
@@ -506,11 +557,50 @@ function buildCoverage(rows: readonly CoverageRunRow[]): SeoReportCoverageDto[] 
           };
     }
     const runAt = isoDate(row.finishedAt) ?? isoDate(row.startedAt) ?? isoDate(row.createdAt);
-    if (runAt !== null && (current.latestRunAt === null || runAt > current.latestRunAt)) {
+    if (
+      runAt !== null &&
+      isRunStatus(row.status) &&
+      (current.latestRunAt === null || runAt > current.latestRunAt)
+    ) {
       current.latestRunAt = runAt;
+      current.latestStatus = row.status;
     }
   }
   return SEO_REPORT_COVERAGE_SOURCES.map((source) => coverage.get(source) ?? emptyCoverage(source));
+}
+
+function mapAnchor(row: AnchorRunRow | null): SeoReportAnchorDto | null {
+  if (row === null || !validIdentifier(row.id)) return null;
+  const capturedAt = isoDate(row.finishedAt);
+  return capturedAt === null ? null : { runId: row.id, capturedAt };
+}
+
+function mapRunHistory(row: RunHistoryRow): SeoReportRunDto | null {
+  if (
+    !validIdentifier(row.id) ||
+    typeof row.source !== "string" ||
+    !isCoverageSource(row.source) ||
+    typeof row.kind !== "string" ||
+    typeof row.status !== "string" ||
+    !isRunStatus(row.status)
+  ) return null;
+  const capturedAt = isoDate(row.finishedAt) ?? isoDate(row.startedAt) ?? isoDate(row.createdAt);
+  const startedAt = isoDate(row.startedAt);
+  const finishedAt = isoDate(row.finishedAt);
+  const kind = boundedText(row.kind, 128);
+  if (
+    kind.length === 0 ||
+    capturedAt === null
+  ) return null;
+  return {
+    id: row.id,
+    source: row.source,
+    kind,
+    status: row.status,
+    startedAt,
+    finishedAt,
+    capturedAt,
+  };
 }
 
 export class SeoReportQueries {
@@ -585,8 +675,29 @@ export class SeoReportQueries {
       formulaVersion: SEO_FORMULA_VERSION,
       run: recommendationRunWhere,
     };
+    const sourceRunWhere: Prisma.AnalysisRunWhereInput = {
+      ...scopedRunWhere,
+      source: { in: [...SEO_REPORT_COVERAGE_SOURCES] },
+    };
+    const anchorRunWhere: Prisma.AnalysisRunWhereInput = {
+      ...sourceRunWhere,
+      status: { in: ["succeeded", "partial"] },
+      finishedAt: {
+        not: null,
+        gte: parsed.data.startAt,
+        lte: parsed.data.endAt,
+      },
+    };
 
-    const [metricRows, recommendationRows, opportunityRows, coverageRows] = await Promise.all([
+    const [
+      metricRows,
+      recommendationRows,
+      opportunityRows,
+      coverageRows,
+      runHistoryRows,
+      baselineAnchorRow,
+      latestAnchorRow,
+    ] = await Promise.all([
       this.database.metricSnapshot.findMany({
         where: {
           formulaVersion: SEO_FORMULA_VERSION,
@@ -657,9 +768,8 @@ export class SeoReportQueries {
       }),
       this.database.analysisRun.findMany({
         where: {
-          ...scopedRunWhere,
+          ...sourceRunWhere,
           createdAt: dateRange,
-          source: { in: [...SEO_REPORT_COVERAGE_SOURCES] },
         },
         select: {
           source: true,
@@ -673,6 +783,33 @@ export class SeoReportQueries {
           },
         },
         orderBy: [{ source: "asc" }, { finishedAt: "desc" }, { id: "asc" }],
+      }),
+      this.database.analysisRun.findMany({
+        where: {
+          ...sourceRunWhere,
+          createdAt: dateRange,
+        },
+        select: {
+          id: true,
+          source: true,
+          kind: true,
+          status: true,
+          startedAt: true,
+          finishedAt: true,
+          createdAt: true,
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        take: 50,
+      }),
+      this.database.analysisRun.findFirst({
+        where: anchorRunWhere,
+        select: { id: true, finishedAt: true },
+        orderBy: [{ finishedAt: "asc" }, { id: "asc" }],
+      }),
+      this.database.analysisRun.findFirst({
+        where: anchorRunWhere,
+        select: { id: true, finishedAt: true },
+        orderBy: [{ finishedAt: "desc" }, { id: "asc" }],
       }),
     ]);
 
@@ -713,6 +850,7 @@ export class SeoReportQueries {
     }
     const comparisons = buildMetricComparisons(metrics);
     const coverage = buildCoverage(coverageRows);
+    const runHistory = runHistoryRows.map(mapRunHistory).filter((item) => item !== null);
 
     const recommendations = uniqueById(
       recommendationRows.map(mapRecommendation).filter((item) => item !== null),
@@ -739,6 +877,9 @@ export class SeoReportQueries {
       metrics,
       comparisons,
       coverage,
+      baseline: mapAnchor(baselineAnchorRow),
+      latest: mapAnchor(latestAnchorRow),
+      runHistory,
       recommendations,
       opportunities,
       isEmpty: Object.values(metrics).every((values) => values.length === 0) &&

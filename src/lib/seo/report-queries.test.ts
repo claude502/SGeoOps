@@ -100,6 +100,10 @@ function harness() {
       }]),
     },
     analysisRun: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: "run_1",
+        finishedAt: new Date("2026-07-31T01:00:00.000Z"),
+      }),
       findMany: vi.fn().mockImplementation((query: { select?: Record<string, unknown> }) => {
         if (query.select?.source === true) return Promise.resolve([]);
         return Promise.resolve([{ id: "run_1" }]);
@@ -248,6 +252,30 @@ describe("SeoReportQueries", () => {
     });
     expect(database.analysisRun.findMany).toHaveBeenNthCalledWith(2, {
       where: {
+        client: { id: request.clientId },
+        brand: { id: request.brandId, client: { id: request.clientId } },
+        site: siteWhere,
+        siteMarket: marketWhere,
+        createdAt: {
+          gte: new Date(request.startAt),
+          lte: new Date(request.endAt),
+        },
+        source: { in: ["siteone", "unlighthouse", "search-console", "matomo"] },
+      },
+      select: {
+        id: true,
+        source: true,
+        kind: true,
+        status: true,
+        startedAt: true,
+        finishedAt: true,
+        createdAt: true,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      take: 50,
+    });
+    expect(database.analysisRun.findMany).toHaveBeenNthCalledWith(3, {
+      where: {
         id: { in: ["run_1"] },
         ...succeededRunWhere,
       },
@@ -285,6 +313,9 @@ describe("SeoReportQueries", () => {
         delta: null,
       }],
       coverage: expect.any(Array),
+      baseline: { runId: "run_1", capturedAt: "2026-07-31T01:00:00.000Z" },
+      latest: { runId: "run_1", capturedAt: "2026-07-31T01:00:00.000Z" },
+      runHistory: [],
       isEmpty: false,
     });
     expect(JSON.stringify(report)).not.toMatch(/must-not-leak|token|artifact|secret/i);
@@ -515,6 +546,80 @@ describe("SeoReportQueries", () => {
         end: "2026-07-03T01:00:00.000Z",
       },
       latestRunAt: "2026-07-03T01:00:00.000Z",
+      latestStatus: "partial",
+    });
+  });
+
+  it("selects deterministic completed-run anchors and bounds source run history", async () => {
+    const { database, queries } = harness();
+    database.analysisRun.findFirst.mockImplementation(
+      (query: { orderBy?: Array<{ finishedAt?: string }> }) => {
+        const direction = query.orderBy?.[0]?.finishedAt;
+        return Promise.resolve(direction === "asc"
+          ? { id: "run_baseline", finishedAt: new Date("2026-07-02T01:00:00.000Z") }
+          : { id: "run_latest", finishedAt: new Date("2026-07-30T01:00:00.000Z") });
+      },
+    );
+    database.analysisRun.findMany.mockImplementation(
+      (query: { take?: number; select?: Record<string, unknown> }) => {
+        if (query.take === 50) {
+          return Promise.resolve([{
+            id: "run_latest",
+            source: "matomo",
+            kind: "matomo_sync",
+            status: "partial",
+            startedAt: new Date("2026-07-30T00:00:00.000Z"),
+            finishedAt: new Date("2026-07-30T01:00:00.000Z"),
+            createdAt: new Date("2026-07-30T00:00:00.000Z"),
+          }]);
+        }
+        if (query.select?.source === true) return Promise.resolve([]);
+        return Promise.resolve([{ id: "run_1" }]);
+      },
+    );
+
+    const result = await queries.getReport(access, request);
+
+    expect(result.baseline).toEqual({
+      runId: "run_baseline",
+      capturedAt: "2026-07-02T01:00:00.000Z",
+    });
+    expect(result.latest).toEqual({
+      runId: "run_latest",
+      capturedAt: "2026-07-30T01:00:00.000Z",
+    });
+    expect(result.runHistory).toEqual([{
+      id: "run_latest",
+      source: "matomo",
+      kind: "matomo_sync",
+      status: "partial",
+      startedAt: "2026-07-30T00:00:00.000Z",
+      finishedAt: "2026-07-30T01:00:00.000Z",
+      capturedAt: "2026-07-30T01:00:00.000Z",
+    }]);
+    expect(database.analysisRun.findFirst).toHaveBeenNthCalledWith(1, {
+      where: expect.objectContaining({
+        status: { in: ["succeeded", "partial"] },
+        finishedAt: {
+          not: null,
+          gte: new Date(request.startAt),
+          lte: new Date(request.endAt),
+        },
+      }),
+      select: { id: true, finishedAt: true },
+      orderBy: [{ finishedAt: "asc" }, { id: "asc" }],
+    });
+    expect(database.analysisRun.findFirst).toHaveBeenNthCalledWith(2, {
+      where: expect.objectContaining({
+        status: { in: ["succeeded", "partial"] },
+        finishedAt: {
+          not: null,
+          gte: new Date(request.startAt),
+          lte: new Date(request.endAt),
+        },
+      }),
+      select: { id: true, finishedAt: true },
+      orderBy: [{ finishedAt: "desc" }, { id: "asc" }],
     });
   });
 
@@ -523,10 +628,13 @@ describe("SeoReportQueries", () => {
     database.metricSnapshot.findMany.mockResolvedValueOnce([]);
     database.recommendation.findMany.mockResolvedValueOnce([]);
     database.opportunity.findMany.mockResolvedValueOnce([]);
+    database.analysisRun.findFirst.mockResolvedValue(null);
 
     const report = await queries.getReport(access, request);
 
     expect(report.isEmpty).toBe(true);
+    expect(report.baseline).toBeNull();
+    expect(report.latest).toBeNull();
     expect(report.comparisons).toEqual([]);
     expect(report.coverage).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: "siteone", runCounts: { total: 0, succeeded: 0, partial: 0, failed: 0, other: 0 } }),

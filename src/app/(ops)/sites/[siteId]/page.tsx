@@ -30,9 +30,14 @@ export default async function SiteOverviewPage({ params }: PageProps) {
             <p className="clients-eyebrow">Site overview</p>
             <h1>{site.name}</h1>
           </div>
-          <Link className="button button-secondary" href="/clients">
-            Clients
-          </Link>
+          <div className="clients-actions">
+            <Link className="button button-primary" href={`/sites/${site.id}/seo`}>
+              Open SEO workspace
+            </Link>
+            <Link className="button button-secondary" href="/clients">
+              Clients
+            </Link>
+          </div>
         </header>
 
         <section className="clients-table-shell" aria-label="Site details">
