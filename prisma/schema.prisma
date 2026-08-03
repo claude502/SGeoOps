@@ -587,6 +587,7 @@ model Client {
   exportPackages         ExportPackage[]        @relation("ExportPackageClient")
   distributionDispatches DistributionDispatch[] @relation("DistributionDispatchClient")
   eventDeliveries        EventDelivery[]        @relation("EventDeliveryClient")
+  providerBudgets        ProviderBudget[]
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
 
@@ -691,6 +692,7 @@ model SiteMarket {
   exportPackages         ExportPackage[]        @relation("ExportPackageSiteMarket")
   distributionDispatches DistributionDispatch[] @relation("DistributionDispatchSiteMarket")
   eventDeliveries        EventDelivery[]        @relation("EventDeliverySiteMarket")
+  prompts                Prompt[]
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
 
@@ -772,6 +774,14 @@ model AnalysisRun {
   idempotencyKey  String           @unique
   trigger         String
   attemptCount    Int              @default(0)
+  promptId        String?
+  provider        String?
+  model           String?
+  surface         String?
+  latencyMs       Int?
+  inputTokens     Int?
+  outputTokens    Int?
+  costUsd         Decimal?         @db.Decimal(18, 6)
   errorCode       String?
   errorSummary    String?
   startedAt       DateTime?
@@ -785,12 +795,66 @@ model AnalysisRun {
   brand           Brand            @relation(fields: [brandId], references: [id], onDelete: Restrict)
   site            Site             @relation(fields: [siteId], references: [id], onDelete: Restrict)
   siteMarket      SiteMarket?      @relation(fields: [siteMarketId], references: [id], onDelete: Restrict)
+  prompt          Prompt?          @relation(fields: [promptId], references: [id], onDelete: SetNull)
 
   @@index([siteId, kind, inputHash])
   @@index([clientId, siteId, createdAt])
   @@index([status, createdAt])
   @@index([brandId])
   @@index([siteMarketId])
+  @@index([promptId])
+  @@index([siteMarketId, provider, finishedAt])
+}
+
+model Prompt {
+  id            String        @id @default(cuid())
+  siteMarketId  String
+  text          String
+  intent        String
+  topic         String
+  locale        String
+  country       String
+  providers     String[]
+  searchEnabled Boolean       @default(false)
+  version       Int           @default(1)
+  schedule      String
+  active        Boolean       @default(true)
+  siteMarket    SiteMarket    @relation(fields: [siteMarketId], references: [id], onDelete: Cascade)
+  analysisRuns  AnalysisRun[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([siteMarketId, active])
+}
+
+model ProviderBudget {
+  id                String          @id @default(cuid())
+  clientId          String
+  provider          String
+  dailyRequestLimit Int
+  dailyTokenLimit   Int?
+  active            Boolean         @default(true)
+  client            Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usages            ProviderUsage[]
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([clientId, provider])
+}
+
+model ProviderUsage {
+  id           String         @id @default(cuid())
+  budgetId     String
+  usageDate    DateTime       @db.Date
+  requestCount Int            @default(0)
+  inputTokens  Int            @default(0)
+  outputTokens Int            @default(0)
+  costUsd      Decimal        @default(0) @db.Decimal(18, 6)
+  budget       ProviderBudget @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@unique([budgetId, usageDate])
 }
 
 model RawArtifact {
