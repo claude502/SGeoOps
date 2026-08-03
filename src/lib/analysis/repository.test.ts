@@ -274,6 +274,62 @@ describe("ingestEnvelope", () => {
     });
   });
 
+  it("materializes successful owned SEO output before sealing the ingest marker", async () => {
+    const database = analysisDatabase();
+    const order: string[] = [];
+    const materialize = vi.fn(async () => {
+      order.push("materialize");
+      return { metrics: 0, recommendations: 0, opportunities: 0 };
+    });
+    database.rawArtifact.create.mockImplementation(async () => {
+      order.push("artifact");
+      return { id: "artifact_1" };
+    });
+    database.observation.createMany.mockImplementation(async () => {
+      order.push("observations");
+      return { count: 1 };
+    });
+    database.analysisRun.update.mockImplementation(async () => {
+      order.push("run");
+      return { id: "run_1" };
+    });
+    database.outboxEvent.create.mockImplementation(async () => {
+      order.push("marker");
+      return { id: "marker_1" };
+    });
+
+    await ingestEnvelope(database as never, envelope, undefined, materialize);
+
+    expect(order).toEqual([
+      "artifact",
+      "observations",
+      "run",
+      "materialize",
+      "marker",
+    ]);
+    expect(materialize).toHaveBeenCalledWith(database, {
+      runId: envelope.runId,
+      scope: {
+        clientId: envelope.clientId,
+        brandId: envelope.brandId,
+        siteId: envelope.siteId,
+        siteMarketId: envelope.siteMarketId,
+      },
+    });
+  });
+
+  it("does not materialize a successful envelope without a completion time", async () => {
+    const database = analysisDatabase();
+    const materialize = vi.fn(async () => ({ metrics: 0, recommendations: 0, opportunities: 0 }));
+
+    await ingestEnvelope(database as never, {
+      ...envelope,
+      finishedAt: null,
+    }, undefined, materialize);
+
+    expect(materialize).not.toHaveBeenCalled();
+  });
+
   it("treats an identical marker-backed replay as a no-op", async () => {
     const initial = analysisDatabase();
     await ingestEnvelope(initial as never, envelope);
@@ -438,7 +494,13 @@ describe("ingestEnvelope", () => {
         return callback(transaction);
       }),
     };
-    const repository = new PrismaAnalysisRepository(prisma as never);
+    const repository = new PrismaAnalysisRepository(
+      prisma as never,
+      async () => {
+        order.push("materialize");
+        return { metrics: 0, recommendations: 0, opportunities: 0 };
+      },
+    );
 
     await repository.ingest(envelope, async () => {
       order.push("metadata");

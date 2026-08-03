@@ -326,8 +326,7 @@ function sourceAllowsKind(source: string, kind: string) {
 }
 
 function runCompletion(run: z.infer<typeof runSchema>) {
-  const value = run.finishedAt ?? run.startedAt;
-  return value === null ? "" : normalizedDate(value);
+  return run.finishedAt === null ? null : normalizedDate(run.finishedAt);
 }
 
 function latestSnapshotRunIds(input: z.infer<typeof metricsInputSchema>) {
@@ -335,13 +334,14 @@ function latestSnapshotRunIds(input: z.infer<typeof metricsInputSchema>) {
   for (const run of input.runs) {
     if (
       run.status !== "succeeded" ||
+      run.finishedAt === null ||
       !exactScope(run, input.scope) ||
       (run.source !== "siteone" && run.source !== "unlighthouse")
     ) continue;
     const existing = latest.get(run.source);
     if (
       existing === undefined ||
-      runCompletion(run) > runCompletion(existing) ||
+      runCompletion(run)! > runCompletion(existing)! ||
       (runCompletion(run) === runCompletion(existing) && run.id < existing.id)
     ) latest.set(run.source, run);
   }
@@ -573,7 +573,11 @@ function scopedFacts(input: z.infer<typeof metricsInputSchema>) {
   const parsedRuns: Array<{ run: z.infer<typeof runSchema>; facts: ParsedFact[] }> = [];
   const snapshotRunIds = latestSnapshotRunIds(input);
   for (const run of input.runs) {
-    if (run.status !== "succeeded" || !exactScope(run, input.scope)) continue;
+    if (
+      run.status !== "succeeded" ||
+      run.finishedAt === null ||
+      !exactScope(run, input.scope)
+    ) continue;
     if (
       (run.source === "siteone" || run.source === "unlighthouse") &&
       !snapshotRunIds.has(run.id)
@@ -604,7 +608,7 @@ function scopedFacts(input: z.infer<typeof metricsInputSchema>) {
         const existing = latestWindowRuns.get(windowKey);
         if (
           existing === undefined ||
-          runCompletion(run) > runCompletion(existing) ||
+          runCompletion(run)! > runCompletion(existing)! ||
           (runCompletion(run) === runCompletion(existing) && run.id < existing.id)
         ) latestWindowRuns.set(windowKey, run);
       }

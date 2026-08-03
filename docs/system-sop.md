@@ -295,7 +295,7 @@ Postiz 如果继续使用，只作为可选下游分发系统之一，不再是�
 1. 在生产主机带外创建 `/opt/geo-content-ops/secrets`，目录 owner/group 为 `root:10001`，权限 `0750`。
 2. 将 `sgeo_internal_secret` 通过 secret manager 或受控 SSH 放入该目录，文件 owner/group 为 `root:10001`，权限 `0640`；worker 以 UID/GID `10001` 的 group read/traverse 权限读取它。它不进入 Git、部署 archive、`.env` 或运行记录。
 3. 其他 integration secret 也以相对路径存于该目录，并用 `file:<relative-path>` 注册到 `POST /api/sites/<site-id>/integrations`。
-4. 当前 production Compose 只将目录只读挂载给 `geo-ops`。Trigger worker 必须在单独 provision 的运行环境中读取同一受控 secret，且只配置 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE`，绝不配置 `DATABASE_URL`；production worker runbook 在 [Trigger.dev v4 Production Precondition](../deploy/README.md#triggerdev-v4-production-precondition) 所述的 Phase 2 Task 9 交付前不可假定已经部署。
+4. 当前 production Compose 只将目录只读挂载给 `geo-ops`。Trigger worker 必须在单独 provision 的运行环境中使用 `SGEO_INTERNAL_URL` 与受控 `SGEO_INTERNAL_SECRET`（或已验证的只读 `SGEO_INTERNAL_SECRET_FILE`），绝不配置 `DATABASE_URL`；执行、轮换和恢复协调遵循 [Trigger.dev v4 production runbook](../deploy/trigger/README.md)。
 
 ### 9.3 发布前 migration 与验收
 
@@ -334,7 +334,7 @@ export TEST_DATABASE_URL='postgresql://<non-production-test-user>:<non-productio
 1. 每日运行 `APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh`，并在同一时间点建立 `artifact-data` archive。
 2. PostgreSQL restore 先运行 `test -r`、`gzip -t`，再生成并验证 pre-restore safety backup；只有这些步骤成功才停止此 Compose stack 中的 `geo-ops` 并替换 database。restore pipeline 必须使用 `set -euo pipefail`，以捕获 gzip 和 `psql` 任一失败。
 3. artifact restore 先运行 `test -r`、`tar -tzf`，再创建当前 artifact rollback archive。candidate 必须解压到 artifact volume 内的 staging directory 并通过检查，之后才移动 live entries；不要在验证前 `rm -rf` live artifacts。
-4. artifact switch 后只启动 `geo-ops`。最多 60 秒轮询 container 内 `/api/healthz`，再以 archive metadata 中一个已知 `artifact://` URI 读取并核验 representative payload。当前 production Compose 不定义 `geo-worker`；如另行 provision 了 Trigger worker，database/artifact restore 前后的 quiesce 和 recovery 由其 deployment owner 在该独立环境中协调。遵循 [Trigger.dev v4 Production Precondition](../deploy/README.md#triggerdev-v4-production-precondition)；具体 production runbook 在 Phase 2 Task 9 交付前不可假定已经部署。
+4. artifact switch 后只启动 `geo-ops`。最多 60 秒轮询 container 内 `/api/healthz`，再以 archive metadata 中一个已知 `artifact://` URI 读取并核验 representative payload。当前 production Compose 不定义 `geo-worker`；如另行 provision 了 Trigger worker，database/artifact restore 前后的 quiesce 和 recovery 由其 deployment owner 在该独立环境中协调，并遵循 [Trigger.dev v4 production runbook](../deploy/trigger/README.md)。
 5. 保留 `postgres_data`、`artifact-data` 和 `_prisma_migrations`。恢复和回退时不要运行 `prisma migrate reset`、`docker compose down -v` 或手工删除新 schema。恢复成功后仅在 healthcheck 和代表性 artifact read 完成后清理 volume staging/previous copy；host-side artifact rollback archive 至少保留至配对 database backup 的 retention window 结束。
 6. 应用回退仅重新部署已验证的旧应用 release，且不传 `-RunMigrations`。如果旧 release 不能读取新 schema，恢复与该 release 配对的数据库和 artifact backup。
 

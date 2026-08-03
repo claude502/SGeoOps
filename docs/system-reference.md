@@ -376,7 +376,7 @@ chown root:10001 secrets/sgeo_internal_secret
 chmod 0640 secrets/sgeo_internal_secret
 ```
 
-生产 Compose 将该目录只读挂载给 `geo-ops`，并将 artifact named volume 挂载为 `/var/lib/sgeo/artifacts`。它不启动 `geo-worker`；单独 provision 的 Trigger worker 只能使用 `SGEO_INTERNAL_URL` 和 `SGEO_INTERNAL_SECRET_FILE` 与平台交互，绝不设置 `DATABASE_URL`。production worker runbook 在 [Trigger.dev v4 Production Precondition](../deploy/README.md#triggerdev-v4-production-precondition) 所述的 Phase 2 Task 9 交付前不可假定已经部署。
+生产 Compose 将该目录只读挂载给 `geo-ops`，并将 artifact named volume 挂载为 `/var/lib/sgeo/artifacts`。它不启动 `geo-worker`；单独 provision 的 Trigger worker 只能使用 `SGEO_INTERNAL_URL` 与受控 `SGEO_INTERNAL_SECRET`（或已验证的只读 `SGEO_INTERNAL_SECRET_FILE`）和平台交互，绝不设置 `DATABASE_URL`。部署与恢复协调遵循 [Trigger.dev v4 production runbook](../deploy/trigger/README.md)。
 
 ### 11.1 创建首位管理员
 
@@ -646,7 +646,7 @@ printf 'Platform validation passed for the production Compose stack.\n'
 
 `geo-ops` 启动后最多等待 60 秒（30 次、每次 2 秒），使用 Compose healthcheck 同一 Node `fetch` contract 验证 `/api/healthz`。artifact verification 以 `metadata.json` 的 canonical URI 定位其 SHA-256 physical object，读取 `payload` 并比对 metadata 的 version、URI、byte size 和 checksum，不依赖不存在的 public artifact endpoint。若所选 archive 没有 `metadata.json`，procedure 会记录 no-artifact exception，不执行 read verification；在恢复记录中注明该条件，且不要声称已完成 artifact read。
 
-当前 production Compose 不定义 `geo-worker`，因此本 procedure 只恢复并验证 `geo-ops`。如另行 provision 了 Trigger worker，database/artifact restore 前后的 quiesce 和 recovery 必须由其 deployment owner 在独立环境中协调。遵循 [Trigger.dev v4 Production Precondition](../deploy/README.md#triggerdev-v4-production-precondition)；具体 self-host production runbook 在 Phase 2 Task 9 交付前不可假定已经部署。
+当前 production Compose 不定义 `geo-worker`，因此本 procedure 只恢复并验证 `geo-ops`。如另行 provision 了 Trigger worker，database/artifact restore 前后的 quiesce 和 recovery 必须由其 deployment owner 在独立环境中协调，并遵循 [Trigger.dev v4 production runbook](../deploy/trigger/README.md)。
 
 selected archive preflight 失败时，不要停止服务或修改 live artifacts；修复或更换 archive 后从头运行。staging extraction 失败时，live artifact entries 尚未移动；保持 `geo-ops` 停止，删除仅 `.restore-stage-$RESTORE_ID`，保留 `$ARTIFACT_ROLLBACK`，再选择 archive 重试。switch、platform health/read 任一步失败时，`ERR` trap 会停止 `geo-ops`，并保留 `.restore-previous-$RESTORE_ID` 与 `$ARTIFACT_ROLLBACK`；不要手动启动服务，使用 rollback archive 重跑 staging procedure。成功恢复后，再清理 volume 内的 previous directory：
 

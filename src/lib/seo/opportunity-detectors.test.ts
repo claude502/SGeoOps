@@ -164,6 +164,20 @@ describe("detectSeoRecommendations", () => {
       .toEqual(["measurement"]);
   });
 
+  it("does not emit an issue from an unfinished source snapshot", () => {
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [run("unfinished", [
+        observation("unfinished_issue", "siteone.http_status", "https://example.test/broken", { statusCode: 500 }),
+      ], {
+        finishedAt: null,
+        startedAt: "2026-07-03T00:00:00.000Z",
+      })],
+    });
+
+    expect(recommendations).toEqual([]);
+  });
+
   it("groups by normalized subject and kind with stable evidence and output order", () => {
     const input = {
       scope,

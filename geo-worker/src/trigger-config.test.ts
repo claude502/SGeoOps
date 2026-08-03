@@ -37,6 +37,20 @@ describe("Trigger v4 worker configuration", () => {
     expect(environmentExample).not.toContain("TRIGGER_WORKER_API_KEY=");
   });
 
+  it("keeps the production runner contract API-only and version-pinned", async () => {
+    const [environmentExample, runbook] = await Promise.all([
+      readFile(rootFile("deploy/trigger.env.example"), "utf8"),
+      readFile(rootFile("deploy/trigger/README.md"), "utf8"),
+    ]);
+
+    expect(environmentExample).toContain("SGEO_INTERNAL_SECRET=");
+    expect(environmentExample).toContain("SGEO_INTERNAL_SECRET_FILE=/run/secrets/sgeo_internal_secret");
+    expect(environmentExample).toContain("Never configure DATABASE_URL");
+    expect(runbook).toContain("v4.5.9");
+    expect(runbook).toContain("TRIGGER_ACCESS_TOKEN");
+    expect(runbook).toContain("does not start Trigger workers");
+  });
+
   it("prevents plain TypeScript compilation from emitting into worker source", async () => {
     const tsconfig = JSON.parse(
       await readFile(rootFile("geo-worker/tsconfig.json"), "utf8"),

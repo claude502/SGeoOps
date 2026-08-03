@@ -180,8 +180,9 @@ describe("Compose worker isolation policy", () => {
     expect(production).not.toContain("TRIGGER_API_KEY");
     expect(workerDockerfile).not.toMatch(/^CMD\s/m);
     expect(readme).toContain("Trigger.dev v4.5.9");
-    expect(readme).toContain("Phase 2 Task 9");
     expect(readme).toContain("`TRIGGER_API_URL` and `TRIGGER_ACCESS_TOKEN`");
+    expect(readme).toContain("trigger/README.md");
+    expect(readme).not.toContain("Phase 2 Task 9");
   });
 
   it("keeps current restore procedures inside the production Compose boundary", async () => {
@@ -197,8 +198,8 @@ describe("Compose worker isolation policy", () => {
       expect(procedure).not.toMatch(/\bstop\s+geo-worker\b/);
       expect(procedure).not.toMatch(/\bps\s+(?:--[^\n]+\s+)?geo-worker\b/);
       expect(procedure).not.toMatch(/\blogs(?:\s+--tail\s+\d+)?\s+geo-worker\b/);
-      expect(procedure).toContain("../deploy/README.md#triggerdev-v4-production-precondition");
-      expect(procedure).toContain("Phase 2 Task 9");
+      expect(procedure).toContain("../deploy/trigger/README.md");
+      expect(procedure).not.toContain("Phase 2 Task 9");
     }
   });
 

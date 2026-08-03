@@ -15,6 +15,7 @@ import {
 } from "@/lib/artifacts/uri";
 import type { StoredArtifact } from "@/lib/artifacts/store";
 import { getPrisma } from "@/lib/prisma";
+import { materializeSeoOutputs } from "@/lib/seo/materializer";
 
 export type { CreateOutboxEvent } from "@/lib/events/outbox";
 
@@ -29,15 +30,20 @@ export interface AnalysisRepository {
   ): Promise<{ duplicate: boolean }>;
 }
 
+type SeoMaterializer = typeof materializeSeoOutputs;
+
 export class PrismaAnalysisRepository implements AnalysisRepository {
-  constructor(private readonly prisma: PrismaClient = getPrisma()) {}
+  constructor(
+    private readonly prisma: PrismaClient = getPrisma(),
+    private readonly materialize: SeoMaterializer = materializeSeoOutputs,
+  ) {}
 
   async ingest(
     envelope: AnalysisEnvelope,
     verifyUploadedArtifact: VerifyUploadedArtifact,
   ): Promise<{ duplicate: boolean }> {
     return this.prisma.$transaction((tx) =>
-      ingestEnvelope(tx, envelope, verifyUploadedArtifact)
+      ingestEnvelope(tx, envelope, verifyUploadedArtifact, this.materialize)
     );
   }
 }
@@ -325,10 +331,32 @@ async function createIngestMarker(
   });
 }
 
+async function materializeAcceptedSeoOutput(
+  tx: Prisma.TransactionClient,
+  envelope: AnalysisEnvelope,
+  materialize: SeoMaterializer | undefined,
+) {
+  if (
+    materialize === undefined ||
+    (envelope.status !== "succeeded" && envelope.status !== "partial") ||
+    envelope.finishedAt === null
+  ) return;
+  await materialize(tx, {
+    runId: envelope.runId,
+    scope: {
+      clientId: envelope.clientId,
+      brandId: envelope.brandId,
+      siteId: envelope.siteId,
+      siteMarketId: envelope.siteMarketId,
+    },
+  });
+}
+
 export async function ingestEnvelope(
   tx: Prisma.TransactionClient,
   envelope: AnalysisEnvelope,
   verifyUploadedArtifact?: VerifyUploadedArtifact,
+  materialize?: SeoMaterializer,
 ): Promise<{ duplicate: boolean }> {
   const parsed = analysisEnvelopeSchema.parse(envelope);
   if (parsed.rawArtifact !== null) {
@@ -471,6 +499,7 @@ export async function ingestEnvelope(
       where: { id: parsed.runId },
       data: expectedRunState(parsed),
     });
+    await materializeAcceptedSeoOutput(tx, parsed, materialize);
     await createIngestMarker(tx, parsed.runId, hash);
     return { duplicate: false };
   }
@@ -505,6 +534,7 @@ export async function ingestEnvelope(
     where: { id: parsed.runId },
     data: expectedRunState(parsed),
   });
+  await materializeAcceptedSeoOutput(tx, parsed, materialize);
   await createIngestMarker(tx, parsed.runId, hash);
   return { duplicate: false };
 }

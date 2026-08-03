@@ -10,9 +10,6 @@ export default defineConfig({
   test: {
     include: ["tests/integration/**/*.test.ts"],
     environment: "node",
-    env: {
-      SGEO_DATABASE_INTEGRATION: "1",
-    },
     fileParallelism: false,
     maxWorkers: 1,
     testTimeout: 60_000,

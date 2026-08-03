@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-
 import { analysisEnvelopeSchema, type AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { AbortTaskRunError, logger, metadata, task } from "@trigger.dev/sdk";
 
@@ -12,6 +10,7 @@ import {
   type SiteOneInput,
 } from "../adapters/siteone";
 import { SgeoOpsClient, SgeoOpsClientError } from "../clients/sgeo-ops";
+import { InternalSgeoAuthError, readInternalSgeoSecret } from "./internal-sgeo-auth";
 
 type SiteOneOpsClient = Pick<SgeoOpsClient, "ingest" | "uploadArtifact">;
 
@@ -44,22 +43,17 @@ export class SiteOneTaskConfigurationError extends Error {
 
 async function defaultClient(): Promise<SiteOneOpsClient> {
   const baseUrl = process.env.SGEO_INTERNAL_URL;
-  const secretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
   if (!baseUrl) {
     throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_URL is required.");
-  }
-  if (!secretFile) {
-    throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE is required.");
   }
 
   let secret: string;
   try {
-    secret = (await readFile(secretFile, "utf8")).trim();
-  } catch {
-    throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE could not be read.");
-  }
-  if (secret.length === 0) {
-    throw new SiteOneTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE must contain a secret.");
+    secret = await readInternalSgeoSecret();
+  } catch (error) {
+    throw new SiteOneTaskConfigurationError(
+      error instanceof InternalSgeoAuthError ? error.message : "SGeoOps internal secret is invalid.",
+    );
   }
   return new SgeoOpsClient({ baseUrl, secret });
 }

@@ -37,4 +37,6 @@ Trigger metadata. Authentication failure is checkpointed before SGeoOps disables
 the exact owned integration. SGeoOps remains the only business database writer.
 
 Production Trigger tasks and the production worker are not deployed by this
-Compose work. Their self-hosted deployment remains a Phase 2 Task 9 precondition.
+Compose work. Provision and operate them with the [Trigger.dev v4 production
+runbook](../deploy/trigger/README.md); workers receive signed SGeoOps API access,
+not `DATABASE_URL`.

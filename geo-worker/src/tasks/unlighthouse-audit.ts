@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-
 import { analysisEnvelopeSchema, type AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { AbortTaskRunError, logger, metadata, task } from "@trigger.dev/sdk";
 
@@ -13,6 +11,7 @@ import {
   type UnlighthouseInput,
 } from "../adapters/unlighthouse";
 import { SgeoOpsClient, SgeoOpsClientError } from "../clients/sgeo-ops";
+import { InternalSgeoAuthError, readInternalSgeoSecret } from "./internal-sgeo-auth";
 
 type UnlighthouseOpsClient = Pick<SgeoOpsClient, "ingest" | "uploadArtifact">;
 
@@ -67,24 +66,19 @@ function internalOriginBaseUrl(value: string) {
 
 async function defaultClient(): Promise<UnlighthouseOpsClient> {
   const configuredBaseUrl = process.env.SGEO_INTERNAL_URL;
-  const secretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
   if (!configuredBaseUrl) {
     throw new UnlighthouseTaskConfigurationError("SGEO_INTERNAL_URL is required.");
-  }
-  if (!secretFile) {
-    throw new UnlighthouseTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE is required.");
   }
 
   const baseUrl = internalOriginBaseUrl(configuredBaseUrl);
 
   let secret: string;
   try {
-    secret = (await readFile(secretFile, "utf8")).trim();
-  } catch {
-    throw new UnlighthouseTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE could not be read.");
-  }
-  if (secret.length === 0) {
-    throw new UnlighthouseTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE must contain a secret.");
+    secret = await readInternalSgeoSecret();
+  } catch (error) {
+    throw new UnlighthouseTaskConfigurationError(
+      error instanceof InternalSgeoAuthError ? error.message : "SGeoOps internal secret is invalid.",
+    );
   }
   return new SgeoOpsClient({ baseUrl, secret });
 }

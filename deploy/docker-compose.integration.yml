@@ -1,0 +1,50 @@
+name: sgeo-seo-loop-integration
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sgeo_task9_test
+      POSTGRES_USER: sgeo_test
+      POSTGRES_PASSWORD: sgeo_test_only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sgeo_test -d sgeo_task9_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  fixture-site:
+    image: node:24-alpine
+    working_dir: /fixture
+    command: ["node", "server.mjs"]
+    volumes:
+      - ./integration-fixture/server.mjs:/fixture/server.mjs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  integration-tests:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: builder
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fixture-site:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://sgeo_test:sgeo_test_only@postgres:5432/sgeo_task9_test?schema=public
+      TEST_DATABASE_URL: postgresql://sgeo_test:sgeo_test_only@postgres:5432/sgeo_task9_test?schema=public
+      SGEO_DATABASE_INTEGRATION: "1"
+      SEO_LOOP_FIXTURE_URL: http://fixture-site:8080
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        npm run prisma:deploy
+        npm run test:integration -- tests/integration/seo-loop.test.ts

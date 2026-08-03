@@ -18,11 +18,11 @@ Before running it:
 
 The current `wingheng.technology` test deployment uses Cloudflare edge HTTPS with HTTP origin mode to avoid redirect loops under Cloudflare `Flexible`. For production, prefer Cloudflare `Full (strict)` plus an HTTPS Caddy site block.
 
-## Trigger.dev v4 Production Precondition
+## Trigger.dev v4 Production Worker
 
 This SGeoOps production Compose stack intentionally does not start `geo-worker` or deploy Trigger tasks. A local `trigger dev` process is for the development Compose lifecycle only and is not a production worker deployment.
 
-Provision Trigger.dev v4.5.9 separately with the official pinned webapp and worker/runner stack, then deploy this task project from CI/CD with `TRIGGER_API_URL` and `TRIGGER_ACCESS_TOKEN` supplied through the CI secret store. The concrete generated self-host configuration and production runbook are delivered in Phase 2 Task 9; this Compose file does not claim that Trigger.dev is already deployed.
+Provision Trigger.dev v4.5.9 separately with the official pinned webapp and worker/runner stack, then deploy this task project from CI/CD with `TRIGGER_API_URL` and `TRIGGER_ACCESS_TOKEN` supplied through the CI secret store. Follow the concrete [Trigger.dev v4 production runbook](trigger/README.md). This Compose file deliberately does not claim that Trigger.dev is already deployed.
 
 For a new database, run this mandatory fail-fast procedure before any full-stack start. The password is read without echo and is passed only to the one-time Compose runner; do not put it in `.env`, the archive, Git, or a command-line argument:
 
@@ -86,6 +86,20 @@ Daily cron example:
 15 2 * * * cd /opt/geo-content-ops && APP_DIR=/opt/geo-content-ops RETENTION_DAYS=14 bash deploy/backup-postgres.sh >> /opt/geo-content-ops/logs/backup.log 2>&1
 ```
 
+Artifact backup uses the running `geo-ops` container as the source of truth, writes a checked
+`tar.gz` archive atomically with mode `0600`, and never reads the Docker volume from the host:
+
+```bash
+SGEO_ARTIFACT_BACKUP_DIR=/opt/geo-content-ops/backups/artifacts \
+ARTIFACT_BACKUP_RETENTION_DAYS=14 \
+bash deploy/backup-artifacts.sh
+```
+
+Run it after the database backup and retain both backups as one recovery set. The script checks
+the archive with `gzip -t` and `tar -tzf`; it fails if `geo-ops` is not running or the backup
+directory is unsafe. Pause Trigger schedules before any database or artifact recovery and use
+the recovery procedure in `docs/system-sop.md` before resuming workers.
+
 Restore example:
 
 ```bash
@@ -145,8 +159,8 @@ gzip -dc "$BACKUP" | docker compose --env-file .env \
 ```
 
 Restart both services and run `php /var/www/html/console core:archive --force-all-websites`
-inside `matomo-archive-cron`. A restore replaces Matomo database state. Production Trigger
-worker deployment is still delivered by Phase 2 Task 9; this Compose change does not claim it exists.
+inside `matomo-archive-cron`. A restore replaces Matomo database state. Coordinate any
+production Trigger worker pause and recovery with the [Trigger runbook](trigger/README.md).
 
 Optional Redis service:
 

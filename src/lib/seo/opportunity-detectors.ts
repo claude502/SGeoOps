@@ -294,9 +294,8 @@ function sourceAllowsKind(source: string, kind: string) {
 }
 
 function runCompletion(run: z.infer<typeof runSchema>) {
-  const value = run.finishedAt ?? run.startedAt;
-  if (value === null) return "";
-  return (value instanceof Date ? value : new Date(value)).toISOString();
+  const value = run.finishedAt;
+  return value === null ? null : (value instanceof Date ? value : new Date(value)).toISOString();
 }
 
 function latestSnapshotRunIds(
@@ -307,13 +306,14 @@ function latestSnapshotRunIds(
   for (const run of runs) {
     if (
       run.status !== "succeeded" ||
+      run.finishedAt === null ||
       !exactScope(run, scope) ||
       (run.source !== "siteone" && run.source !== "unlighthouse")
     ) continue;
     const existing = latest.get(run.source);
     if (
       existing === undefined ||
-      runCompletion(run) > runCompletion(existing) ||
+      runCompletion(run)! > runCompletion(existing)! ||
       (runCompletion(run) === runCompletion(existing) && run.id < existing.id)
     ) latest.set(run.source, run);
   }
@@ -354,6 +354,7 @@ function latestSearchConsoleSnapshotRuns(
     if (
       !exactScope(run, scope) ||
       run.source !== "search-console" ||
+      run.finishedAt === null ||
       (run.status !== "succeeded" && run.status !== "partial")
     ) continue;
     const key = searchConsoleSnapshotKey(run);
@@ -361,7 +362,7 @@ function latestSearchConsoleSnapshotRuns(
     const existing = latest.get(key);
     if (
       existing === undefined ||
-      runCompletion(run) > runCompletion(existing) ||
+      runCompletion(run)! > runCompletion(existing)! ||
       (runCompletion(run) === runCompletion(existing) && run.id < existing.id)
     ) latest.set(key, run);
   }

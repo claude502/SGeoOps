@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-
 import { analysisEnvelopeSchema, type AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { AbortTaskRunError, logger, metadata, task } from "@trigger.dev/sdk";
 
@@ -23,6 +21,7 @@ import {
   SgeoOpsClientError,
   type SearchConsoleControlScope,
 } from "../clients/sgeo-ops";
+import { InternalSgeoAuthError, readInternalSgeoSecret } from "./internal-sgeo-auth";
 
 export const SEARCH_CONSOLE_DAILY_DISPATCH_CRON = "0 4 * * *";
 export const SEARCH_CONSOLE_TRIGGER_ENVELOPE_BYTES = 192 * 1024;
@@ -93,22 +92,17 @@ function internalOriginBaseUrl(value: string) {
 
 export async function createDefaultSgeoOpsClient(): Promise<SgeoOpsClient> {
   const configuredBaseUrl = process.env.SGEO_INTERNAL_URL;
-  const secretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
   if (!configuredBaseUrl) {
     throw new SearchConsoleTaskConfigurationError("SGEO_INTERNAL_URL is required.");
-  }
-  if (!secretFile) {
-    throw new SearchConsoleTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE is required.");
   }
   const baseUrl = internalOriginBaseUrl(configuredBaseUrl);
   let secret: string;
   try {
-    secret = (await readFile(secretFile, "utf8")).trim();
-  } catch {
-    throw new SearchConsoleTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE could not be read.");
-  }
-  if (secret.length === 0) {
-    throw new SearchConsoleTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE must contain a secret.");
+    secret = await readInternalSgeoSecret();
+  } catch (error) {
+    throw new SearchConsoleTaskConfigurationError(
+      error instanceof InternalSgeoAuthError ? error.message : "SGeoOps internal secret is invalid.",
+    );
   }
   return new SgeoOpsClient({ baseUrl, secret });
 }

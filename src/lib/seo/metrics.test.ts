@@ -337,6 +337,28 @@ describe("calculateSeoMetrics", () => {
     expect(metric(metrics, SEO_METRIC_NAMES.ORGANIC_VISITS).value).toBeNull();
   });
 
+  it("never lets an unfinished run replace a completed snapshot", () => {
+    const metrics = calculateSeoMetrics({
+      scope,
+      runs: [
+        run("crawl_complete", [
+          observation("complete", "siteone.http_status", "https://example.test/", { statusCode: 200 }),
+        ], { finishedAt: "2026-07-02T00:10:00.000Z" }),
+        run("crawl_unfinished", [
+          observation("unfinished", "siteone.http_status", "https://example.test/", { statusCode: 500 }),
+        ], {
+          startedAt: "2026-07-03T00:00:00.000Z",
+          finishedAt: null,
+        }),
+      ],
+    });
+
+    expect(metric(metrics, SEO_METRIC_NAMES.CRAWL_SUCCESS_RATE)).toMatchObject({
+      value: 1,
+      evidenceObservationIds: ["complete"],
+    });
+  });
+
   it("marks overlapping Matomo windows unavailable instead of double counting", () => {
     const metrics = calculateSeoMetrics({
       scope,

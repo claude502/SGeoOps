@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 
 import { analysisEnvelopeSchema, type AnalysisEnvelope } from "@sgeo/analysis-contract";
@@ -25,6 +24,7 @@ import {
   SgeoOpsClientError,
   type MatomoControlScope,
 } from "../clients/sgeo-ops";
+import { InternalSgeoAuthError, readInternalSgeoSecret } from "./internal-sgeo-auth";
 
 export const MATOMO_TRIGGER_ENVELOPE_BYTES = 192 * 1024;
 const MATOMO_DELIVERY_CHECKPOINT_KEY = "matomoDeliveryCheckpoint";
@@ -93,22 +93,17 @@ function internalOrigin(value: string) {
 
 export async function createDefaultMatomoOpsClient() {
   const configuredBaseUrl = process.env.SGEO_INTERNAL_URL;
-  const secretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
   if (!configuredBaseUrl) {
     throw new MatomoTaskConfigurationError("SGEO_INTERNAL_URL is required.");
-  }
-  if (!secretFile) {
-    throw new MatomoTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE is required.");
   }
   const baseUrl = internalOrigin(configuredBaseUrl);
   let secret: string;
   try {
-    secret = (await readFile(secretFile, "utf8")).trim();
-  } catch {
-    throw new MatomoTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE could not be read.");
-  }
-  if (secret.length === 0) {
-    throw new MatomoTaskConfigurationError("SGEO_INTERNAL_SECRET_FILE must contain a secret.");
+    secret = await readInternalSgeoSecret();
+  } catch (error) {
+    throw new MatomoTaskConfigurationError(
+      error instanceof InternalSgeoAuthError ? error.message : "SGeoOps internal secret is invalid.",
+    );
   }
   return new SgeoOpsClient({ baseUrl, secret });
 }
