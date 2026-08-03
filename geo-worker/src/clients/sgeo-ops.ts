@@ -27,6 +27,11 @@ export type SearchConsoleControlScope = {
   property: string;
 };
 
+export type SearchConsoleDispatchPage = {
+  runs: SearchConsoleInput[];
+  cursor: string | null;
+};
+
 const MAX_CONTROL_RESPONSE_BYTES = 64 * 1024;
 
 export class SgeoOpsClientError extends Error {
@@ -262,7 +267,10 @@ export class SgeoOpsClient {
     return { disabled: true, recommendationId: payload.recommendationId };
   }
 
-  async dispatchSearchConsoleRuns(scheduledAt: string): Promise<SearchConsoleInput[]> {
+  async dispatchSearchConsolePage(
+    scheduledAt: string,
+    cursor: string | null,
+  ): Promise<SearchConsoleDispatchPage> {
     const parsedScheduledAt = new Date(scheduledAt);
     if (
       !Number.isFinite(parsedScheduledAt.getTime()) ||
@@ -272,19 +280,41 @@ export class SgeoOpsClient {
         retryable: false,
       });
     }
+    if (
+      cursor !== null &&
+      (typeof cursor !== "string" ||
+        cursor.length === 0 ||
+        cursor.length > 2_048 ||
+        !/^[A-Za-z0-9._-]+$/.test(cursor))
+    ) {
+      throw new SgeoOpsClientError("Search Console dispatch cursor is invalid.", {
+        retryable: false,
+      });
+    }
     const pathname = "/api/internal/analysis-runs/search-console/dispatch";
-    const body = JSON.stringify({ scheduledAt });
+    const body = JSON.stringify(cursor === null ? { scheduledAt } : { scheduledAt, cursor });
     const response = await this.signedPost(pathname, body, {
       "content-type": "application/json",
     });
-    const payload = exactRecord(await boundedJsonResponse(response), ["runs"]);
-    if (payload === null || !Array.isArray(payload.runs)) {
+    const payload = exactRecord(await boundedJsonResponse(response), ["cursor", "runs"]);
+    if (
+      payload === null ||
+      !Array.isArray(payload.runs) ||
+      (payload.cursor !== null &&
+        (typeof payload.cursor !== "string" ||
+          payload.cursor.length === 0 ||
+          payload.cursor.length > 2_048 ||
+          !/^[A-Za-z0-9._-]+$/.test(payload.cursor)))
+    ) {
       throw new SgeoOpsClientError("SGeoOps returned an invalid dispatch response.", {
         retryable: false,
       });
     }
     try {
-      return payload.runs.map((run) => parseSearchConsoleInput(run));
+      return {
+        runs: payload.runs.map((run) => parseSearchConsoleInput(run)),
+        cursor: payload.cursor,
+      };
     } catch {
       throw new SgeoOpsClientError("SGeoOps returned an invalid dispatch response.", {
         retryable: false,

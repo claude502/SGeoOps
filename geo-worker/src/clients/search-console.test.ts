@@ -170,6 +170,50 @@ describe("SearchConsoleClient", () => {
     });
   });
 
+  it.each([401, 403])(
+    "classifies a malformed %i response as an authentication failure",
+    async (status) => {
+      const client = new SearchConsoleClient({
+        token,
+        fetch: vi.fn().mockResolvedValue(new Response("{", { status })),
+      });
+
+      await expect(client.query(property, {
+        startDate: "2026-07-01",
+        endDate: "2026-07-02",
+        startRow: 0,
+      })).rejects.toMatchObject({
+        name: "SearchConsoleAuthenticationError",
+        retryable: false,
+        status,
+      });
+    },
+  );
+
+  it.each([401, 403])(
+    "classifies an oversized declared %i response as an authentication failure",
+    async (status) => {
+      const client = new SearchConsoleClient({
+        token,
+        maximumResponseBytes: 8,
+        fetch: vi.fn().mockResolvedValue(new Response("{}", {
+          status,
+          headers: { "content-length": "9" },
+        })),
+      });
+
+      await expect(client.query(property, {
+        startDate: "2026-07-01",
+        endDate: "2026-07-02",
+        startRow: 0,
+      })).rejects.toMatchObject({
+        name: "SearchConsoleAuthenticationError",
+        retryable: false,
+        status,
+      });
+    },
+  );
+
   it.each(["dailyLimitExceeded", "dailyLimitExceededUnreg", "downloadQuotaExceeded"])(
     "classifies Google quota reason %s as retryable",
     async (reason) => {
@@ -240,6 +284,33 @@ describe("SearchConsoleClient", () => {
       endDate: "2026-07-02",
       startRow: 0,
     })).rejects.toMatchObject({ retryable: true, status: 403 });
+  });
+
+  it("treats a malformed detail mixed with known quota details as an authentication failure", async () => {
+    const client = new SearchConsoleClient({
+      token,
+      fetch: vi.fn().mockResolvedValue(Response.json({
+        error: {
+          code: 403,
+          message: "Quota exhausted",
+          status: "RESOURCE_EXHAUSTED",
+          details: [
+            { reason: "RATE_LIMIT_EXCEEDED" },
+            { "@type": "type.googleapis.com/google.rpc.ErrorInfo" },
+          ],
+        },
+      }, { status: 403 })),
+    });
+
+    await expect(client.query(property, {
+      startDate: "2026-07-01",
+      endDate: "2026-07-02",
+      startRow: 0,
+    })).rejects.toMatchObject({
+      name: "SearchConsoleAuthenticationError",
+      retryable: false,
+      status: 403,
+    });
   });
 
   it("exposes Google RetryInfo delay as bounded retry observability", async () => {

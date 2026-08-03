@@ -296,7 +296,7 @@ describe("SgeoOpsClient", () => {
     }, "POST", pathname, body)).resolves.toBe(true);
   });
 
-  it("requests and strictly validates no-secret Search Console dispatch payloads", async () => {
+  it("requests and strictly validates one no-secret Search Console dispatch page", async () => {
     const runs = [{
       runId: "run_sc_1",
       clientId: "client_1",
@@ -308,11 +308,11 @@ describe("SgeoOpsClient", () => {
       startDate: "2026-08-01",
       endDate: "2026-08-01",
     }];
-    const fetch = vi.fn().mockResolvedValue(Response.json({ runs }));
+    const fetch = vi.fn().mockResolvedValue(Response.json({ runs, cursor: null }));
     const client = new SgeoOpsClient({ baseUrl, secret, fetch });
 
-    await expect(client.dispatchSearchConsoleRuns("2026-08-04T07:30:00.000Z"))
-      .resolves.toEqual(runs);
+    await expect(client.dispatchSearchConsolePage("2026-08-04T07:30:00.000Z", null))
+      .resolves.toEqual({ runs, cursor: null });
 
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
     const pathname = "/api/internal/analysis-runs/search-console/dispatch";
@@ -325,6 +325,30 @@ describe("SgeoOpsClient", () => {
       signature: headers.get("x-sgeo-signature") ?? "",
     }, "POST", pathname, body)).resolves.toBe(true);
     expect(JSON.stringify({ body, runs })).not.toMatch(/secretRef|token|file:/i);
+  });
+
+  it("signs an opaque cursor on the following dispatch page", async () => {
+    const firstCursor = "v1.abc.def.ghi.jkl";
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ runs: [], cursor: firstCursor }))
+      .mockResolvedValueOnce(Response.json({ runs: [], cursor: null }));
+    const client = new SgeoOpsClient({ baseUrl, secret, fetch });
+
+    await client.dispatchSearchConsolePage("2026-08-04T07:30:00.000Z", null);
+    await client.dispatchSearchConsolePage("2026-08-04T07:30:00.000Z", firstCursor);
+
+    const [, secondInit] = fetch.mock.calls[1] as [string, RequestInit];
+    const secondBody = secondInit.body as string;
+    const pathname = "/api/internal/analysis-runs/search-console/dispatch";
+    const headers = requestHeaders(secondInit);
+    expect(JSON.parse(secondBody)).toEqual({
+      scheduledAt: "2026-08-04T07:30:00.000Z",
+      cursor: firstCursor,
+    });
+    await expect(verifyInternalRequest(secret, {
+      timestamp: headers.get("x-sgeo-timestamp") ?? "",
+      signature: headers.get("x-sgeo-signature") ?? "",
+    }, "POST", pathname, secondBody)).resolves.toBe(true);
   });
 
   it("rejects dispatch payloads containing unexpected credential material", async () => {
@@ -345,10 +369,11 @@ describe("SgeoOpsClient", () => {
           endDate: "2026-08-01",
           token: returnedToken,
         }],
+        cursor: null,
       })),
     });
 
-    await expect(client.dispatchSearchConsoleRuns("2026-08-04T07:30:00.000Z"))
+    await expect(client.dispatchSearchConsolePage("2026-08-04T07:30:00.000Z", null))
       .rejects.toMatchObject({
         name: "SgeoOpsClientError",
         message: expect.not.stringContaining(returnedToken),

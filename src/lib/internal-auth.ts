@@ -32,6 +32,10 @@ async function readInternalSecret(env: NodeJS.ProcessEnv = process.env) {
   }
 }
 
+export async function readInternalSigningSecret() {
+  return readInternalSecret();
+}
+
 export type PreparedSignedInternalRequest = {
   verifyBodyDigest(bodyDigest: string): Promise<boolean>;
 };

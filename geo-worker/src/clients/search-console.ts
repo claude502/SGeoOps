@@ -127,11 +127,13 @@ function googleErrorReasons(body: unknown, status: number) {
     return null;
   }
   const detailReasons = Array.isArray(error.details)
-    ? error.details.flatMap((item) => {
-      const reason = asRecord(item)?.reason;
-      return typeof reason === "string" && reason.length > 0 ? [reason] : [];
-    })
+    ? error.details.map((item) => asRecord(item)?.reason)
     : [];
+  if (!detailReasons.every(
+    (reason): reason is string => typeof reason === "string" && reason.length > 0,
+  )) {
+    return null;
+  }
   return [
     ...(typeof error.status === "string" ? [error.status] : []),
     ...legacyReasons as string[],
@@ -293,10 +295,10 @@ export class SearchConsoleClient {
         );
       }
     } catch (error) {
-      if (error instanceof SearchConsoleProviderError) throw error;
       if (response.status === 401 || response.status === 403) {
         throw providerError(response.status, null, response.headers);
       }
+      if (error instanceof SearchConsoleProviderError) throw error;
       throw new SearchConsoleProviderError("Search Console returned an invalid response.", {
         status: response.status,
         retryable: response.status === 429 || response.status >= 500,

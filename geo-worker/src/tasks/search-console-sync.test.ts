@@ -8,6 +8,7 @@ import {
 } from "../adapters/search-console";
 import type { SearchConsoleDeliveryState } from "./search-console-sync";
 import {
+  SEARCH_CONSOLE_MAX_RESPONSE_BYTES,
   SearchConsoleAuthenticationError,
   SearchConsoleClient,
   SearchConsoleProviderError,
@@ -347,6 +348,33 @@ describe("searchConsoleSyncTask", () => {
         errors: [{ reason: "quotaExceeded" }, { reason: "insufficientPermissions" }],
       },
     }, { status: 403 }));
+
+    await expect(runSearchConsoleSync(input, {
+      client,
+      checkpoint,
+      execute: (payload, receivedToken) => executeSearchConsole(payload, {
+        client: new SearchConsoleClient({ token: receivedToken, fetch }),
+      }),
+    })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "SEARCH_CONSOLE_AUTHENTICATION_FAILED", retryable: false },
+    });
+
+    expect(client.reportSearchConsoleAuthenticationFailure).toHaveBeenCalledTimes(1);
+    expect(client.ingest).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+  });
+
+  it("disables credentials when Search Console returns an oversized 401 response", async () => {
+    const client = ops();
+    const checkpoint = {
+      load: vi.fn().mockResolvedValue(null),
+      assertCapacity: vi.fn(async () => {}),
+      save: vi.fn(async () => {}),
+    };
+    const fetch = vi.fn().mockResolvedValue(new Response("{}", {
+      status: 401,
+      headers: { "content-length": String(SEARCH_CONSOLE_MAX_RESPONSE_BYTES + 1) },
+    }));
 
     await expect(runSearchConsoleSync(input, {
       client,

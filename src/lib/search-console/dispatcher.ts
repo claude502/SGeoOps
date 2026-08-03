@@ -10,6 +10,7 @@ import { db } from "@/lib/prisma";
 import { parseSearchConsoleControlRequestScope } from "@/lib/search-console/internal-route";
 
 export const SEARCH_CONSOLE_FINAL_DATA_LAG_DAYS = 3;
+export const SEARCH_CONSOLE_DISPATCH_PAGE_SIZE = 16;
 const SEARCH_CONSOLE_SOURCE = "search-console";
 const SEARCH_CONSOLE_SOURCE_VERSION = "webmasters-v3";
 const SEARCH_CONSOLE_ADAPTER_VERSION = "1.0.0";
@@ -26,8 +27,16 @@ export type SearchConsoleDispatchPayload = {
   endDate: string;
 };
 
+export type SearchConsoleDispatchPage = {
+  runs: SearchConsoleDispatchPayload[];
+  nextAfterIntegrationId: string | null;
+};
+
 export interface SearchConsoleDispatcher {
-  dispatch(scheduledAt: Date): Promise<SearchConsoleDispatchPayload[]>;
+  dispatchPage(
+    scheduledAt: Date,
+    afterIntegrationId: string | null,
+  ): Promise<SearchConsoleDispatchPage>;
 }
 
 type DispatchDatabase = Pick<
@@ -152,71 +161,95 @@ function isUniqueConstraintError(error: unknown) {
 export class PrismaSearchConsoleDispatchRepository implements SearchConsoleDispatcher {
   constructor(private readonly database: DispatchDatabase = db) {}
 
-  async dispatch(scheduledAt: Date): Promise<SearchConsoleDispatchPayload[]> {
+  async dispatchPage(
+    scheduledAt: Date,
+    afterIntegrationId: string | null,
+  ): Promise<SearchConsoleDispatchPage> {
     const date = searchConsoleFinalDate(scheduledAt);
-    const integrations = await this.database.integration.findMany({
-      where: {
-        type: "search_console",
-        healthState: { not: "disabled" },
-        endpoint: { not: null },
-        secretRef: { not: null },
-        site: {
-          active: true,
-          brand: { client: { active: true } },
-        },
-      },
-      select: {
-        id: true,
-        siteId: true,
-        siteMarketId: true,
-        endpoint: true,
-        secretRef: true,
-        site: {
-          select: {
-            brandId: true,
-            brand: { select: { clientId: true } },
-          },
-        },
-        siteMarket: { select: { siteId: true } },
-      },
-      orderBy: { id: "asc" },
-    });
-
+    let after = afterIntegrationId;
     const payloads: SearchConsoleDispatchPayload[] = [];
-    for (const integration of integrations) {
-      if (
-        integration.endpoint === null ||
-        integration.secretRef === null ||
-        !safeFileSecretReference(integration.secretRef) ||
-        (integration.siteMarketId !== null &&
-          integration.siteMarket?.siteId !== integration.siteId)
-      ) {
-        continue;
-      }
-      const scope = parseSearchConsoleControlRequestScope({
-        clientId: integration.site.brand.clientId,
-        brandId: integration.site.brandId,
-        siteId: integration.siteId,
-        siteMarketId: integration.siteMarketId,
-        integrationId: integration.id,
-        property: integration.endpoint,
+    while (payloads.length < SEARCH_CONSOLE_DISPATCH_PAGE_SIZE) {
+      const integrations = await this.database.integration.findMany({
+        where: {
+          type: "search_console",
+          healthState: { not: "disabled" },
+          endpoint: { not: null },
+          secretRef: { not: null },
+          site: {
+            active: true,
+            brand: { client: { active: true } },
+          },
+          ...(after === null ? {} : { id: { gt: after } }),
+        },
+        select: {
+          id: true,
+          siteId: true,
+          siteMarketId: true,
+          endpoint: true,
+          secretRef: true,
+          site: {
+            select: {
+              brandId: true,
+              brand: { select: { clientId: true } },
+            },
+          },
+          siteMarket: { select: { siteId: true } },
+        },
+        orderBy: { id: "asc" },
+        take: SEARCH_CONSOLE_DISPATCH_PAGE_SIZE + 1,
       });
-      if (scope === null) continue;
-      const payload: SearchConsoleDispatchPayload = {
-        runId: runFacts({
+      if (integrations.length === 0) {
+        return { runs: payloads, nextAfterIntegrationId: null };
+      }
+      const hasMore = integrations.length > SEARCH_CONSOLE_DISPATCH_PAGE_SIZE;
+      const candidates = integrations.slice(0, SEARCH_CONSOLE_DISPATCH_PAGE_SIZE);
+      for (const [index, integration] of candidates.entries()) {
+        after = integration.id;
+        if (
+          integration.endpoint === null ||
+          integration.secretRef === null ||
+          !safeFileSecretReference(integration.secretRef) ||
+          (integration.siteMarketId !== null &&
+            integration.siteMarket?.siteId !== integration.siteId)
+        ) {
+          continue;
+        }
+        const scope = parseSearchConsoleControlRequestScope({
+          clientId: integration.site.brand.clientId,
+          brandId: integration.site.brandId,
+          siteId: integration.siteId,
+          siteMarketId: integration.siteMarketId,
+          integrationId: integration.id,
+          property: integration.endpoint,
+        });
+        if (scope === null) continue;
+        const payload: SearchConsoleDispatchPayload = {
+          runId: runFacts({
+            ...scope,
+            runId: "unused",
+            startDate: date,
+            endDate: date,
+          }).id,
           ...scope,
-          runId: "unused",
           startDate: date,
           endDate: date,
-        }).id,
-        ...scope,
-        startDate: date,
-        endDate: date,
-      };
-      await this.createOrReuse(payload);
-      payloads.push(payload);
+        };
+        await this.createOrReuse(payload);
+        payloads.push(payload);
+        if (payloads.length === SEARCH_CONSOLE_DISPATCH_PAGE_SIZE) {
+          return {
+            runs: payloads,
+            nextAfterIntegrationId: hasMore || index < candidates.length - 1
+              ? after
+              : null,
+          };
+        }
+      }
+      if (!hasMore) {
+        return { runs: payloads, nextAfterIntegrationId: null };
+      }
     }
-    return payloads;
+    return { runs: payloads, nextAfterIntegrationId: after };
   }
 
   private async createOrReuse(payload: SearchConsoleDispatchPayload) {

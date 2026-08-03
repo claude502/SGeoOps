@@ -45,16 +45,32 @@ afterEach(() => {
 });
 
 describe("POST /api/internal/analysis-runs/search-console/dispatch", () => {
-  it("authenticates the exact body and returns owned no-secret sync payloads", async () => {
-    const dispatcher = { dispatch: vi.fn().mockResolvedValue(runs) };
+  it("authenticates every page and returns an opaque cursor bound to the schedule instant", async () => {
+    const dispatcher = {
+      dispatchPage: vi.fn().mockResolvedValue({
+        runs,
+        nextAfterIntegrationId: "integration_2",
+      }),
+    };
     const post = createSearchConsoleDispatchRoute(() => dispatcher);
 
-    const response = await post(await request({ scheduledAt }));
+    const firstResponse = await post(await request({ scheduledAt }));
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ runs });
-    expect(dispatcher.dispatch).toHaveBeenCalledWith(new Date(scheduledAt));
+    expect(firstResponse.status).toBe(200);
+    const first = await firstResponse.json() as { runs: unknown; cursor: string };
+    expect(first.runs).toEqual(runs);
+    expect(first.cursor).toEqual(expect.any(String));
+    expect(first.cursor).not.toContain("integration_2");
+    expect(dispatcher.dispatchPage).toHaveBeenCalledWith(new Date(scheduledAt), null);
     expect(JSON.stringify(runs)).not.toMatch(/secretRef|token|file:/i);
+
+    const secondResponse = await post(await request({ scheduledAt, cursor: first.cursor }));
+
+    expect(secondResponse.status).toBe(200);
+    expect(dispatcher.dispatchPage).toHaveBeenLastCalledWith(
+      new Date(scheduledAt),
+      "integration_2",
+    );
   });
 
   it.each([
@@ -62,17 +78,36 @@ describe("POST /api/internal/analysis-runs/search-console/dispatch", () => {
     ["missing timestamp", {}, true],
     ["unexpected scope", { scheduledAt, clientId: "client_2" }, true],
   ])("rejects %s without dispatching", async (_label, body, signed) => {
-    const dispatcher = { dispatch: vi.fn() };
+    const dispatcher = { dispatchPage: vi.fn() };
     const post = createSearchConsoleDispatchRoute(() => dispatcher);
 
     const response = await post(await request(body, signed));
 
     expect([400, 401]).toContain(response.status);
-    expect(dispatcher.dispatch).not.toHaveBeenCalled();
+    expect(dispatcher.dispatchPage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tampered cursor without dispatching", async () => {
+    const dispatcher = { dispatchPage: vi.fn() };
+    const post = createSearchConsoleDispatchRoute(() => dispatcher);
+    const initial = createSearchConsoleDispatchRoute(() => ({
+      dispatchPage: vi.fn().mockResolvedValue({
+        runs,
+        nextAfterIntegrationId: "integration_2",
+      }),
+    }));
+    const first = await initial(await request({ scheduledAt }));
+    const { cursor } = await first.json() as { cursor: string };
+    const tampered = `${cursor.slice(0, -1)}${cursor.endsWith("A") ? "B" : "A"}`;
+
+    const response = await post(await request({ scheduledAt, cursor: tampered }));
+
+    expect(response.status).toBe(400);
+    expect(dispatcher.dispatchPage).not.toHaveBeenCalled();
   });
 
   it("returns a retryable server response when dispatch creation fails", async () => {
-    const dispatcher = { dispatch: vi.fn().mockRejectedValue(new Error("database unavailable")) };
+    const dispatcher = { dispatchPage: vi.fn().mockRejectedValue(new Error("database unavailable")) };
     const post = createSearchConsoleDispatchRoute(() => dispatcher);
 
     const response = await post(await request({ scheduledAt }));
