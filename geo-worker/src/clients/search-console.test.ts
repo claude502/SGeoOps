@@ -116,12 +116,30 @@ describe("SearchConsoleClient", () => {
     });
   });
 
-  it("does not disable credentials for a structurally invalid Google 403 error", async () => {
+  it.each([
+    ["mixed quota and permission", {
+      error: {
+        code: 403,
+        message: "Mixed denial",
+        errors: [{ reason: "quotaExceeded" }, { reason: "insufficientPermissions" }],
+      },
+    }],
+    ["permission-only", {
+      error: { code: 403, message: "Denied", errors: [{ reason: "insufficientPermissions" }] },
+    }],
+    ["unknown reason", {
+      error: { code: 403, message: "Denied", errors: [{ reason: "futureDenialReason" }] },
+    }],
+    ["empty reasons", {
+      error: { code: 403, message: "Denied", errors: [] },
+    }],
+    ["malformed body", {
+      error: { code: "403", message: "", errors: [{ unexpected: true }] },
+    }],
+  ])("classifies %s Google 403 as an authentication failure", async (_label, responseBody) => {
     const client = new SearchConsoleClient({
       token,
-      fetch: vi.fn().mockResolvedValue(Response.json({
-        error: { code: "403", message: "", errors: [{ unexpected: true }] },
-      }, { status: 403 })),
+      fetch: vi.fn().mockResolvedValue(Response.json(responseBody, { status: 403 })),
     });
 
     await expect(client.query(property, {
@@ -129,9 +147,26 @@ describe("SearchConsoleClient", () => {
       endDate: "2026-07-02",
       startRow: 0,
     })).rejects.toMatchObject({
-      name: "SearchConsoleProviderError",
+      name: "SearchConsoleAuthenticationError",
       retryable: false,
       status: 403,
+    });
+  });
+
+  it("classifies a malformed Google 401 as an authentication failure", async () => {
+    const client = new SearchConsoleClient({
+      token,
+      fetch: vi.fn().mockResolvedValue(new Response("not-json", { status: 401 })),
+    });
+
+    await expect(client.query(property, {
+      startDate: "2026-07-01",
+      endDate: "2026-07-02",
+      startRow: 0,
+    })).rejects.toMatchObject({
+      name: "SearchConsoleAuthenticationError",
+      retryable: false,
+      status: 401,
     });
   });
 

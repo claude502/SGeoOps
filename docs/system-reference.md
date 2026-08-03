@@ -291,6 +291,8 @@ GEO Ops 资产和 GEOFlow task/article 的映射。
 - `/api/internal/content-generate` 是 signed worker-to-platform contract，使用 `/run/secrets/sgeo_internal_secret`，不使用用户会话；`geo-worker` 不持有 `DATABASE_URL`。
 - `POST /api/internal/analysis-runs/:runId/search-console/credential` 只在签名、body 和完整 run/client/brand/site/integration/property scope 同时匹配时，通过 `Integration.secretRef` 与 `FileSecretResolver` 返回访问 token；响应禁止缓存，禁用、缺失 secret 和跨 scope 统一为非枚举失败。
 - `POST /api/internal/analysis-runs/:runId/search-console/auth-failure` 在同一 owned scope 内以事务禁用唯一的 `type=search_console` Integration，并用确定性 ID 幂等 upsert 当前 AnalysisRun 的 operator Recommendation。两个 Search Console contract 都不记录 token，worker payload、Trigger metadata 和 raw artifact 也不得包含 token。
+- `POST /api/internal/analysis-runs/search-console/dispatch` 接受签名的 Trigger scheduled timestamp，按 `America/Los_Angeles` 日历回退 3 天，只枚举 active owner/site 下启用且配置安全 file secret 与合法 property 的 Search Console Integration，并以 integration/date 幂等创建 AnalysisRun 与 `analysis_run.created` outbox event。返回值只包含严格的 run/client/brand/site/integration/property/date scope。
+- `search-console-daily-dispatch` 以 `0 4 * * *` 注册 Trigger declarative schedule，调用上述控制面后使用 runId 作为 Trigger idempotency key 批量触发 `search-console-sync`；daily 与 sync worker 均不连接数据库。
 
 ### 8.3 健康检查
 

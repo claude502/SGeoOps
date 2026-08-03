@@ -91,7 +91,7 @@ function internalOriginBaseUrl(value: string) {
   return parsed.origin;
 }
 
-async function defaultClient(): Promise<SearchConsoleOpsClient> {
+export async function createDefaultSgeoOpsClient(): Promise<SgeoOpsClient> {
   const configuredBaseUrl = process.env.SGEO_INTERNAL_URL;
   const secretFile = process.env.SGEO_INTERNAL_SECRET_FILE;
   if (!configuredBaseUrl) {
@@ -296,7 +296,7 @@ export async function runSearchConsoleSync(
   dependencies: SearchConsoleSyncDependencies = {},
 ): Promise<AnalysisEnvelope> {
   const input = parseSearchConsoleInput(value);
-  const client = dependencies.client ?? await defaultClient();
+  const client = dependencies.client ?? await createDefaultSgeoOpsClient();
   const checkpoint = dependencies.checkpoint ?? noOpCheckpoint;
   const scope = controlScope(input);
   const saved = await checkpoint.load(input);
@@ -408,6 +408,6 @@ export const searchConsoleSyncTask = task({
     maxTimeoutInMs: 30_000,
     factor: 2,
   },
-  // External dispatch creates one typed run per integration at 04:00 daily.
+  // The scheduled dispatcher creates and batch-triggers one typed run per integration.
   run: (payload: unknown) => runSearchConsoleSyncTask(payload),
 });

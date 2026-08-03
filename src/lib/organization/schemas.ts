@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { parseSearchConsoleProperty } from "@/lib/search-console/property";
+
 const shortText = z
   .string()
   .trim()
@@ -123,18 +125,21 @@ const publishPath = z
     );
   }, "Invalid publish path");
 
-const endpoint = z
-  .url()
-  .refine((value) => {
+const integrationEndpoint = z.string().max(2_048).nullable().default(null);
+
+function isHttpEndpoint(value: string) {
+  if (!z.url().safeParse(value).success) return false;
+  try {
     const parsed = new URL(value);
     return (
       (parsed.protocol === "http:" || parsed.protocol === "https:") &&
       !parsed.username &&
       !parsed.password
     );
-  }, "Endpoint must use HTTP or HTTPS")
-  .nullable()
-  .default(null);
+  } catch {
+    return false;
+  }
+}
 
 const locale = z
   .string()
@@ -230,7 +235,7 @@ export const createIntegrationSchema = z
   .object({
     siteMarketId: identifier.nullable().default(null),
     type: shortText,
-    endpoint,
+    endpoint: integrationEndpoint,
     capabilities: normalizedStrings.default([]),
     adapterVersion: shortText,
     secretRef: z
@@ -243,7 +248,22 @@ export const createIntegrationSchema = z
       .nullable()
       .default(null),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.endpoint === null) return;
+    const valid = value.type === "search_console"
+      ? parseSearchConsoleProperty(value.endpoint) !== null
+      : isHttpEndpoint(value.endpoint);
+    if (!valid) {
+      context.addIssue({
+        code: "custom",
+        path: ["endpoint"],
+        message: value.type === "search_console"
+          ? "Invalid Search Console property"
+          : "Endpoint must use HTTP or HTTPS",
+      });
+    }
+  });
 
 export type CreateClientBody = z.infer<typeof createClientSchema>;
 export type CreateBrandBody = z.infer<typeof createBrandSchema>;

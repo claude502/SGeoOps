@@ -6,6 +6,11 @@ import {
 } from "@sgeo/analysis-contract";
 import { signInternalRequest } from "@sgeo/internal-protocol";
 
+import {
+  parseSearchConsoleInput,
+  type SearchConsoleInput,
+} from "../adapters/search-console";
+
 type SgeoOpsFetch = (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -255,6 +260,36 @@ export class SgeoOpsClient {
       });
     }
     return { disabled: true, recommendationId: payload.recommendationId };
+  }
+
+  async dispatchSearchConsoleRuns(scheduledAt: string): Promise<SearchConsoleInput[]> {
+    const parsedScheduledAt = new Date(scheduledAt);
+    if (
+      !Number.isFinite(parsedScheduledAt.getTime()) ||
+      parsedScheduledAt.toISOString() !== scheduledAt
+    ) {
+      throw new SgeoOpsClientError("Search Console dispatch time is invalid.", {
+        retryable: false,
+      });
+    }
+    const pathname = "/api/internal/analysis-runs/search-console/dispatch";
+    const body = JSON.stringify({ scheduledAt });
+    const response = await this.signedPost(pathname, body, {
+      "content-type": "application/json",
+    });
+    const payload = exactRecord(await boundedJsonResponse(response), ["runs"]);
+    if (payload === null || !Array.isArray(payload.runs)) {
+      throw new SgeoOpsClientError("SGeoOps returned an invalid dispatch response.", {
+        retryable: false,
+      });
+    }
+    try {
+      return payload.runs.map((run) => parseSearchConsoleInput(run));
+    } catch {
+      throw new SgeoOpsClientError("SGeoOps returned an invalid dispatch response.", {
+        retryable: false,
+      });
+    }
   }
 
   private async signedPost(

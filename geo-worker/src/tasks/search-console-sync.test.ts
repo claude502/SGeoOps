@@ -99,7 +99,7 @@ function ops(overrides: Record<string, unknown> = {}) {
 }
 
 describe("searchConsoleSyncTask", () => {
-  it("registers a bounded external-dispatch task with the daily cron contract and three-attempt budget", async () => {
+  it("registers a bounded payload task with the daily cron contract and three-attempt budget", async () => {
     expect(searchConsoleSyncTask.id).toBe("search-console-sync");
     expect(SEARCH_CONSOLE_DAILY_DISPATCH_CRON).toBe("0 4 * * *");
     expect(SEARCH_CONSOLE_TRIGGER_ENVELOPE_BYTES).toBe(192 * 1024);
@@ -331,6 +331,36 @@ describe("searchConsoleSyncTask", () => {
     expect(client.uploadArtifact).not.toHaveBeenCalled();
     expect(client.ingest).not.toHaveBeenCalled();
     expect(checkpoint.save).not.toHaveBeenCalled();
+  });
+
+  it("disables credentials for a mixed quota and permission 403", async () => {
+    const client = ops();
+    const checkpoint = {
+      load: vi.fn().mockResolvedValue(null),
+      assertCapacity: vi.fn(async () => {}),
+      save: vi.fn(async () => {}),
+    };
+    const fetch = vi.fn().mockResolvedValue(Response.json({
+      error: {
+        code: 403,
+        message: "Mixed denial",
+        errors: [{ reason: "quotaExceeded" }, { reason: "insufficientPermissions" }],
+      },
+    }, { status: 403 }));
+
+    await expect(runSearchConsoleSync(input, {
+      client,
+      checkpoint,
+      execute: (payload, receivedToken) => executeSearchConsole(payload, {
+        client: new SearchConsoleClient({ token: receivedToken, fetch }),
+      }),
+    })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "SEARCH_CONSOLE_AUTHENTICATION_FAILED", retryable: false },
+    });
+
+    expect(client.reportSearchConsoleAuthenticationFailure).toHaveBeenCalledTimes(1);
+    expect(client.ingest).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
   });
 
   it("turns permanent input, client, and auth outcomes into AbortTaskRunError after safe delivery", async () => {

@@ -18,6 +18,7 @@ export const maximumAnalysisArtifactBytes = 64 * 1024 * 1024;
 const supportedMediaTypes = new Set([
   "application/octet-stream",
   "application/json",
+  "application/vnd.sgeo.search-console-pages.v1",
 ]);
 
 type ArtifactRouteContext = {

@@ -285,6 +285,26 @@ describe("Search Console adapter", () => {
     });
   });
 
+  it.each(["byProperty", "byNewsShowcasePanel"])(
+    "rejects page rows aggregated %s while retaining the raw response",
+    async (responseAggregationType) => {
+      const rawBody = JSON.stringify({ responseAggregationType, rows: [] });
+
+      const result = await executeSearchConsole(input, {
+        query: vi.fn().mockResolvedValue(page(rawBody)),
+      });
+
+      expect(decodeArtifact(result.rawReport!)).toEqual([
+        { startRow: 0, rawBytes: new TextEncoder().encode(rawBody) },
+      ]);
+      expect(result.envelope).toMatchObject({
+        status: "failed",
+        observations: [],
+        error: { code: "SEARCH_CONSOLE_INVALID_REPORT", retryable: false },
+      });
+    },
+  );
+
   it("projects a compact envelope under the ingest contract cap instead of silently claiming every top row", async () => {
     const rows = Array.from({ length: 10_000 }, (_, index) => ({
       keys: ["2026-07-01", `query-${index}`, "https://shop.example/shoes", "usa", "MOBILE"],

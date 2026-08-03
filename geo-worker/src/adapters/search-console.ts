@@ -265,7 +265,7 @@ function parsePage(
 ): SearchConsoleParsedPage | null {
   const body = asRecord(value);
   if (body === null) return null;
-  const aggregationTypes = new Set(["auto", "byNewsShowcasePanel", "byPage", "byProperty"]);
+  const aggregationTypes = new Set(["auto", "byPage"]);
   if (
     body.responseAggregationType !== undefined &&
     (typeof body.responseAggregationType !== "string" || !aggregationTypes.has(body.responseAggregationType))

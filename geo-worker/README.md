@@ -11,9 +11,10 @@ does not use a database connection.
 
 ## Search Console dispatch contract
 
-`search-console-sync` is payload-driven. The external control-plane dispatcher
-creates one owned run per enabled Search Console integration on the daily
-`0 4 * * *` contract. The task does not register a global Trigger schedule or
-query the SGeoOps database. Its payload contains the run and integration scope,
-never an OAuth token; the worker obtains that token through the signed internal
-credential endpoint at execution time.
+`search-console-daily-dispatch` registers the daily `0 4 * * *` Trigger schedule.
+It sends the scheduled timestamp to the signed SGeoOps dispatch endpoint, which
+creates or reuses one owned run per enabled Search Console integration for the
+final Pacific data date. The worker validates the returned payloads and starts
+`search-console-sync` with one idempotent batch trigger. Both tasks remain
+database-free. Their payloads contain only run/integration scope; the sync task
+obtains the OAuth token through the signed credential endpoint at execution time.

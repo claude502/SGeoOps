@@ -139,7 +139,7 @@ function googleErrorReasons(body: unknown, status: number) {
   ];
 }
 
-function quotaReason(reasons: readonly string[]) {
+function quotaReasonsOnly(reasons: readonly string[]) {
   const retryableReasons = new Set([
     "quotaexceeded",
     "ratelimitexceeded",
@@ -158,7 +158,9 @@ function quotaReason(reasons: readonly string[]) {
     "rate_limit_exceeded",
     "resource_exhausted",
   ]);
-  return reasons.some((reason) => retryableReasons.has(reason.toLowerCase()));
+  return reasons.length > 0 && reasons.every(
+    (reason) => retryableReasons.has(reason.toLowerCase()),
+  );
 }
 
 function parsedResponseContainsSecret(root: unknown, secret: string) {
@@ -187,14 +189,14 @@ function parsedResponseContainsSecret(root: unknown, secret: string) {
 function providerError(status: number, body: unknown, headers: Headers) {
   const retryAfter = retryAfterSeconds(headers, body);
   const reasons = googleErrorReasons(body, status);
-  if (reasons !== null && (status === 401 || (status === 403 && !quotaReason(reasons)))) {
+  if (status === 401 || (status === 403 && (reasons === null || !quotaReasonsOnly(reasons)))) {
     return new SearchConsoleAuthenticationError(status, retryAfter);
   }
   return new SearchConsoleProviderError("Search Console request failed.", {
     status,
     retryAfterSeconds: retryAfter,
     retryable: status === 429 || status >= 500 ||
-      (status === 403 && reasons !== null && quotaReason(reasons)),
+      (status === 403 && reasons !== null && quotaReasonsOnly(reasons)),
   });
 }
 
@@ -292,6 +294,9 @@ export class SearchConsoleClient {
       }
     } catch (error) {
       if (error instanceof SearchConsoleProviderError) throw error;
+      if (response.status === 401 || response.status === 403) {
+        throw providerError(response.status, null, response.headers);
+      }
       throw new SearchConsoleProviderError("Search Console returned an invalid response.", {
         status: response.status,
         retryable: response.status === 429 || response.status >= 500,

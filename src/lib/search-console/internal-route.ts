@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 
+import { parseSearchConsoleProperty } from "@/lib/search-console/property";
+
 export const maximumSearchConsoleControlBodyBytes = 64 * 1024;
 const maximumIdentifierLength = 200;
-const maximumPropertyLength = 2_048;
 
 export type SearchConsoleControlRequestScope = {
   clientId: string;
@@ -31,39 +32,6 @@ function boundedIdentifier(value: unknown) {
     : null;
 }
 
-function searchConsoleProperty(value: unknown) {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > maximumPropertyLength ||
-    /[\u0000-\u001f\u007f\s]/.test(value)
-  ) {
-    return null;
-  }
-  if (value.startsWith("sc-domain:")) {
-    const domain = value.slice("sc-domain:".length);
-    return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(domain)
-      ? value
-      : null;
-  }
-  try {
-    const parsed = new URL(value);
-    if (
-      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-      parsed.hostname === "" ||
-      parsed.username !== "" ||
-      parsed.password !== "" ||
-      parsed.search !== "" ||
-      parsed.hash !== ""
-    ) {
-      return null;
-    }
-    return parsed.toString() === value ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 export function parseSearchConsoleControlRequestScope(
   value: unknown,
 ): SearchConsoleControlRequestScope | null {
@@ -87,7 +55,7 @@ export function parseSearchConsoleControlRequestScope(
   const brandId = boundedIdentifier(record.brandId);
   const siteId = boundedIdentifier(record.siteId);
   const integrationId = boundedIdentifier(record.integrationId);
-  const property = searchConsoleProperty(record.property);
+  const property = parseSearchConsoleProperty(record.property);
   if (clientId === null || brandId === null || siteId === null || integrationId === null || property === null) {
     return null;
   }

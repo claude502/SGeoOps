@@ -153,6 +153,45 @@ describe("organization schemas", () => {
     ).toBe(false);
   });
 
+  it.each([
+    "sc-domain:shop.example",
+    "https://shop.example/search-console/",
+  ])("accepts strict Search Console property endpoint %s", (endpoint) => {
+    expect(createIntegrationSchema.parse({
+      type: "search_console",
+      endpoint,
+      capabilities: ["search_analytics"],
+      adapterVersion: "1.0.0",
+      secretRef: "file:google/search-console",
+    }).endpoint).toBe(endpoint);
+  });
+
+  it("keeps non-Search Console integration endpoints restricted to HTTP(S)", () => {
+    expect(createIntegrationSchema.safeParse({
+      type: "wordpress",
+      endpoint: "sc-domain:shop.example",
+      capabilities: ["publish"],
+      adapterVersion: "1.0.0",
+    }).success).toBe(false);
+  });
+
+  it.each([
+    "sc-domain:localhost",
+    "sc-domain:-shop.example",
+    "https://user:password@shop.example/",
+    "https://shop.example/?credential=value",
+    "https://shop.example/#credential",
+    "ftp://shop.example/",
+  ])("rejects unsafe Search Console property endpoint %s", (endpoint) => {
+    expect(createIntegrationSchema.safeParse({
+      type: "search_console",
+      endpoint,
+      capabilities: ["search_analytics"],
+      adapterVersion: "1.0.0",
+      secretRef: "file:google/search-console",
+    }).success).toBe(false);
+  });
+
   it.each(["../client", "client/a", "client?a", "client\u0000a"])(
     "rejects unsafe path IDs: %s",
     (id) => {

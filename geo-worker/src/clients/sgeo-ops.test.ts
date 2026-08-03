@@ -295,4 +295,64 @@ describe("SgeoOpsClient", () => {
       signature: headers.get("x-sgeo-signature") ?? "",
     }, "POST", pathname, body)).resolves.toBe(true);
   });
+
+  it("requests and strictly validates no-secret Search Console dispatch payloads", async () => {
+    const runs = [{
+      runId: "run_sc_1",
+      clientId: "client_1",
+      brandId: "brand_1",
+      siteId: "site_1",
+      siteMarketId: null,
+      integrationId: "integration_1",
+      property: "sc-domain:shop.example",
+      startDate: "2026-08-01",
+      endDate: "2026-08-01",
+    }];
+    const fetch = vi.fn().mockResolvedValue(Response.json({ runs }));
+    const client = new SgeoOpsClient({ baseUrl, secret, fetch });
+
+    await expect(client.dispatchSearchConsoleRuns("2026-08-04T07:30:00.000Z"))
+      .resolves.toEqual(runs);
+
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const pathname = "/api/internal/analysis-runs/search-console/dispatch";
+    const body = init.body as string;
+    const headers = requestHeaders(init);
+    expect(url).toBe(`${baseUrl}${pathname}`);
+    expect(JSON.parse(body)).toEqual({ scheduledAt: "2026-08-04T07:30:00.000Z" });
+    await expect(verifyInternalRequest(secret, {
+      timestamp: headers.get("x-sgeo-timestamp") ?? "",
+      signature: headers.get("x-sgeo-signature") ?? "",
+    }, "POST", pathname, body)).resolves.toBe(true);
+    expect(JSON.stringify({ body, runs })).not.toMatch(/secretRef|token|file:/i);
+  });
+
+  it("rejects dispatch payloads containing unexpected credential material", async () => {
+    const returnedToken = "must-not-enter-trigger-payload";
+    const client = new SgeoOpsClient({
+      baseUrl,
+      secret,
+      fetch: vi.fn().mockResolvedValue(Response.json({
+        runs: [{
+          runId: "run_sc_1",
+          clientId: "client_1",
+          brandId: "brand_1",
+          siteId: "site_1",
+          siteMarketId: null,
+          integrationId: "integration_1",
+          property: "sc-domain:shop.example",
+          startDate: "2026-08-01",
+          endDate: "2026-08-01",
+          token: returnedToken,
+        }],
+      })),
+    });
+
+    await expect(client.dispatchSearchConsoleRuns("2026-08-04T07:30:00.000Z"))
+      .rejects.toMatchObject({
+        name: "SgeoOpsClientError",
+        message: expect.not.stringContaining(returnedToken),
+        retryable: false,
+      });
+  });
 });
