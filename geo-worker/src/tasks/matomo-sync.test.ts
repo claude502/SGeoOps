@@ -1,13 +1,19 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 import { analysisEnvelopeSchema, type AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { describe, expect, it, vi } from "vitest";
 
-import { MatomoExecutionError, type MatomoInput } from "../adapters/matomo";
+import {
+  MATOMO_MAX_RAW_BYTES,
+  MatomoExecutionError,
+  type MatomoInput,
+} from "../adapters/matomo";
 import {
   MatomoAuthenticationError,
   MatomoProviderError,
 } from "../clients/matomo";
+import { SgeoOpsClientError } from "../clients/sgeo-ops";
 import type { MatomoDeliveryState } from "./matomo-sync";
 
 const triggerMocks = vi.hoisted(() => ({
@@ -80,6 +86,7 @@ const envelope = analysisEnvelopeSchema.parse({
 });
 const token = "matomo-token-never-persist";
 const rawReport = new TextEncoder().encode("SGEO-MATOMO-REPORTS-V1\n");
+const rawChecksum = `sha256:${createHash("sha256").update(rawReport).digest("hex")}`;
 
 function ops(overrides: Record<string, unknown> = {}) {
   return {
@@ -90,10 +97,11 @@ function ops(overrides: Record<string, unknown> = {}) {
     }),
     uploadArtifact: vi.fn().mockResolvedValue({
       uri: `artifact://${input.runId}/matomo-reports-v1.bin`,
-      checksum: `sha256:${"a".repeat(64)}`,
+      checksum: rawChecksum,
       mediaType: "application/vnd.sgeo.matomo-reports.v1",
       byteSize: rawReport.byteLength,
     }),
+    reconcileArtifact: vi.fn().mockResolvedValue(false),
     ingest: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -129,7 +137,7 @@ describe("Matomo sync task", () => {
     expect(client.getMatomoCredential).not.toHaveBeenCalled();
   });
 
-  it("uploads the artifact before checkpoint and ingest without persisting token or raw bytes", async () => {
+  it("persists a raw-free artifact-pending checkpoint before upload and ingest", async () => {
     const order: string[] = [];
     const saved: unknown[] = [];
     const client = ops({
@@ -141,7 +149,7 @@ describe("Matomo sync task", () => {
         order.push("upload");
         return {
           uri: `artifact://${input.runId}/matomo-reports-v1.bin`,
-          checksum: `sha256:${"b".repeat(64)}`,
+          checksum: rawChecksum,
           mediaType: "application/vnd.sgeo.matomo-reports.v1",
           byteSize: rawReport.byteLength,
         };
@@ -168,7 +176,27 @@ describe("Matomo sync task", () => {
       execute,
     });
 
-    expect(order).toEqual(["credential", "execute", "capacity", "upload", "checkpoint", "ingest"]);
+    expect(order).toEqual([
+      "credential",
+      "execute",
+      "capacity",
+      "checkpoint",
+      "upload",
+      "capacity",
+      "checkpoint",
+      "ingest",
+    ]);
+    expect(saved[0]).toMatchObject({
+      stage: "artifact-pending",
+      envelope: {
+        rawArtifact: {
+          uri: `artifact://${input.runId}/matomo-reports-v1.bin`,
+          checksum: rawChecksum,
+          mediaType: "application/vnd.sgeo.matomo-reports.v1",
+          byteSize: rawReport.byteLength,
+        },
+      },
+    });
     expect(client.getMatomoCredential).toHaveBeenCalledWith(input.runId, {
       clientId: input.clientId,
       brandId: input.brandId,
@@ -203,6 +231,78 @@ describe("Matomo sync task", () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(client.uploadArtifact).toHaveBeenCalledTimes(1);
     expect(ingest).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers a post-upload checkpoint failure from the durable artifact without refetching", async () => {
+    let saved: MatomoDeliveryState | null = null;
+    let failReadyCheckpoint = true;
+    const checkpoint = {
+      load: vi.fn(async () => saved),
+      assertCapacity: vi.fn(async () => {}),
+      save: vi.fn(async (state: MatomoDeliveryState) => {
+        if (state.stage === "ready" && failReadyCheckpoint) {
+          failReadyCheckpoint = false;
+          throw new Error("checkpoint unavailable");
+        }
+        saved = state;
+      }),
+    };
+    const client = ops({ reconcileArtifact: vi.fn().mockResolvedValue(true) });
+    const execute = vi.fn().mockResolvedValue({ envelope, rawReport });
+    const dependencies = { client, checkpoint, execute };
+
+    await expect(runMatomoSync(input, dependencies)).rejects.toThrow("checkpoint unavailable");
+    expect(saved).toMatchObject({ stage: "artifact-pending" });
+    await expect(runMatomoSync(input, dependencies)).resolves.toMatchObject({
+      runId: input.runId,
+    });
+
+    expect(client.getMatomoCredential).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(client.uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(client.reconcileArtifact).toHaveBeenCalledWith(
+      input.runId,
+      "matomo-reports-v1.bin",
+      expect.objectContaining({ checksum: rawChecksum }),
+    );
+    expect(client.ingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ingest a missing artifact when upload fails before durable publication", async () => {
+    let saved: MatomoDeliveryState | null = null;
+    const uploadFailure = new SgeoOpsClientError("artifact store unavailable", {
+      retryable: true,
+      status: 503,
+    });
+    const checkpoint = {
+      load: vi.fn(async () => saved),
+      assertCapacity: vi.fn(async () => {}),
+      save: vi.fn(async (state: MatomoDeliveryState) => { saved = state; }),
+    };
+    const client = ops({
+      uploadArtifact: vi.fn()
+        .mockRejectedValueOnce(uploadFailure)
+        .mockResolvedValue({
+          uri: `artifact://${input.runId}/matomo-reports-v1.bin`,
+          checksum: rawChecksum,
+          mediaType: "application/vnd.sgeo.matomo-reports.v1",
+          byteSize: rawReport.byteLength,
+        }),
+      reconcileArtifact: vi.fn().mockResolvedValue(false),
+    });
+    const execute = vi.fn().mockResolvedValue({ envelope, rawReport });
+    const dependencies = { client, checkpoint, execute };
+
+    await expect(runMatomoSync(input, dependencies)).rejects.toBe(uploadFailure);
+    expect(saved).toMatchObject({ stage: "artifact-pending" });
+    expect(client.ingest).not.toHaveBeenCalled();
+
+    await expect(runMatomoSync(input, dependencies)).resolves.toMatchObject({
+      runId: input.runId,
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(client.uploadArtifact).toHaveBeenCalledTimes(2);
+    expect(client.ingest).toHaveBeenCalledTimes(1);
   });
 
   it("checkpoints authentication failure before disabling exactly its owned integration", async () => {
@@ -326,5 +426,34 @@ describe("Matomo sync task", () => {
       execute: vi.fn().mockResolvedValue({ envelope, rawReport }),
     })).rejects.toMatchObject({ name: "AbortTaskRunError" });
     expect(client.uploadArtifact).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized artifact-pending Trigger metadata before reconciliation", async () => {
+    const metadataApi = {
+      current: vi.fn(() => ({
+        matomoDeliveryCheckpoint: {
+          version: 1,
+          state: {
+            stage: "artifact-pending",
+            envelope: {
+              ...envelope,
+              rawArtifact: {
+                uri: `artifact://${input.runId}/matomo-reports-v1.bin`,
+                checksum: rawChecksum,
+                mediaType: "application/vnd.sgeo.matomo-reports.v1",
+                byteSize: MATOMO_MAX_RAW_BYTES + 1,
+              },
+            },
+          },
+        },
+      })),
+      set: vi.fn(),
+    };
+    const checkpoint = createTriggerMetadataCheckpoint(metadataApi);
+
+    await expect(checkpoint.load(input)).rejects.toMatchObject({
+      name: "MatomoTaskConfigurationError",
+    });
+    expect(metadataApi.set).not.toHaveBeenCalled();
   });
 });

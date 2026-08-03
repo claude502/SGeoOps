@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 import { analysisEnvelopeSchema, type AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { AbortTaskRunError, logger, metadata, task } from "@trigger.dev/sdk";
@@ -7,6 +8,7 @@ import {
   executeMatomo,
   MATOMO_ARTIFACT_MEDIA_TYPE,
   MATOMO_ARTIFACT_NAME,
+  MATOMO_MAX_RAW_BYTES,
   MatomoExecutionError,
   MatomoInputError,
   parseMatomoInput,
@@ -33,11 +35,12 @@ type MatomoOpsClient = Pick<
   | "getMatomoCredential"
   | "reportMatomoAuthenticationFailure"
   | "uploadArtifact"
+  | "reconcileArtifact"
   | "ingest"
 >;
 
 export type MatomoDeliveryState = {
-  stage: "auth-failure-pending" | "ready";
+  stage: "artifact-pending" | "auth-failure-pending" | "ready";
   envelope: AnalysisEnvelope;
 };
 
@@ -131,7 +134,11 @@ function validateCheckpointState(
   const record = value as Record<string, unknown>;
   if (
     Object.keys(record).sort().join("\u0000") !== "envelope\u0000stage" ||
-    (record.stage !== "auth-failure-pending" && record.stage !== "ready")
+    (
+      record.stage !== "artifact-pending" &&
+      record.stage !== "auth-failure-pending" &&
+      record.stage !== "ready"
+    )
   ) {
     throw new MatomoTaskConfigurationError("Matomo delivery checkpoint is invalid.");
   }
@@ -158,6 +165,17 @@ function validateCheckpointState(
     envelope.data.error?.code !== "MATOMO_AUTHENTICATION_FAILED"
   ) {
     throw new MatomoTaskConfigurationError("Matomo authentication checkpoint is invalid.");
+  }
+  if (
+    record.stage === "artifact-pending" &&
+    (
+      envelope.data.rawArtifact === null ||
+      envelope.data.rawArtifact.uri !== `artifact://${envelope.data.runId}/${MATOMO_ARTIFACT_NAME}` ||
+      envelope.data.rawArtifact.mediaType !== MATOMO_ARTIFACT_MEDIA_TYPE ||
+      envelope.data.rawArtifact.byteSize > MATOMO_MAX_RAW_BYTES
+    )
+  ) {
+    throw new MatomoTaskConfigurationError("Matomo artifact checkpoint is invalid.");
   }
   return { stage: record.stage, envelope: envelope.data };
 }
@@ -273,6 +291,54 @@ async function saveReadyEnvelope(
   return state;
 }
 
+function sameArtifact(
+  left: NonNullable<AnalysisEnvelope["rawArtifact"]>,
+  right: NonNullable<AnalysisEnvelope["rawArtifact"]>,
+) {
+  return left.uri === right.uri &&
+    left.checksum === right.checksum &&
+    left.mediaType === right.mediaType &&
+    left.byteSize === right.byteSize;
+}
+
+function artifactPendingEnvelope(input: MatomoInput, execution: MatomoExecution) {
+  return analysisEnvelopeSchema.parse({
+    ...execution.envelope,
+    rawArtifact: {
+      uri: `artifact://${input.runId}/${MATOMO_ARTIFACT_NAME}`,
+      checksum: `sha256:${createHash("sha256").update(execution.rawReport).digest("hex")}`,
+      mediaType: MATOMO_ARTIFACT_MEDIA_TYPE,
+      byteSize: execution.rawReport.byteLength,
+    },
+  });
+}
+
+async function finalizeArtifactPending(
+  client: MatomoOpsClient,
+  checkpoint: MatomoCheckpoint,
+  envelope: AnalysisEnvelope,
+) {
+  await saveReadyEnvelope(checkpoint, envelope);
+  await client.ingest(envelope);
+  return envelope;
+}
+
+async function reconcileArtifactPending(
+  input: MatomoInput,
+  client: MatomoOpsClient,
+  checkpoint: MatomoCheckpoint,
+  envelope: AnalysisEnvelope,
+) {
+  const expected = envelope.rawArtifact;
+  if (expected === null) {
+    throw new MatomoTaskConfigurationError("Matomo artifact checkpoint is invalid.");
+  }
+  if (!await client.reconcileArtifact(input.runId, MATOMO_ARTIFACT_NAME, expected)) {
+    return null;
+  }
+  return finalizeArtifactPending(client, checkpoint, envelope);
+}
+
 async function deliverProviderFailure(
   input: MatomoInput,
   client: MatomoOpsClient,
@@ -305,8 +371,18 @@ export async function runMatomoSync(
       await client.reportMatomoAuthenticationFailure(input.runId, scope);
       await checkpoint.save({ stage: "ready", envelope: saved.envelope });
     }
-    await client.ingest(saved.envelope);
-    return saved.envelope;
+    if (saved.stage === "artifact-pending") {
+      const finalized = await reconcileArtifactPending(
+        input,
+        client,
+        checkpoint,
+        saved.envelope,
+      );
+      if (finalized !== null) return finalized;
+    } else {
+      await client.ingest(saved.envelope);
+      return saved.envelope;
+    }
   }
 
   const { token } = await client.getMatomoCredential(input.runId, scope);
@@ -353,26 +429,29 @@ export async function runMatomoSync(
     throw error;
   }
 
-  const capacityCandidate = analysisEnvelopeSchema.parse({
-    ...execution.envelope,
-    rawArtifact: {
-      uri: `artifact://${input.runId}/${MATOMO_ARTIFACT_NAME}`,
-      checksum: `sha256:${"0".repeat(64)}`,
-      mediaType: MATOMO_ARTIFACT_MEDIA_TYPE,
-      byteSize: execution.rawReport.byteLength,
-    },
-  });
-  await checkpoint.assertCapacity({ stage: "ready", envelope: capacityCandidate });
-  const rawArtifact = await client.uploadArtifact(
-    input.runId,
-    MATOMO_ARTIFACT_NAME,
-    execution.rawReport,
-    MATOMO_ARTIFACT_MEDIA_TYPE,
-  );
-  const envelope = analysisEnvelopeSchema.parse({ ...execution.envelope, rawArtifact });
-  await checkpoint.save({ stage: "ready", envelope });
-  await client.ingest(envelope);
-  return envelope;
+  const envelope = artifactPendingEnvelope(input, execution);
+  const pending: MatomoDeliveryState = { stage: "artifact-pending", envelope };
+  await checkpoint.assertCapacity(pending);
+  await checkpoint.save(pending);
+  try {
+    const uploaded = await client.uploadArtifact(
+      input.runId,
+      MATOMO_ARTIFACT_NAME,
+      execution.rawReport,
+      MATOMO_ARTIFACT_MEDIA_TYPE,
+    );
+    if (!sameArtifact(uploaded, envelope.rawArtifact!)) {
+      throw new SgeoOpsClientError(
+        "SGeoOps returned artifact metadata that does not match the durable checkpoint.",
+        { retryable: false },
+      );
+    }
+  } catch (error) {
+    const finalized = await reconcileArtifactPending(input, client, checkpoint, envelope);
+    if (finalized !== null) return finalized;
+    throw error;
+  }
+  return finalizeArtifactPending(client, checkpoint, envelope);
 }
 
 export async function runMatomoSyncTask(

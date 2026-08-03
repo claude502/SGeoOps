@@ -96,11 +96,30 @@ function parseArtifactMetadata(value: unknown): ArtifactMetadata {
   };
 }
 
+function artifactUri(runId: string, name: string) {
+  if (
+    typeof runId !== "string" ||
+    runId.length === 0 ||
+    runId.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId) ||
+    typeof name !== "string" ||
+    name.length === 0 ||
+    name.length > 255 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+  ) {
+    throw new SgeoOpsClientError("Artifact identity is invalid.", {
+      retryable: false,
+    });
+  }
+  return `artifact://${runId}/${name}`;
+}
+
 function validateUploadedArtifact(
   metadata: ArtifactMetadata,
-  expected: Omit<ArtifactMetadata, "uri">,
+  expected: ArtifactMetadata,
 ): ArtifactMetadata {
   if (
+    metadata.uri !== expected.uri ||
     metadata.checksum !== expected.checksum ||
     metadata.mediaType !== expected.mediaType ||
     metadata.byteSize !== expected.byteSize
@@ -205,6 +224,12 @@ export class SgeoOpsClient {
   ): Promise<ArtifactMetadata> {
     const pathname = `/api/internal/analysis-runs/${encodeURIComponent(runId)}/artifacts`;
     const checksum = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    const expected: ArtifactMetadata = {
+      uri: artifactUri(runId, name),
+      checksum,
+      mediaType,
+      byteSize: body.byteLength,
+    };
     const response = await this.signedPost(pathname, body, {
       "content-type": mediaType,
       "x-sgeo-artifact-name": name,
@@ -221,11 +246,30 @@ export class SgeoOpsClient {
       );
     }
 
-    return validateUploadedArtifact(parseArtifactMetadata(payload), {
-      checksum,
-      mediaType,
-      byteSize: body.byteLength,
+    return validateUploadedArtifact(parseArtifactMetadata(payload), expected);
+  }
+
+  async reconcileArtifact(
+    runId: string,
+    name: string,
+    expected: ArtifactMetadata,
+  ): Promise<boolean> {
+    const expectedUri = artifactUri(runId, name);
+    const validated = validateUploadedArtifact(parseArtifactMetadata(expected), {
+      ...expected,
+      uri: expectedUri,
     });
+    const pathname = `/api/internal/analysis-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(name)}/reconcile`;
+    const response = await this.signedPost(pathname, JSON.stringify({ artifact: validated }), {
+      "content-type": "application/json",
+    });
+    const payload = exactRecord(await boundedJsonResponse(response), ["exists"]);
+    if (payload === null || typeof payload.exists !== "boolean") {
+      throw new SgeoOpsClientError("SGeoOps returned an invalid artifact reconciliation response.", {
+        retryable: false,
+      });
+    }
+    return payload.exists;
   }
 
   async getSearchConsoleCredential(

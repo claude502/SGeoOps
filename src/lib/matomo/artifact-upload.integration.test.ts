@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ArtifactStore } from "@/lib/artifacts/store";
 import { createAnalysisArtifactRoute } from "../../app/api/internal/analysis-runs/[id]/artifacts/route";
+import { createAnalysisArtifactReconcileRoute } from "../../app/api/internal/analysis-runs/[id]/artifacts/[name]/reconcile/route";
 import { SgeoOpsClient } from "../../../geo-worker/src/clients/sgeo-ops";
 
 const secret = "matomo-artifact-chain-secret";
@@ -22,8 +23,14 @@ function routeBackedClient() {
     get: vi.fn(),
   } satisfies ArtifactStore;
   const post = createAnalysisArtifactRoute(() => artifacts);
+  const reconcile = createAnalysisArtifactReconcileRoute(() => artifacts);
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(String(input), init);
+    if (new URL(request.url).pathname.endsWith("/reconcile")) {
+      return reconcile(request, {
+        params: Promise.resolve({ id: runId, name: "matomo-reports-v1.bin" }),
+      });
+    }
     return post(request, { params: Promise.resolve({ id: runId }) });
   });
   return {
@@ -74,5 +81,21 @@ describe("Matomo artifact upload chain", () => {
       "application/vnd.sgeo.unsupported",
     )).rejects.toMatchObject({ name: "SgeoOpsClientError", retryable: false });
     expect(artifacts.beginUpload).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a committed Matomo report through the signed control route", async () => {
+    const bytes = new TextEncoder().encode("SGEO-MATOMO-REPORTS-V1\n");
+    const { artifacts, client } = routeBackedClient();
+    const artifact = {
+      uri: `artifact://${runId}/matomo-reports-v1.bin`,
+      checksum: `sha256:${"a".repeat(64)}`,
+      mediaType,
+      byteSize: bytes.byteLength,
+    };
+    artifacts.getMetadata.mockResolvedValue(artifact);
+
+    await expect(client.reconcileArtifact(runId, "matomo-reports-v1.bin", artifact))
+      .resolves.toBe(true);
+    expect(artifacts.getMetadata).toHaveBeenCalledWith(artifact.uri);
   });
 });

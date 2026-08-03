@@ -174,6 +174,49 @@ describe("SgeoOpsClient", () => {
     });
   });
 
+  it("rejects an artifact response whose URI is outside the requested run and name", async () => {
+    const body = new TextEncoder().encode("artifact");
+    const checksum = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    const client = new SgeoOpsClient({
+      baseUrl,
+      secret,
+      fetch: vi.fn().mockResolvedValue(Response.json({
+        uri: "artifact://other-run/report.json",
+        checksum,
+        mediaType: "application/json",
+        byteSize: body.byteLength,
+      })),
+    });
+
+    await expect(client.uploadArtifact("run_1", "report.json", body, "application/json"))
+      .rejects.toMatchObject({ name: "SgeoOpsClientError", retryable: false });
+  });
+
+  it("reconciles a deterministic artifact through a signed exact-metadata control route", async () => {
+    const artifact = {
+      uri: "artifact://run_1/matomo-reports-v1.bin",
+      checksum: `sha256:${"a".repeat(64)}`,
+      mediaType: "application/vnd.sgeo.matomo-reports.v1",
+      byteSize: 23,
+    };
+    const fetch = vi.fn().mockResolvedValue(Response.json({ exists: true }));
+    const client = new SgeoOpsClient({ baseUrl, secret, fetch });
+
+    await expect(client.reconcileArtifact("run_1", "matomo-reports-v1.bin", artifact))
+      .resolves.toBe(true);
+
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const pathname = "/api/internal/analysis-runs/run_1/artifacts/matomo-reports-v1.bin/reconcile";
+    const body = init.body as string;
+    const headers = requestHeaders(init);
+    expect(url).toBe(`${baseUrl}${pathname}`);
+    expect(JSON.parse(body)).toEqual({ artifact });
+    await expect(verifyInternalRequest(secret, {
+      timestamp: headers.get("x-sgeo-timestamp") ?? "",
+      signature: headers.get("x-sgeo-signature") ?? "",
+    }, "POST", pathname, body)).resolves.toBe(true);
+  });
+
   it.each([
     [429, true],
     [503, true],
