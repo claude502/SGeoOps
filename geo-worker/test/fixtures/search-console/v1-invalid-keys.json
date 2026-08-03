@@ -1,0 +1,11 @@
+{
+  "rows": [
+    {
+      "keys": ["2026-07-01", "red shoes", "https://shop.example/shoes", "usa"],
+      "clicks": 12,
+      "impressions": 120,
+      "ctr": 0.1,
+      "position": 3.4
+    }
+  ]
+}

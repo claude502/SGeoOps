@@ -32,6 +32,15 @@ function requestHeaders(init: RequestInit) {
 }
 
 describe("SgeoOpsClient", () => {
+  const searchConsoleScope = {
+    clientId: "client_1",
+    brandId: "brand_1",
+    siteId: "site_1",
+    siteMarketId: null,
+    integrationId: "integration_1",
+    property: "sc-domain:shop.example",
+  };
+
   it("serializes a validated envelope once before signing and sending it", async () => {
     const expectedBody = JSON.stringify(envelope);
     const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
@@ -181,5 +190,63 @@ describe("SgeoOpsClient", () => {
       name: "SgeoOpsClientError",
       retryable: true,
     });
+  });
+
+  it("obtains a Search Console credential through the signed owned-run contract", async () => {
+    const token = "google-token-never-persist";
+    const fetch = vi.fn().mockResolvedValue(Response.json({ token }));
+    const client = new SgeoOpsClient({ baseUrl, secret, fetch });
+
+    await expect(client.getSearchConsoleCredential("run_1", searchConsoleScope))
+      .resolves.toEqual({ token });
+
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const pathname = "/api/internal/analysis-runs/run_1/search-console/credential";
+    const body = init.body as string;
+    const headers = requestHeaders(init);
+    expect(url).toBe(`${baseUrl}${pathname}`);
+    expect(JSON.parse(body)).toEqual(searchConsoleScope);
+    await expect(verifyInternalRequest(secret, {
+      timestamp: headers.get("x-sgeo-timestamp") ?? "",
+      signature: headers.get("x-sgeo-signature") ?? "",
+    }, "POST", pathname, body)).resolves.toBe(true);
+    expect(JSON.stringify({ url, body, headers: Object.fromEntries(headers) })).not.toContain(token);
+  });
+
+  it("rejects malformed credential responses without exposing returned content", async () => {
+    const token = "returned-secret-value";
+    const client = new SgeoOpsClient({
+      baseUrl,
+      secret,
+      fetch: vi.fn().mockResolvedValue(Response.json({ token, unexpected: true })),
+    });
+
+    await expect(client.getSearchConsoleCredential("run_1", searchConsoleScope))
+      .rejects.toMatchObject({
+        name: "SgeoOpsClientError",
+        message: expect.not.stringContaining(token),
+        retryable: false,
+      });
+  });
+
+  it("reports Search Console authentication failure through a signed idempotent contract", async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({
+      disabled: true,
+      recommendationId: "sc-auth-deterministic",
+    }, { status: 202 }));
+    const client = new SgeoOpsClient({ baseUrl, secret, fetch });
+
+    await expect(client.reportSearchConsoleAuthenticationFailure("run_1", searchConsoleScope))
+      .resolves.toEqual({ disabled: true, recommendationId: "sc-auth-deterministic" });
+
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const pathname = "/api/internal/analysis-runs/run_1/search-console/auth-failure";
+    const body = init.body as string;
+    const headers = requestHeaders(init);
+    expect(url).toBe(`${baseUrl}${pathname}`);
+    await expect(verifyInternalRequest(secret, {
+      timestamp: headers.get("x-sgeo-timestamp") ?? "",
+      signature: headers.get("x-sgeo-signature") ?? "",
+    }, "POST", pathname, body)).resolves.toBe(true);
   });
 });

@@ -13,6 +13,17 @@ type SgeoOpsFetch = (
 
 type ArtifactMetadata = NonNullable<AnalysisEnvelope["rawArtifact"]>;
 
+export type SearchConsoleControlScope = {
+  clientId: string;
+  brandId: string;
+  siteId: string;
+  siteMarketId: string | null;
+  integrationId: string;
+  property: string;
+};
+
+const MAX_CONTROL_RESPONSE_BYTES = 64 * 1024;
+
 export class SgeoOpsClientError extends Error {
   readonly retryable: boolean;
   readonly status?: number;
@@ -94,6 +105,37 @@ function requestError(status: number) {
   );
 }
 
+function exactRecord(value: unknown, keys: readonly string[]) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).sort().join("\u0000") === [...keys].sort().join("\u0000")
+    ? record
+    : null;
+}
+
+async function boundedJsonResponse(response: Response) {
+  let raw: string;
+  try {
+    raw = await response.text();
+  } catch {
+    throw new SgeoOpsClientError("SGeoOps returned an invalid control response.", {
+      retryable: false,
+    });
+  }
+  if (Buffer.byteLength(raw, "utf8") > MAX_CONTROL_RESPONSE_BYTES) {
+    throw new SgeoOpsClientError("SGeoOps returned an invalid control response.", {
+      retryable: false,
+    });
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new SgeoOpsClientError("SGeoOps returned an invalid control response.", {
+      retryable: false,
+    });
+  }
+}
+
 export class SgeoOpsClient {
   private readonly baseUrl: string;
   private readonly fetch: SgeoOpsFetch;
@@ -141,6 +183,54 @@ export class SgeoOpsClient {
       mediaType,
       byteSize: body.byteLength,
     });
+  }
+
+  async getSearchConsoleCredential(
+    runId: string,
+    scope: SearchConsoleControlScope,
+  ): Promise<{ token: string }> {
+    const pathname = `/api/internal/analysis-runs/${encodeURIComponent(runId)}/search-console/credential`;
+    const body = JSON.stringify(scope);
+    const response = await this.signedPost(pathname, body, {
+      "content-type": "application/json",
+    });
+    const payload = exactRecord(await boundedJsonResponse(response), ["token"]);
+    const token = payload?.token;
+    if (
+      typeof token !== "string" ||
+      token.length === 0 ||
+      Buffer.byteLength(token, "utf8") > MAX_CONTROL_RESPONSE_BYTES ||
+      /[\u0000-\u001f\u007f]/.test(token)
+    ) {
+      throw new SgeoOpsClientError("SGeoOps returned an invalid credential response.", {
+        retryable: false,
+      });
+    }
+    return { token };
+  }
+
+  async reportSearchConsoleAuthenticationFailure(
+    runId: string,
+    scope: SearchConsoleControlScope,
+  ): Promise<{ disabled: true; recommendationId: string }> {
+    const pathname = `/api/internal/analysis-runs/${encodeURIComponent(runId)}/search-console/auth-failure`;
+    const body = JSON.stringify(scope);
+    const response = await this.signedPost(pathname, body, {
+      "content-type": "application/json",
+    });
+    const payload = exactRecord(await boundedJsonResponse(response), ["disabled", "recommendationId"]);
+    if (
+      payload?.disabled !== true ||
+      typeof payload.recommendationId !== "string" ||
+      payload.recommendationId.length === 0 ||
+      payload.recommendationId.length > 200 ||
+      /[\u0000-\u001f\u007f]/.test(payload.recommendationId)
+    ) {
+      throw new SgeoOpsClientError("SGeoOps returned an invalid authentication-failure response.", {
+        retryable: false,
+      });
+    }
+    return { disabled: true, recommendationId: payload.recommendationId };
   }
 
   private async signedPost(

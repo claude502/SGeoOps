@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 503,
+    "message": "Backend Error",
+    "errors": [{ "reason": "backendError" }]
+  }
+}

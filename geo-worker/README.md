@@ -8,3 +8,12 @@ redirect, and related-domain egress risk, but they are not a network policy.
 Production deployment must also enforce outbound network controls that permit only
 approved public crawl destinations and the SGeoOps internal endpoint. The worker
 does not use a database connection.
+
+## Search Console dispatch contract
+
+`search-console-sync` is payload-driven. The external control-plane dispatcher
+creates one owned run per enabled Search Console integration on the daily
+`0 4 * * *` contract. The task does not register a global Trigger schedule or
+query the SGeoOps database. Its payload contains the run and integration scope,
+never an OAuth token; the worker obtains that token through the signed internal
+credential endpoint at execution time.

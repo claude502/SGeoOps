@@ -289,6 +289,8 @@ GEO Ops 资产和 GEOFlow task/article 的映射。
 - 除 `/api/healthz`、Better Auth 路由和 signed worker contract 外，内部 API 必须有有效 Better Auth 会话。
 - 用户发起的 API 根据 session membership 建立 client scope；跨 client 或越权角色返回 `403`，未登录返回 `401`。
 - `/api/internal/content-generate` 是 signed worker-to-platform contract，使用 `/run/secrets/sgeo_internal_secret`，不使用用户会话；`geo-worker` 不持有 `DATABASE_URL`。
+- `POST /api/internal/analysis-runs/:runId/search-console/credential` 只在签名、body 和完整 run/client/brand/site/integration/property scope 同时匹配时，通过 `Integration.secretRef` 与 `FileSecretResolver` 返回访问 token；响应禁止缓存，禁用、缺失 secret 和跨 scope 统一为非枚举失败。
+- `POST /api/internal/analysis-runs/:runId/search-console/auth-failure` 在同一 owned scope 内以事务禁用唯一的 `type=search_console` Integration，并用确定性 ID 幂等 upsert 当前 AnalysisRun 的 operator Recommendation。两个 Search Console contract 都不记录 token，worker payload、Trigger metadata 和 raw artifact 也不得包含 token。
 
 ### 8.3 健康检查
 

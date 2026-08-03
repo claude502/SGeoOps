@@ -1,0 +1,12 @@
+{
+  "responseAggregationType": "byPage",
+  "rows": [
+    {
+      "keys": ["2026-07-02", "green shoes", "https://shop.example/green", "usa", "DESKTOP"],
+      "clicks": 3,
+      "impressions": 30,
+      "ctr": 0.1,
+      "position": 6.5
+    }
+  ]
+}
