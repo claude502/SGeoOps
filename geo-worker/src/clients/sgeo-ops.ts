@@ -114,25 +114,49 @@ function exactRecord(value: unknown, keys: readonly string[]) {
 }
 
 async function boundedJsonResponse(response: Response) {
-  let raw: string;
-  try {
-    raw = await response.text();
-  } catch {
-    throw new SgeoOpsClientError("SGeoOps returned an invalid control response.", {
-      retryable: false,
-    });
+  const invalidResponse = () => new SgeoOpsClientError(
+    "SGeoOps returned an invalid control response.",
+    { retryable: false },
+  );
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_CONTROL_RESPONSE_BYTES)) {
+    await response.body?.cancel().catch(() => undefined);
+    throw invalidResponse();
   }
-  if (Buffer.byteLength(raw, "utf8") > MAX_CONTROL_RESPONSE_BYTES) {
-    throw new SgeoOpsClientError("SGeoOps returned an invalid control response.", {
-      retryable: false,
-    });
-  }
+
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw invalidResponse();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let complete = false;
   try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array) || value.byteLength > MAX_CONTROL_RESPONSE_BYTES - size) {
+        throw invalidResponse();
+      }
+      chunks.push(value);
+      size += value.byteLength;
+    }
+    complete = true;
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return JSON.parse(raw) as unknown;
   } catch {
-    throw new SgeoOpsClientError("SGeoOps returned an invalid control response.", {
-      retryable: false,
-    });
+    throw invalidResponse();
+  } finally {
+    if (!complete) await reader.cancel().catch(() => undefined);
+    try {
+      reader.releaseLock();
+    } catch {
+      // Preserve the bounded control-response error.
+    }
   }
 }
 

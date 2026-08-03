@@ -229,6 +229,52 @@ describe("SgeoOpsClient", () => {
       });
   });
 
+  it("cancels an oversized declared control response before reading its body", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"token":"unused"}'));
+        controller.close();
+      },
+      cancel,
+    });
+    const client = new SgeoOpsClient({
+      baseUrl,
+      secret,
+      fetch: vi.fn().mockResolvedValue(new Response(body, {
+        status: 200,
+        headers: { "content-length": String(64 * 1024 + 1) },
+      })),
+    });
+
+    await expect(client.getSearchConsoleCredential("run_1", searchConsoleScope))
+      .rejects.toMatchObject({ name: "SgeoOpsClientError", retryable: false });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a chunked control response as soon as its streamed bytes exceed 64 KiB", async () => {
+    const cancel = vi.fn();
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(40 * 1024));
+        if (pulls === 10) controller.close();
+      },
+      cancel,
+    });
+    const client = new SgeoOpsClient({
+      baseUrl,
+      secret,
+      fetch: vi.fn().mockResolvedValue(new Response(body, { status: 200 })),
+    });
+
+    await expect(client.getSearchConsoleCredential("run_1", searchConsoleScope))
+      .rejects.toMatchObject({ name: "SgeoOpsClientError", retryable: false });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(pulls).toBeLessThan(10);
+  });
+
   it("reports Search Console authentication failure through a signed idempotent contract", async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json({
       disabled: true,

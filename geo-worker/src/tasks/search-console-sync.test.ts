@@ -2,10 +2,14 @@ import type { AnalysisEnvelope } from "@sgeo/analysis-contract";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 
-import type { SearchConsoleInput } from "../adapters/search-console";
+import {
+  executeSearchConsole,
+  type SearchConsoleInput,
+} from "../adapters/search-console";
 import type { SearchConsoleDeliveryState } from "./search-console-sync";
 import {
   SearchConsoleAuthenticationError,
+  SearchConsoleClient,
   SearchConsoleProviderError,
 } from "../clients/search-console";
 
@@ -84,9 +88,9 @@ function ops(overrides: Record<string, unknown> = {}) {
       recommendationId: "sc-auth-deterministic",
     }),
     uploadArtifact: vi.fn().mockResolvedValue({
-      uri: `artifact://${input.runId}/search-console-pages-v1.json`,
+      uri: `artifact://${input.runId}/search-console-pages-v1.bin`,
       checksum: `sha256:${"a".repeat(64)}`,
-      mediaType: "application/json",
+      mediaType: "application/vnd.sgeo.search-console-pages.v1",
       byteSize: rawReport.byteLength,
     }),
     ingest: vi.fn().mockResolvedValue(undefined),
@@ -121,15 +125,15 @@ describe("searchConsoleSyncTask", () => {
       uploadArtifact: vi.fn(async () => {
         order.push("upload");
         return {
-          uri: `artifact://${input.runId}/search-console-pages-v1.json`,
+          uri: `artifact://${input.runId}/search-console-pages-v1.bin`,
           checksum: `sha256:${"b".repeat(64)}`,
-          mediaType: "application/json",
+          mediaType: "application/vnd.sgeo.search-console-pages.v1",
           byteSize: rawReport.byteLength,
         };
       }),
       ingest: vi.fn(async (received: AnalysisEnvelope) => {
         order.push("ingest");
-        expect(received.rawArtifact?.uri).toContain("search-console-pages-v1.json");
+        expect(received.rawArtifact?.uri).toContain("search-console-pages-v1.bin");
       }),
     });
     const saved: unknown[] = [];
@@ -161,9 +165,9 @@ describe("searchConsoleSyncTask", () => {
     expect(JSON.stringify(saved)).not.toContain(token);
     expect(client.uploadArtifact).toHaveBeenCalledWith(
       input.runId,
-      "search-console-pages-v1.json",
+      "search-console-pages-v1.bin",
       rawReport,
-      "application/json",
+      "application/vnd.sgeo.search-console-pages.v1",
     );
   });
 
@@ -286,6 +290,43 @@ describe("searchConsoleSyncTask", () => {
       "Search Console request will be retried.",
       expect.objectContaining({ retryAfterSeconds: 17, status: 429 }),
     );
+    expect(client.reportSearchConsoleAuthenticationFailure).not.toHaveBeenCalled();
+    expect(client.uploadArtifact).not.toHaveBeenCalled();
+    expect(client.ingest).not.toHaveBeenCalled();
+    expect(checkpoint.save).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "rateLimitExceededUnreg",
+    "userRateLimitExceededUnreg",
+    "servingLimitExceeded",
+    "concurrentLimitExceeded",
+    "limitExceeded",
+    "variableTermExpiredDailyExceeded",
+    "variableTermLimitExceeded",
+  ])("retries documented Google 403 reason %s without disabling the integration", async (reason) => {
+    const client = ops();
+    const checkpoint = {
+      load: vi.fn().mockResolvedValue(null),
+      assertCapacity: vi.fn(),
+      save: vi.fn(),
+    };
+    const fetch = vi.fn().mockResolvedValue(Response.json({
+      error: { code: 403, message: "Provider limit exceeded", errors: [{ reason }] },
+    }, { status: 403 }));
+
+    await expect(runSearchConsoleSync(input, {
+      client,
+      checkpoint,
+      execute: (payload, receivedToken) => executeSearchConsole(payload, {
+        client: new SearchConsoleClient({ token: receivedToken, fetch }),
+      }),
+    })).rejects.toMatchObject({
+      name: "SearchConsoleProviderError",
+      retryable: true,
+      status: 403,
+    });
+
     expect(client.reportSearchConsoleAuthenticationFailure).not.toHaveBeenCalled();
     expect(client.uploadArtifact).not.toHaveBeenCalled();
     expect(client.ingest).not.toHaveBeenCalled();

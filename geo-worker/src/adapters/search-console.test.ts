@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { SearchConsoleClient } from "../clients/search-console";
 import {
   executeSearchConsole,
   parseSearchConsoleInput,
@@ -27,14 +28,38 @@ function fixture(name: string) {
 }
 
 function page(rawBody: string) {
-  return { rawBody, value: JSON.parse(rawBody) as unknown };
+  return {
+    rawBody,
+    rawBytes: new TextEncoder().encode(rawBody),
+    value: JSON.parse(rawBody) as unknown,
+  };
+}
+
+function decodeArtifact(bytes: Uint8Array) {
+  const magic = new TextEncoder().encode("SGEOSC1\n");
+  expect(bytes.slice(0, magic.byteLength)).toEqual(magic);
+  const pages: Array<{ startRow: number; rawBytes: Uint8Array }> = [];
+  let offset = magic.byteLength;
+  while (offset < bytes.byteLength) {
+    if (offset + 8 > bytes.byteLength) throw new Error("Truncated Search Console artifact header.");
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8);
+    const startRow = view.getUint32(0, false);
+    const length = view.getUint32(4, false);
+    offset += 8;
+    if (offset + length > bytes.byteLength) throw new Error("Truncated Search Console artifact page.");
+    pages.push({ startRow, rawBytes: bytes.slice(offset, offset + length) });
+    offset += length;
+  }
+  return pages;
 }
 
 describe("Search Console adapter", () => {
   it("paginates finalized Search Analytics data and preserves every provider page in the raw artifact", async () => {
     const first = await fixture("v1-success-page-1.json");
+    const empty = await fixture("v1-empty.json");
     const query = vi.fn()
-      .mockResolvedValueOnce(page(first));
+      .mockResolvedValueOnce(page(first))
+      .mockResolvedValueOnce(page(empty));
 
     const result = await executeSearchConsole(input, { query });
 
@@ -45,6 +70,9 @@ describe("Search Console adapter", () => {
       rowLimit: 25_000,
       startRow: 0,
       dataState: "final",
+    }));
+    expect(query).toHaveBeenNthCalledWith(2, input.property, expect.objectContaining({
+      startRow: 25_000,
     }));
     expect(result.envelope).toMatchObject({ status: "succeeded", error: null });
     expect(result.envelope.observations).toContainEqual(expect.objectContaining({
@@ -61,7 +89,7 @@ describe("Search Console adapter", () => {
         device: "DESKTOP",
         dataState: "final",
         scope: "top_rows",
-        pagination: expect.objectContaining({ pagesFetched: 1, truncated: false }),
+        pagination: expect.objectContaining({ pagesFetched: 2, truncated: false }),
       }),
     }));
     expect(result.envelope.observations).toContainEqual(expect.objectContaining({
@@ -69,18 +97,46 @@ describe("Search Console adapter", () => {
       value: expect.objectContaining({
         scope: "top_rows",
         rowsFetched: 2,
-        pagination: expect.objectContaining({ pagesFetched: 1, truncated: false }),
+        pagination: expect.objectContaining({ pagesFetched: 2, truncated: false }),
       }),
     }));
     const summary = result.envelope.observations.find(({ kind }) => kind === "search_console.sync_summary");
     expect(summary?.value).not.toHaveProperty("totalRows");
     expect(summary?.value).not.toHaveProperty("cardinality");
     expect(result.rawReport).not.toBeNull();
-    const artifact = JSON.parse(new TextDecoder().decode(result.rawReport!)) as {
-      pages: Array<{ startRow: number; rawBodyBase64: string }>;
-    };
-    expect(artifact.pages).toEqual([{ startRow: 0, rawBodyBase64: Buffer.from(first).toString("base64") }]);
-    expect(JSON.stringify(artifact)).not.toContain("google-access-token");
+    const artifact = decodeArtifact(result.rawReport!);
+    expect(artifact).toEqual([
+      { startRow: 0, rawBytes: new TextEncoder().encode(first) },
+      { startRow: 25_000, rawBytes: new TextEncoder().encode(empty) },
+    ]);
+    expect(new TextDecoder().decode(result.rawReport!)).not.toContain("google-access-token");
+  });
+
+  it("preserves the default SearchConsoleClient method binding", async () => {
+    const first = await fixture("v1-success-page-2.json");
+    const empty = await fixture("v1-empty.json");
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(first, { status: 200 }))
+      .mockResolvedValueOnce(new Response(empty, { status: 200 }));
+    const client = new SearchConsoleClient({ token: "default-path-token", fetch });
+
+    const result = await executeSearchConsole(input, { client });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({ startRow: 25_000 });
+    expect(result.envelope).toMatchObject({ status: "succeeded", error: null });
+  });
+
+  it("marks a nonempty response partial when the page cap leaves no room for the terminating empty page", async () => {
+    const query = vi.fn().mockResolvedValueOnce(page(await fixture("v1-success-page-2.json")));
+
+    const result = await executeSearchConsole(input, { query, maximumProviderPages: 1 });
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.envelope).toMatchObject({
+      status: "partial",
+      error: { code: "SEARCH_CONSOLE_PROVIDER_TRUNCATED", retryable: false },
+    });
   });
 
   it("uses startRow 25000 after a full provider page and marks provider-cap truncation explicitly", async () => {
@@ -103,15 +159,13 @@ describe("Search Console adapter", () => {
     expect(query).toHaveBeenNthCalledWith(2, input.property, expect.objectContaining({ startRow: 25_000 }));
     expect(result.envelope).toMatchObject({
       status: "partial",
-      error: { code: "SEARCH_CONSOLE_ENVELOPE_TRUNCATED", retryable: false },
+      error: { code: "SEARCH_CONSOLE_PROVIDER_AND_ENVELOPE_TRUNCATED", retryable: false },
     });
     expect(result.rawReport).not.toBeNull();
-    const artifact = JSON.parse(new TextDecoder().decode(result.rawReport!)) as {
-      pages: Array<{ startRow: number; rawBodyBase64: string }>;
-    };
-    expect(artifact.pages[1]).toEqual({
+    const artifact = decodeArtifact(result.rawReport!);
+    expect(artifact[1]).toEqual({
       startRow: 25_000,
-      rawBodyBase64: Buffer.from(await fixture("v1-success-page-2.json")).toString("base64"),
+      rawBytes: new TextEncoder().encode(await fixture("v1-success-page-2.json")),
     });
   });
 
@@ -125,7 +179,9 @@ describe("Search Console adapter", () => {
       status: "failed",
       error: { code: "SEARCH_CONSOLE_INVALID_REPORT", retryable: false },
     });
-    expect(new TextDecoder().decode(result.rawReport!)).toContain(Buffer.from(rawBody).toString("base64"));
+    expect(decodeArtifact(result.rawReport!)).toEqual([
+      { startRow: 0, rawBytes: new TextEncoder().encode(rawBody) },
+    ]);
   });
 
   it("rejects malformed or cross-tenant runtime inputs before provider fetch", async () => {
@@ -187,6 +243,48 @@ describe("Search Console adapter", () => {
     }));
   });
 
+  it.each([
+    ["first_incomplete_date", "fixture"],
+    ["first_incomplete_hour", "inline"],
+  ])("retains a final response with %s as non-final without writing observations", async (_field, source) => {
+    const rawBody = source === "fixture"
+      ? await fixture("v1-incomplete-final.json")
+      : JSON.stringify({
+          responseAggregationType: "byPage",
+          metadata: { first_incomplete_hour: "2026-07-02T15:00:00-07:00" },
+          rows: [],
+        });
+    const query = vi.fn().mockResolvedValue(page(rawBody));
+
+    const result = await executeSearchConsole(input, { query });
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.rawReport).not.toBeNull();
+    expect(decodeArtifact(result.rawReport!)).toEqual([
+      { startRow: 0, rawBytes: new TextEncoder().encode(rawBody) },
+    ]);
+    expect(result.envelope).toMatchObject({
+      status: "partial",
+      observations: [],
+      error: { code: "SEARCH_CONSOLE_NON_FINAL_DATA", retryable: false },
+    });
+  });
+
+  it("rejects an unknown response aggregation type while retaining the raw response", async () => {
+    const rawBody = JSON.stringify({ responseAggregationType: "futureAggregation", rows: [] });
+
+    const result = await executeSearchConsole(input, {
+      query: vi.fn().mockResolvedValue(page(rawBody)),
+    });
+
+    expect(result.rawReport).not.toBeNull();
+    expect(result.envelope).toMatchObject({
+      status: "failed",
+      observations: [],
+      error: { code: "SEARCH_CONSOLE_INVALID_REPORT", retryable: false },
+    });
+  });
+
   it("projects a compact envelope under the ingest contract cap instead of silently claiming every top row", async () => {
     const rows = Array.from({ length: 10_000 }, (_, index) => ({
       keys: ["2026-07-01", `query-${index}`, "https://shop.example/shoes", "usa", "MOBILE"],
@@ -195,8 +293,11 @@ describe("Search Console adapter", () => {
       ctr: 1,
       position: 1,
     }));
+    const query = vi.fn()
+      .mockResolvedValueOnce(page(JSON.stringify({ rows })))
+      .mockResolvedValueOnce(page(await fixture("v1-empty.json")));
     const result = await executeSearchConsole(input, {
-      query: vi.fn().mockResolvedValue(page(JSON.stringify({ rows }))),
+      query,
       maximumEnvelopeBytes: 10_000,
     });
 
@@ -204,8 +305,29 @@ describe("Search Console adapter", () => {
       status: "partial",
       error: { code: "SEARCH_CONSOLE_ENVELOPE_TRUNCATED", retryable: false },
     });
+    expect(query).toHaveBeenCalledTimes(2);
     expect(Buffer.byteLength(JSON.stringify(result.envelope))).toBeLessThanOrEqual(10_000);
     expect(SEARCH_CONSOLE_MAX_ENVELOPE_BYTES).toBe(1_024 * 1_024);
+  });
+
+  it("retains a 924-byte accepted response inside a 1024-byte artifact budget without Base64 expansion", async () => {
+    const prefix = '{"rows":[],"padding":"';
+    const suffix = '"}';
+    const rawBody = `${prefix}${"x".repeat(924 - prefix.length - suffix.length)}${suffix}`;
+    expect(Buffer.byteLength(rawBody, "utf8")).toBe(924);
+
+    const result = await executeSearchConsole(input, {
+      query: vi.fn().mockResolvedValue(page(rawBody)),
+      maximumProviderPages: 1,
+      maximumRawBytes: 1_024,
+    });
+
+    expect(result.envelope).toMatchObject({ status: "succeeded", error: null });
+    expect(result.rawReport).not.toBeNull();
+    expect(result.rawReport!.byteLength).toBeLessThanOrEqual(1_024);
+    expect(decodeArtifact(result.rawReport!)).toEqual([
+      { startRow: 0, rawBytes: new TextEncoder().encode(rawBody) },
+    ]);
   });
 
   it("rejects execution limits outside their hard integer bounds before provider fetch", async () => {

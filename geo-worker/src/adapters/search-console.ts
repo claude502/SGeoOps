@@ -12,15 +12,25 @@ import {
   type SearchConsolePage,
   type SearchConsoleQueryRequest,
 } from "../clients/search-console";
+import {
+  encodeSearchConsoleArtifact,
+  SEARCH_CONSOLE_ARTIFACT_MAGIC,
+  SEARCH_CONSOLE_ARTIFACT_MAX_BYTES,
+  SEARCH_CONSOLE_ARTIFACT_MAX_PAGES,
+  SEARCH_CONSOLE_ARTIFACT_PAGE_HEADER_BYTES,
+  SearchConsoleArtifactCapacityError,
+  searchConsoleResponseByteBudget,
+  type SearchConsoleArtifactPage,
+} from "../search-console/artifact";
 
 export const SEARCH_CONSOLE_SOURCE = "search-console";
 export const SEARCH_CONSOLE_SOURCE_VERSION = "webmasters-v3";
 export const SEARCH_CONSOLE_ADAPTER_VERSION = "1.0.0";
-export const SEARCH_CONSOLE_ARTIFACT_NAME = "search-console-pages-v1.json";
-export const SEARCH_CONSOLE_ARTIFACT_MEDIA_TYPE = "application/json";
-export const SEARCH_CONSOLE_MAX_PROVIDER_PAGES = 4;
+export const SEARCH_CONSOLE_ARTIFACT_NAME = "search-console-pages-v1.bin";
+export const SEARCH_CONSOLE_ARTIFACT_MEDIA_TYPE = "application/vnd.sgeo.search-console-pages.v1";
+export const SEARCH_CONSOLE_MAX_PROVIDER_PAGES = SEARCH_CONSOLE_ARTIFACT_MAX_PAGES;
 export const SEARCH_CONSOLE_MAX_ROWS = SEARCH_CONSOLE_MAX_PROVIDER_PAGES * SEARCH_CONSOLE_ROW_LIMIT;
-export const SEARCH_CONSOLE_MAX_RAW_BYTES = 64 * 1024 * 1024;
+export const SEARCH_CONSOLE_MAX_RAW_BYTES = SEARCH_CONSOLE_ARTIFACT_MAX_BYTES;
 export const SEARCH_CONSOLE_MAX_ENVELOPE_BYTES = 1_024 * 1_024;
 const MAX_IDENTIFIER_LENGTH = 200;
 const MAX_PROPERTY_LENGTH = 2_048;
@@ -84,7 +94,10 @@ type SearchConsoleRow = {
   startRow: number;
 };
 
-type RawProviderPage = { startRow: number; rawBodyBase64: string };
+type SearchConsoleParsedPage = {
+  rows: SearchConsoleRow[];
+  incomplete: boolean;
+};
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -244,15 +257,32 @@ function parseRow(
   };
 }
 
-function rowsFromPage(
+function parsePage(
   value: unknown,
   startRow: number,
   requestedStartDate: string,
   requestedEndDate: string,
-): SearchConsoleRow[] | null {
+): SearchConsoleParsedPage | null {
   const body = asRecord(value);
   if (body === null) return null;
-  if (body.rows === undefined) return [];
+  const aggregationTypes = new Set(["auto", "byNewsShowcasePanel", "byPage", "byProperty"]);
+  if (
+    body.responseAggregationType !== undefined &&
+    (typeof body.responseAggregationType !== "string" || !aggregationTypes.has(body.responseAggregationType))
+  ) {
+    return null;
+  }
+  const metadata = body.metadata === undefined ? null : asRecord(body.metadata);
+  if (body.metadata !== undefined && metadata === null) return null;
+  let incomplete = false;
+  for (const field of ["first_incomplete_date", "first_incomplete_hour"] as const) {
+    const marker = metadata?.[field];
+    if (marker !== undefined) {
+      if (typeof marker !== "string" || marker.length === 0) return null;
+      incomplete = true;
+    }
+  }
+  if (body.rows === undefined) return { rows: [], incomplete };
   if (!Array.isArray(body.rows)) return null;
   const rows = body.rows.map((row) => parseRow(
     row,
@@ -260,18 +290,13 @@ function rowsFromPage(
     requestedStartDate,
     requestedEndDate,
   ));
-  return rows.some((row) => row === null) ? null : rows as SearchConsoleRow[];
+  return rows.some((row) => row === null)
+    ? null
+    : { rows: rows as SearchConsoleRow[], incomplete };
 }
 
-function rawBundle(input: SearchConsoleInput, pages: RawProviderPage[]) {
-  return new TextEncoder().encode(JSON.stringify({
-    schemaVersion: "search-console-pages-v1",
-    property: input.property,
-    range: { startDate: input.startDate, endDate: input.endDate },
-    dimensions: SEARCH_CONSOLE_DIMENSIONS,
-    dataState: SEARCH_CONSOLE_DATA_STATE,
-    pages,
-  }));
+function rawBundle(pages: readonly SearchConsoleArtifactPage[], maximumBytes: number) {
+  return encodeSearchConsoleArtifact(pages, maximumBytes);
 }
 
 function baseEnvelope(
@@ -372,7 +397,11 @@ function envelopeByteSize(envelope: AnalysisEnvelope) {
   return Buffer.byteLength(JSON.stringify(envelope), "utf8");
 }
 
-function queryRequest(input: SearchConsoleInput, startRow: number): SearchConsoleQueryRequest {
+function queryRequest(
+  input: SearchConsoleInput,
+  startRow: number,
+  maximumResponseBytes: number,
+): SearchConsoleQueryRequest {
   return {
     startDate: input.startDate,
     endDate: input.endDate,
@@ -380,7 +409,24 @@ function queryRequest(input: SearchConsoleInput, startRow: number): SearchConsol
     rowLimit: SEARCH_CONSOLE_ROW_LIMIT,
     startRow,
     dataState: SEARCH_CONSOLE_DATA_STATE,
+    maximumResponseBytes,
   };
+}
+
+function validatedRawBytes(result: SearchConsolePage) {
+  if (!(result.rawBytes instanceof Uint8Array)) {
+    throw new SearchConsoleExecutionError("Search Console client returned invalid raw bytes.");
+  }
+  let decoded: string;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(result.rawBytes);
+  } catch {
+    throw new SearchConsoleExecutionError("Search Console client returned invalid raw bytes.");
+  }
+  if (decoded !== result.rawBody) {
+    throw new SearchConsoleExecutionError("Search Console client returned inconsistent raw bytes.");
+  }
+  return result.rawBytes;
 }
 
 export async function executeSearchConsole(
@@ -388,7 +434,11 @@ export async function executeSearchConsole(
   dependencies: SearchConsoleDependencies = {},
 ): Promise<SearchConsoleExecution> {
   const input = parseSearchConsoleInput(value);
-  const query = dependencies.query ?? dependencies.client?.query;
+  const query = dependencies.query ?? (
+    dependencies.client === undefined
+      ? undefined
+      : (property: string, request: SearchConsoleQueryRequest) => dependencies.client!.query(property, request)
+  );
   if (query === undefined) {
     throw new SearchConsoleExecutionError("Search Console client is required.");
   }
@@ -407,30 +457,45 @@ export async function executeSearchConsole(
   ) {
     throw new SearchConsoleInputError("Search Console execution limits are invalid.");
   }
+  const maximumResponseBytes = searchConsoleResponseByteBudget(maximumRawBytes, maximumProviderPages);
+  if (
+    maximumResponseBytes < 1 ||
+    maximumRawBytes < SEARCH_CONSOLE_ARTIFACT_MAGIC.byteLength +
+      maximumProviderPages * (SEARCH_CONSOLE_ARTIFACT_PAGE_HEADER_BYTES + 1)
+  ) {
+    throw new SearchConsoleInputError("Search Console execution limits are invalid.");
+  }
 
   const startedAt = new Date().toISOString();
-  const rawPages: RawProviderPage[] = [];
+  const rawPages: SearchConsoleArtifactPage[] = [];
   const rows: SearchConsoleRow[] = [];
   let complete = false;
   for (let pageIndex = 0; pageIndex < maximumProviderPages; pageIndex += 1) {
     const startRow = pageIndex * SEARCH_CONSOLE_ROW_LIMIT;
-    const result: SearchConsolePage = await query(input.property, queryRequest(input, startRow));
-    rawPages.push({ startRow, rawBodyBase64: Buffer.from(result.rawBody, "utf8").toString("base64") });
-    const rawReport = rawBundle(input, rawPages);
-    if (rawReport.byteLength > maximumRawBytes) {
-      return {
-        rawReport: null,
-        envelope: failedEnvelope(
-          input,
-          startedAt,
-          "SEARCH_CONSOLE_REPORT_TOO_LARGE",
-          "Search Console returned a response bundle larger than the 64 MiB safety limit.",
-          false,
-        ),
-      };
+    const result: SearchConsolePage = await query(
+      input.property,
+      queryRequest(input, startRow, maximumResponseBytes),
+    );
+    const rawBytes = validatedRawBytes(result);
+    if (rawBytes.byteLength > maximumResponseBytes) {
+      throw new SearchConsoleExecutionError(
+        "Search Console client exceeded the bounded response contract.",
+      );
     }
-    const pageRows = rowsFromPage(result.value, startRow, input.startDate, input.endDate);
-    if (pageRows === null || pageRows.length > SEARCH_CONSOLE_ROW_LIMIT) {
+    rawPages.push({ startRow, rawBytes });
+    let rawReport: Uint8Array;
+    try {
+      rawReport = rawBundle(rawPages, maximumRawBytes);
+    } catch (error) {
+      if (error instanceof SearchConsoleArtifactCapacityError) {
+        throw new SearchConsoleExecutionError(
+          "Search Console client exceeded the bounded artifact contract.",
+        );
+      }
+      throw error;
+    }
+    const parsedPage = parsePage(result.value, startRow, input.startDate, input.endDate);
+    if (parsedPage === null || parsedPage.rows.length > SEARCH_CONSOLE_ROW_LIMIT) {
       return {
         rawReport,
         envelope: failedEnvelope(
@@ -442,23 +507,39 @@ export async function executeSearchConsole(
         ),
       };
     }
+    if (parsedPage.incomplete) {
+      return {
+        rawReport,
+        envelope: baseEnvelope(input, startedAt, "partial", [], {
+          code: "SEARCH_CONSOLE_NON_FINAL_DATA",
+          message: "Search Console marked the requested final response as incomplete.",
+          retryable: false,
+        }),
+      };
+    }
+    const pageRows = parsedPage.rows;
     if (pageRows.length > maximumRows - rows.length) {
       rows.push(...pageRows.slice(0, maximumRows - rows.length));
       break;
     }
     rows.push(...pageRows);
-    if (pageRows.length < SEARCH_CONSOLE_ROW_LIMIT) {
+    if (pageRows.length === 0) {
       complete = true;
       break;
     }
   }
 
-  const rawReport = rawBundle(input, rawPages);
+  const rawReport = rawBundle(rawPages, maximumRawBytes);
   const facts: NormalizedObservation[] = [];
   let envelopeTruncated = false;
-  const partialError = {
-    code: "SEARCH_CONSOLE_ENVELOPE_TRUNCATED",
-    message: "Search Console top-row observations exceeded the ingest contract byte budget.",
+  const providerTruncated = !complete;
+  const envelopePartialError = {
+    code: providerTruncated
+      ? "SEARCH_CONSOLE_PROVIDER_AND_ENVELOPE_TRUNCATED"
+      : "SEARCH_CONSOLE_ENVELOPE_TRUNCATED",
+    message: providerTruncated
+      ? "Search Console pagination and the ingest observation envelope were both truncated."
+      : "Search Console top-row observations exceeded the ingest contract byte budget.",
     retryable: false,
   } as const;
   // Estimate each JSON observation once, then validate the final envelope exactly.
@@ -468,7 +549,7 @@ export async function executeSearchConsole(
     startedAt,
     "partial",
     [summary(rows.length, 0, rawPages.length)],
-    partialError,
+    envelopePartialError,
   );
   let estimatedBytes = envelopeByteSize(summaryOnly);
   const budgetHeadroomBytes = 1_024;
@@ -482,16 +563,15 @@ export async function executeSearchConsole(
     facts.push(fact);
     estimatedBytes += factBytes;
   }
-  const providerTruncated = !complete;
   let allFacts = [...facts, summary(rows.length, facts.length, rawPages.length)];
   setTruncated(allFacts, true);
-  let partialEnvelope = baseEnvelope(input, startedAt, "partial", allFacts, partialError);
+  let partialEnvelope = baseEnvelope(input, startedAt, "partial", allFacts, envelopePartialError);
   while (envelopeByteSize(partialEnvelope) > maximumEnvelopeBytes && facts.length > 0) {
     facts.pop();
     envelopeTruncated = true;
     allFacts = [...facts, summary(rows.length, facts.length, rawPages.length)];
     setTruncated(allFacts, true);
-    partialEnvelope = baseEnvelope(input, startedAt, "partial", allFacts, partialError);
+    partialEnvelope = baseEnvelope(input, startedAt, "partial", allFacts, envelopePartialError);
   }
   if (envelopeTruncated) {
     return {

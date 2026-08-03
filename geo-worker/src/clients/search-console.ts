@@ -1,3 +1,5 @@
+import { SEARCH_CONSOLE_PROVIDER_RESPONSE_MAX_BYTES } from "../search-console/artifact";
+
 export const SEARCH_CONSOLE_DIMENSIONS = [
   "date",
   "query",
@@ -7,7 +9,7 @@ export const SEARCH_CONSOLE_DIMENSIONS = [
 ] as const;
 export const SEARCH_CONSOLE_ROW_LIMIT = 25_000;
 export const SEARCH_CONSOLE_DATA_STATE = "final";
-export const SEARCH_CONSOLE_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+export const SEARCH_CONSOLE_MAX_RESPONSE_BYTES = SEARCH_CONSOLE_PROVIDER_RESPONSE_MAX_BYTES;
 
 export type SearchConsoleQueryRequest = {
   startDate: string;
@@ -16,10 +18,12 @@ export type SearchConsoleQueryRequest = {
   dimensions?: readonly string[];
   rowLimit?: number;
   dataState?: "final";
+  maximumResponseBytes?: number;
 };
 
 export type SearchConsolePage = {
   rawBody: string;
+  rawBytes: Uint8Array;
   value: unknown;
 };
 
@@ -139,7 +143,14 @@ function quotaReason(reasons: readonly string[]) {
   const retryableReasons = new Set([
     "quotaexceeded",
     "ratelimitexceeded",
+    "ratelimitexceededunreg",
     "userratelimitexceeded",
+    "userratelimitexceededunreg",
+    "servinglimitexceeded",
+    "concurrentlimitexceeded",
+    "limitexceeded",
+    "variabletermexpireddailyexceeded",
+    "variabletermlimitexceeded",
     "dailylimitexceeded",
     "dailylimitexceededunreg",
     "downloadquotaexceeded",
@@ -148,6 +159,29 @@ function quotaReason(reasons: readonly string[]) {
     "resource_exhausted",
   ]);
   return reasons.some((reason) => retryableReasons.has(reason.toLowerCase()));
+}
+
+function parsedResponseContainsSecret(root: unknown, secret: string) {
+  const pending: unknown[] = [root];
+  const seen = new WeakSet<object>();
+  let inspected = 0;
+  const maximumInspectedValues = 1_000_000;
+  while (pending.length > 0) {
+    if (inspected >= maximumInspectedValues) return true;
+    inspected += 1;
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (value.includes(secret)) return true;
+      continue;
+    }
+    if (typeof value !== "object" || value === null || seen.has(value)) continue;
+    seen.add(value);
+    for (const key of Object.keys(value)) {
+      if (key.includes(secret)) return true;
+      pending.push((value as Record<string, unknown>)[key]);
+    }
+  }
+  return false;
 }
 
 function providerError(status: number, body: unknown, headers: Headers) {
@@ -229,9 +263,20 @@ export class SearchConsoleClient {
     }
 
     let rawBody: string;
+    let rawBytes: Uint8Array;
     let value: unknown;
     try {
-      rawBody = await readBoundedResponseBody(response, this.maximumResponseBytes);
+      const requestedLimit = request.maximumResponseBytes ?? this.maximumResponseBytes;
+      if (!Number.isInteger(requestedLimit) || requestedLimit < 1) {
+        throw new SearchConsoleProviderError("Search Console response limit is invalid.", {
+          status: response.status,
+          retryable: false,
+        });
+      }
+      ({ rawBody, rawBytes } = await readBoundedResponseBody(
+        response,
+        Math.min(this.maximumResponseBytes, requestedLimit),
+      ));
       if (rawBody.includes(this.token)) {
         throw new SearchConsoleProviderError(
           "Search Console returned a response that cannot be retained safely.",
@@ -239,6 +284,12 @@ export class SearchConsoleClient {
         );
       }
       value = JSON.parse(rawBody);
+      if (parsedResponseContainsSecret(value, this.token)) {
+        throw new SearchConsoleProviderError(
+          "Search Console returned a response that cannot be retained safely.",
+          { status: response.status, retryable: false },
+        );
+      }
     } catch (error) {
       if (error instanceof SearchConsoleProviderError) throw error;
       throw new SearchConsoleProviderError("Search Console returned an invalid response.", {
@@ -248,7 +299,7 @@ export class SearchConsoleClient {
       });
     }
     if (!response.ok) throw providerError(response.status, value, response.headers);
-    return { rawBody, value };
+    return { rawBody, rawBytes, value };
   }
 }
 
@@ -265,7 +316,7 @@ async function readBoundedResponseBody(response: Response, maximumBytes: number)
     }
   }
   const reader = response.body?.getReader();
-  if (reader === undefined) return "";
+  if (reader === undefined) return { rawBody: "", rawBytes: new Uint8Array() };
   const chunks: Uint8Array[] = [];
   let size = 0;
   let complete = false;
@@ -290,7 +341,10 @@ async function readBoundedResponseBody(response: Response, maximumBytes: number)
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return {
+      rawBody: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      rawBytes: bytes,
+    };
   } finally {
     if (!complete) await reader.cancel().catch(() => undefined);
     try {

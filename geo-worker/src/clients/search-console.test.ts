@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   SEARCH_CONSOLE_DIMENSIONS,
+  SEARCH_CONSOLE_MAX_RESPONSE_BYTES,
   SearchConsoleAuthenticationError,
   SearchConsoleClient,
   SearchConsoleProviderError,
@@ -31,6 +32,7 @@ describe("SearchConsoleClient", () => {
     });
 
     expect(SEARCH_CONSOLE_DIMENSIONS).toEqual(["date", "query", "page", "country", "device"]);
+    expect(SEARCH_CONSOLE_MAX_RESPONSE_BYTES * 4 + 8 + 4 * 8).toBe(64 * 1024 * 1024);
     expect(fetch).toHaveBeenCalledWith(
       "https://www.googleapis.com/webmasters/v3/sites/sc-domain%3Ashop.example/searchAnalytics/query",
       expect.objectContaining({ method: "POST" }),
@@ -50,6 +52,7 @@ describe("SearchConsoleClient", () => {
       dataState: "final",
     });
     expect(page.rawBody).toContain('"responseAggregationType"');
+    expect(page.rawBytes).toEqual(new TextEncoder().encode(page.rawBody));
     expect(JSON.stringify(page)).not.toContain(token);
   });
 
@@ -154,6 +157,33 @@ describe("SearchConsoleClient", () => {
     },
   );
 
+  it.each([
+    "rateLimitExceededUnreg",
+    "userRateLimitExceededUnreg",
+    "servingLimitExceeded",
+    "concurrentLimitExceeded",
+    "limitExceeded",
+    "variableTermExpiredDailyExceeded",
+    "variableTermLimitExceeded",
+  ])("classifies documented Google rate/quota reason %s as retryable", async (reason) => {
+    const client = new SearchConsoleClient({
+      token,
+      fetch: vi.fn().mockResolvedValue(Response.json({
+        error: { code: 403, message: "Provider limit exceeded", errors: [{ reason }] },
+      }, { status: 403 })),
+    });
+
+    await expect(client.query(property, {
+      startDate: "2026-07-01",
+      endDate: "2026-07-02",
+      startRow: 0,
+    })).rejects.toMatchObject({
+      name: "SearchConsoleProviderError",
+      retryable: true,
+      status: 403,
+    });
+  });
+
   it("classifies modern Google RESOURCE_EXHAUSTED details as retryable quota", async () => {
     const client = new SearchConsoleClient({
       token,
@@ -242,5 +272,29 @@ describe("SearchConsoleClient", () => {
       retryable: false,
     });
     await expect(result).rejects.not.toThrow(token);
+  });
+
+  it.each([
+    ["string value", '{"rows":[],"echo":"secret\\u002dtoken"}'],
+    ["object key", '{"rows":[],"secret\\u002dtoken":"echo"}'],
+  ])("rejects a bearer token hidden by JSON escaping in a parsed %s", async (_location, rawBody) => {
+    const escapedToken = "secret-token";
+    expect(rawBody).not.toContain(escapedToken);
+    const client = new SearchConsoleClient({
+      token: escapedToken,
+      fetch: vi.fn().mockResolvedValue(new Response(rawBody, { status: 200 })),
+    });
+
+    const result = client.query(property, {
+      startDate: "2026-07-01",
+      endDate: "2026-07-02",
+      startRow: 0,
+    });
+
+    await expect(result).rejects.toMatchObject({
+      name: "SearchConsoleProviderError",
+      retryable: false,
+    });
+    await expect(result).rejects.not.toThrow(escapedToken);
   });
 });
