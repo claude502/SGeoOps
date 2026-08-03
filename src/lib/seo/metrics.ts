@@ -186,6 +186,16 @@ const searchConsoleSchema = z.object({
   scope: z.literal("top_rows"),
   pagination: z.object({ truncated: z.literal(false) }).passthrough(),
 }).refine(({ clicks, impressions }) => clicks <= impressions);
+const searchConsoleSummarySchema = z.object({
+  startDate: isoDateSchema,
+  endDate: isoDateSchema,
+  property: z.string().min(1).max(2_048).refine((value) => !/[\u0000-\u001f\u007f]/.test(value)),
+  scope: z.literal("top_rows"),
+  dataState: z.literal("final"),
+  rowsFetched: nonNegativeInteger,
+  rowsIncluded: nonNegativeInteger,
+  pagination: z.object({ truncated: z.literal(false) }).passthrough(),
+}).refine(({ startDate, endDate }) => startDate <= endDate);
 const matomoBaseSchema = z.object({
   count: nonNegativeInteger,
   startDate: isoDateSchema,
@@ -201,6 +211,15 @@ const organicVisitSchema = matomoBaseSchema.extend({
 const conversionSchema = matomoBaseSchema.extend({
   idGoal: z.number().int().min(1),
 });
+const matomoSummarySchema = z.object({
+  startDate: isoDateSchema,
+  endDate: isoDateSchema,
+  idSite: z.number().int().min(1),
+  idGoal: z.number().int().min(1),
+  segment: z.string().max(4_096),
+  organicSegment: z.string().max(4_096).optional(),
+  timezone: z.string().min(1).max(128),
+}).refine(({ startDate, endDate }) => startDate <= endDate);
 
 type ParsedValue =
   | { kind: "siteone.http_status"; statusCode: number }
@@ -235,12 +254,27 @@ type ParsedValue =
     position: number;
   }
   | {
+    kind: "search_console.sync_summary";
+    startDate: string;
+    endDate: string;
+    property: string;
+  }
+  | {
     kind: "organic_visit";
     count: number;
     startDate: string;
     endDate: string;
     idSite: number;
     segment: string;
+  }
+  | {
+    kind: "matomo.sync_summary";
+    startDate: string;
+    endDate: string;
+    idSite: number;
+    idGoal: number;
+    segment: string;
+    organicSegment: string;
   }
   | {
     kind: "conversion";
@@ -258,13 +292,14 @@ interface ParsedFact {
   subject: string;
   observedAt: string;
   semanticKey: string;
+  windowKeys: string[];
   sourceStartDate: string;
   sourceEndDate: string;
   value: ParsedValue;
 }
 
 const DEDUPE_POLICY =
-  "latest complete snapshot run; otherwise latest observedAt per source semantic key; lowest observation ID breaks ties";
+  "latest complete SiteOne or Unlighthouse snapshot; latest succeeded Search Console or Matomo source-window snapshot, including zero-row summaries; otherwise latest observedAt per semantic key; lowest observation ID breaks ties";
 
 function normalizedDate(value: string | Date): string {
   return (value instanceof Date ? value : new Date(value)).toISOString();
@@ -282,7 +317,10 @@ function sourceAllowsKind(source: string, kind: string) {
   if (source === "unlighthouse") return kind.startsWith("unlighthouse.");
   if (source === "search-console") return kind.startsWith("search_console.");
   if (source === "matomo") {
-    return kind === "page_view" || kind === "organic_visit" || kind === "conversion";
+    return kind === "page_view" ||
+      kind === "organic_visit" ||
+      kind === "conversion" ||
+      kind === "matomo.sync_summary";
   }
   return false;
 }
@@ -314,6 +352,33 @@ function keyed(parts: readonly (string | number)[]) {
   return JSON.stringify(parts);
 }
 
+function searchConsoleWindowKey(
+  startDate: string,
+  endDate: string,
+  property: string,
+) {
+  return keyed(["search-console", startDate, endDate, property]);
+}
+
+function matomoOrganicWindowKey(
+  startDate: string,
+  endDate: string,
+  idSite: number,
+  segment: string,
+) {
+  return keyed(["matomo", "organic", startDate, endDate, idSite, segment]);
+}
+
+function matomoConversionWindowKey(
+  startDate: string,
+  endDate: string,
+  idSite: number,
+  idGoal: number,
+  segment: string,
+) {
+  return keyed(["matomo", "conversion", startDate, endDate, idSite, idGoal, segment]);
+}
+
 function fact(
   observation: z.infer<typeof observationSchema>,
   runId: string,
@@ -321,6 +386,7 @@ function fact(
   keyParts: readonly (string | number)[],
   sourceStartDate?: string,
   sourceEndDate?: string,
+  windowKeys: readonly string[] = [],
 ): ParsedFact {
   const observedAt = normalizedDate(observation.observedAt);
   const observedDate = observedAt.slice(0, 10);
@@ -330,6 +396,7 @@ function fact(
     subject: observation.subject,
     observedAt,
     semanticKey: keyed([value.kind, ...keyParts]),
+    windowKeys: [...new Set(windowKeys)].sort(),
     sourceStartDate: sourceStartDate ?? observedDate,
     sourceEndDate: sourceEndDate ?? observedDate,
     value,
@@ -423,6 +490,19 @@ function parseFact(
         position: data.position,
       }, [data.date, data.query, data.page, data.country, data.device], data.date, data.date);
     }
+    case "search_console.sync_summary": {
+      const parsed = searchConsoleSummarySchema.safeParse(value);
+      if (!parsed.success) return null;
+      const data = parsed.data;
+      return fact(observation, runId, {
+        kind: observation.kind,
+        startDate: data.startDate,
+        endDate: data.endDate,
+        property: data.property,
+      }, [data.startDate, data.endDate, data.property], data.startDate, data.endDate, [
+        searchConsoleWindowKey(data.startDate, data.endDate, data.property),
+      ]);
+    }
     case "organic_visit": {
       const parsed = organicVisitSchema.safeParse(value);
       if (!parsed.success) return null;
@@ -434,7 +514,9 @@ function parseFact(
         endDate: data.endDate,
         idSite: data.idSite,
         segment: data.segment,
-      }, [observation.subject, data.startDate, data.endDate, data.idSite, data.segment], data.startDate, data.endDate);
+      }, [observation.subject, data.startDate, data.endDate, data.idSite, data.segment], data.startDate, data.endDate, [
+        matomoOrganicWindowKey(data.startDate, data.endDate, data.idSite, data.segment),
+      ]);
     }
     case "conversion": {
       const parsed = conversionSchema.safeParse(value);
@@ -448,7 +530,39 @@ function parseFact(
         idSite: data.idSite,
         idGoal: data.idGoal,
         segment: data.segment,
-      }, [observation.subject, data.startDate, data.endDate, data.idSite, data.idGoal, data.segment], data.startDate, data.endDate);
+      }, [observation.subject, data.startDate, data.endDate, data.idSite, data.idGoal, data.segment], data.startDate, data.endDate, [
+        matomoConversionWindowKey(
+          data.startDate,
+          data.endDate,
+          data.idSite,
+          data.idGoal,
+          data.segment,
+        ),
+      ]);
+    }
+    case "matomo.sync_summary": {
+      const parsed = matomoSummarySchema.safeParse(value);
+      if (!parsed.success) return null;
+      const data = parsed.data;
+      const organicSegment = data.organicSegment ?? data.segment;
+      return fact(observation, runId, {
+        kind: observation.kind,
+        startDate: data.startDate,
+        endDate: data.endDate,
+        idSite: data.idSite,
+        idGoal: data.idGoal,
+        segment: data.segment,
+        organicSegment,
+      }, [data.startDate, data.endDate, data.idSite, data.idGoal, data.segment], data.startDate, data.endDate, [
+        matomoOrganicWindowKey(data.startDate, data.endDate, data.idSite, organicSegment),
+        matomoConversionWindowKey(
+          data.startDate,
+          data.endDate,
+          data.idSite,
+          data.idGoal,
+          data.segment,
+        ),
+      ]);
     }
     default:
       return null;
@@ -456,7 +570,7 @@ function parseFact(
 }
 
 function scopedFacts(input: z.infer<typeof metricsInputSchema>) {
-  const deduped = new Map<string, ParsedFact>();
+  const parsedRuns: Array<{ run: z.infer<typeof runSchema>; facts: ParsedFact[] }> = [];
   const snapshotRunIds = latestSnapshotRunIds(input);
   for (const run of input.runs) {
     if (run.status !== "succeeded" || !exactScope(run, input.scope)) continue;
@@ -464,17 +578,52 @@ function scopedFacts(input: z.infer<typeof metricsInputSchema>) {
       (run.source === "siteone" || run.source === "unlighthouse") &&
       !snapshotRunIds.has(run.id)
     ) continue;
-    for (const observation of run.observations) {
-      if (!sourceAllowsKind(run.source, observation.kind)) continue;
+    const facts = run.observations.flatMap((observation) => {
+      if (!sourceAllowsKind(run.source, observation.kind)) return [];
       const parsed = parseFact(observation, run.id);
-      if (parsed === null) continue;
-      const existing = deduped.get(parsed.semanticKey);
+      return parsed === null ? [] : [parsed];
+    });
+    const searchSummaries = facts.filter((fact): fact is ParsedFact & {
+      value: Extract<ParsedValue, { kind: "search_console.sync_summary" }>;
+    } => fact.value.kind === "search_console.sync_summary");
+    if (searchSummaries.length === 1) {
+      const [summary] = searchSummaries;
+      for (const fact of facts) {
+        if (fact.value.kind === "search_console.search_analytics") {
+          fact.windowKeys = [...summary.windowKeys];
+        }
+      }
+    }
+    parsedRuns.push({ run, facts });
+  }
+
+  const latestWindowRuns = new Map<string, z.infer<typeof runSchema>>();
+  for (const { run, facts } of parsedRuns) {
+    for (const fact of facts) {
+      for (const windowKey of fact.windowKeys) {
+        const existing = latestWindowRuns.get(windowKey);
+        if (
+          existing === undefined ||
+          runCompletion(run) > runCompletion(existing) ||
+          (runCompletion(run) === runCompletion(existing) && run.id < existing.id)
+        ) latestWindowRuns.set(windowKey, run);
+      }
+    }
+  }
+
+  const deduped = new Map<string, ParsedFact>();
+  for (const { run, facts } of parsedRuns) {
+    for (const fact of facts) {
+      if (fact.windowKeys.some((windowKey) => latestWindowRuns.get(windowKey)?.id !== run.id)) {
+        continue;
+      }
+      const existing = deduped.get(fact.semanticKey);
       if (
         existing === undefined ||
-        parsed.observedAt > existing.observedAt ||
-        (parsed.observedAt === existing.observedAt && parsed.id < existing.id)
+        fact.observedAt > existing.observedAt ||
+        (fact.observedAt === existing.observedAt && fact.id < existing.id)
       ) {
-        deduped.set(parsed.semanticKey, parsed);
+        deduped.set(fact.semanticKey, fact);
       }
     }
   }
@@ -666,7 +815,15 @@ export function calculateSeoMetrics(value: unknown): SeoMetricResult[] {
     structuredSubjects.has(subject)
   ).length;
   const structuredRate = calculateRate(structuredNumerator, indexableSubjects.size);
-  const brokenRate = calculateRate(brokenLinks.length, http.length);
+  const crawledSubjects = new Set(http.map(({ subject }) => subject));
+  const brokenSourceSubjects = new Set(brokenLinks.map(({ value }) => value.sourceUrl)
+    .filter((sourceUrl) => crawledSubjects.has(sourceUrl)));
+  const unmatchedBrokenLinkSources = brokenLinks.some(({ value }) =>
+    !crawledSubjects.has(value.sourceUrl)
+  );
+  const brokenRate = unmatchedBrokenLinkSources
+    ? null
+    : calculateRate(brokenSourceSubjects.size, crawledSubjects.size);
 
   const metrics: SeoMetricResult[] = [
     result(scope, SEO_METRIC_NAMES.CRAWL_SUCCESS_RATE, crawlRate,
@@ -693,11 +850,11 @@ export function calculateSeoMetrics(value: unknown): SeoMetricResult[] {
       "latest_siteone_crawl", [...indexability, ...structuredData],
       { numerator: structuredNumerator, denominator: indexableSubjects.size }),
     result(scope, SEO_METRIC_NAMES.BROKEN_LINK_RATE, brokenRate,
-      "count(unique broken link target and source pairs) / count(valid crawled URLs)",
+      "count(unique crawled source pages with one or more broken links) / count(valid crawled URLs)",
       "latest_siteone_crawl", [...http, ...brokenLinks],
-      { numerator: brokenLinks.length, denominator: http.length },
-      brokenLinks.length > http.length && http.length > 0
-        ? "invalid_percentage_inputs"
+      { numerator: brokenSourceSubjects.size, denominator: crawledSubjects.size },
+      unmatchedBrokenLinkSources
+        ? "unmatched_broken_link_source"
         : "no_valid_observations"),
     averageMetric(scope, facts, "unlighthouse.performance",
       SEO_METRIC_NAMES.LIGHTHOUSE_PERFORMANCE_SCORE, "mean sampled Lighthouse performance score", (item) => item.score),
@@ -722,6 +879,8 @@ export function calculateSeoMetrics(value: unknown): SeoMetricResult[] {
     "mean_per_sampled_template_url", inp, { samples: inp.length }));
 
   const search = factsOfKind(facts, "search_console.search_analytics");
+  const searchSummaries = factsOfKind(facts, "search_console.sync_summary");
+  const searchEvidence = [...search, ...searchSummaries];
   const clicks = search.reduce((sum, item) => sum + item.value.clicks, 0);
   const impressions = search.reduce((sum, item) => sum + item.value.impressions, 0);
   const searchCtr = search.length === 0 ? null : calculateRate(clicks, impressions);
@@ -740,23 +899,38 @@ export function calculateSeoMetrics(value: unknown): SeoMetricResult[] {
   const searchDimensions = "search_console_final_top_rows";
   metrics.push(
     result(scope, SEO_METRIC_NAMES.SEARCH_CONSOLE_CLICKS,
-      search.length === 0 ? null : clicks, "sum(clicks)", searchDimensions, search,
-      { rows: search.length }),
+      search.length === 0 ? null : clicks, "sum(clicks)", searchDimensions, searchEvidence,
+      { rows: search.length }, search.length === 0 && searchSummaries.length > 0
+        ? "no_observations_in_latest_source_window"
+        : "no_valid_observations"),
     result(scope, SEO_METRIC_NAMES.SEARCH_CONSOLE_IMPRESSIONS,
-      search.length === 0 ? null : impressions, "sum(impressions)", searchDimensions, search,
-      { rows: search.length }),
+      search.length === 0 ? null : impressions, "sum(impressions)", searchDimensions, searchEvidence,
+      { rows: search.length }, search.length === 0 && searchSummaries.length > 0
+        ? "no_observations_in_latest_source_window"
+        : "no_valid_observations"),
     result(scope, SEO_METRIC_NAMES.SEARCH_CONSOLE_CTR, searchCtr,
-      "sum(clicks) / sum(impressions)", searchDimensions, search,
+      "sum(clicks) / sum(impressions)", searchDimensions, searchEvidence,
       { numerator: clicks, denominator: impressions },
-      search.length === 0 ? "no_valid_observations" : "invalid_percentage_inputs"),
+      search.length === 0 && searchSummaries.length > 0
+        ? "no_observations_in_latest_source_window"
+        : search.length === 0
+        ? "no_valid_observations"
+        : "invalid_percentage_inputs"),
     result(scope, SEO_METRIC_NAMES.SEARCH_CONSOLE_AVERAGE_POSITION,
       Number.isFinite(averagePosition) ? averagePosition : null,
-      "impression-weighted mean(position)", searchDimensions, weightedPositions,
-      { numerator: weightedPositionNumerator, denominator: weightedPositionDenominator }),
+      "impression-weighted mean(position)", searchDimensions,
+      weightedPositions.length > 0 ? [...weightedPositions, ...searchSummaries] : searchEvidence,
+      { numerator: weightedPositionNumerator, denominator: weightedPositionDenominator },
+      search.length === 0 && searchSummaries.length > 0
+        ? "no_observations_in_latest_source_window"
+        : "no_valid_observations"),
   );
 
   const organic = factsOfKind(facts, "organic_visit");
   const conversions = factsOfKind(facts, "conversion");
+  const matomoSummaries = factsOfKind(facts, "matomo.sync_summary");
+  const organicEvidence = [...organic, ...matomoSummaries];
+  const conversionEvidence = [...conversions, ...matomoSummaries];
   const organicWindowError = matomoWindowError(organic);
   const conversionWindowError = matomoWindowError(conversions);
   metrics.push(
@@ -764,14 +938,22 @@ export function calculateSeoMetrics(value: unknown): SeoMetricResult[] {
       organic.length === 0 || organicWindowError !== null
         ? null
         : organic.reduce((sum, item) => sum + item.value.count, 0),
-      "sum(Matomo organic visits)", "sum_per_final_matomo_date_window", organic,
-      { rows: organic.length }, organicWindowError ?? "no_valid_observations"),
+      "sum(Matomo organic visits)", "sum_per_final_matomo_date_window", organicEvidence,
+      { rows: organic.length }, organicWindowError ?? (
+        organic.length === 0 && matomoSummaries.length > 0
+          ? "no_observations_in_latest_source_window"
+          : "no_valid_observations"
+      )),
     result(scope, SEO_METRIC_NAMES.CONVERSIONS,
       conversions.length === 0 || conversionWindowError !== null
         ? null
         : conversions.reduce((sum, item) => sum + item.value.count, 0),
-      "sum(Matomo goal conversions)", "sum_per_final_matomo_date_window", conversions,
-      { rows: conversions.length }, conversionWindowError ?? "no_valid_observations"),
+      "sum(Matomo goal conversions)", "sum_per_final_matomo_date_window", conversionEvidence,
+      { rows: conversions.length }, conversionWindowError ?? (
+        conversions.length === 0 && matomoSummaries.length > 0
+          ? "no_observations_in_latest_source_window"
+          : "no_valid_observations"
+      )),
   );
 
   return metrics;

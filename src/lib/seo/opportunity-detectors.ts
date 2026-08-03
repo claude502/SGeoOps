@@ -189,7 +189,7 @@ interface Group {
 }
 
 function containsControl(value: string) {
-  return /[\u0000-\u001f\u007f]/.test(value);
+  return /[\p{Cc}\p{Cf}]/u.test(value);
 }
 
 function normalizedPath(pathname: string) {
@@ -397,7 +397,7 @@ function partialMeasurementSignal(
 }
 
 function bounded(value: string, maximumLength: number) {
-  return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ")
+  return value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ")
     .trim().slice(0, maximumLength);
 }
 

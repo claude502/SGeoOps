@@ -66,6 +66,11 @@ describe("normalizeSeoSubject", () => {
     "https://user:secret@example.test/private",
     "https://example.test/%0Aadmin",
     "\u0000hidden",
+    "safe\u202Efdp.exe",
+    "safe\u200Fhidden",
+    "https://example.test/safe\u202Efdp.exe",
+    "https://example.test/safe%E2%80%AEfdp.exe",
+    "https://example.test/?query=safe%E2%80%AEfdp.exe",
     "   ",
   ])("rejects URL control syntax or unsafe subject %j", (subject) => {
     expect(normalizeSeoSubject(subject)).toBeNull();
@@ -252,6 +257,32 @@ describe("detectSeoRecommendations", () => {
 
     expect(recommendations).toEqual([]);
     expect(JSON.stringify(recommendations)).not.toMatch(/script|alert|javascript/i);
+  });
+
+  it("rejects Unicode direction and invisible formatting controls before rendering drafts", () => {
+    const unsafeQuery = "safe\u202Efdp.exe";
+    const recommendations = detectSeoRecommendations({
+      scope,
+      runs: [run("run_1", [
+        observation("bidi_query", "search_console.search_analytics", "/ignored", {
+          date: "2026-07-01",
+          query: unsafeQuery,
+          page: "https://example.test/ignored",
+          country: "usa",
+          device: "desktop",
+          clicks: 0,
+          impressions: 150,
+          ctr: 0,
+          position: 18,
+          dataState: "final",
+          scope: "top_rows",
+          pagination: { truncated: false },
+        }),
+      ])],
+    });
+
+    expect(recommendations).toEqual([]);
+    expect(JSON.stringify(recommendations)).not.toContain("\u202E");
   });
 
   it("bounds generated titles and details without echoing raw observation values", () => {

@@ -353,6 +353,33 @@ function observation(
   };
 }
 
+function summaryObservation(
+  input: MatomoInput,
+  observedAt: string,
+  organicSegment: string,
+  pageViewRows: number,
+  organicVisitRows: number,
+  conversionReported: boolean,
+): NormalizedObservation {
+  return {
+    kind: "matomo.sync_summary",
+    subject: "matomo",
+    observedAt,
+    value: {
+      startDate: input.startDate,
+      endDate: input.endDate,
+      idSite: input.idSite,
+      idGoal: input.idGoal,
+      segment: input.segment,
+      organicSegment,
+      timezone: input.timezone,
+      pageViewRows,
+      organicVisitRows,
+      conversionReported,
+    },
+  };
+}
+
 function envelope(
   input: MatomoInput,
   startedAt: string,
@@ -476,6 +503,14 @@ export async function executeMatomo(
   const finishedAt = new Date().toISOString();
   const observations = valid
     ? [
+        summaryObservation(
+          input,
+          finishedAt,
+          organicSegment,
+          pageViews.length,
+          organicVisits.length,
+          !conversion.empty,
+        ),
         ...pageViews.map(({ path, count }) => observation(
           input,
           finishedAt,

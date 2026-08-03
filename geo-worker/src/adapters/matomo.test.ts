@@ -87,6 +87,13 @@ describe("Matomo adapter", () => {
         }),
       }),
       expect.objectContaining({
+        kind: "matomo.sync_summary",
+        value: expect.objectContaining({
+          segment: "countryCode==my",
+          organicSegment: "countryCode==my;referrerType==search",
+        }),
+      }),
+      expect.objectContaining({
         kind: "conversion",
         subject: "lead",
         value: expect.objectContaining({
@@ -135,7 +142,7 @@ describe("Matomo adapter", () => {
       .toBe("https://analytics.example");
   });
 
-  it("treats empty reports as a successful sync with zero observations", async () => {
+  it("treats empty reports as a successful sync with zero business observations and a typed window summary", async () => {
     const emptyArray = "[]";
     const emptyObject = "{}";
     const query = vi.fn()
@@ -144,7 +151,23 @@ describe("Matomo adapter", () => {
       .mockResolvedValueOnce({ rawBody: emptyObject, rawBytes: new TextEncoder().encode(emptyObject), value: {} });
 
     await expect(executeMatomo(input, { query })).resolves.toMatchObject({
-      envelope: { status: "succeeded", observations: [], error: null },
+      envelope: {
+        status: "succeeded",
+        observations: [expect.objectContaining({
+          kind: "matomo.sync_summary",
+          subject: "matomo",
+          value: expect.objectContaining({
+            startDate: input.startDate,
+            endDate: input.endDate,
+            idSite: input.idSite,
+            idGoal: input.idGoal,
+            segment: input.segment,
+            organicSegment: `${input.segment};referrerType==search`,
+            timezone: input.timezone,
+          }),
+        })],
+        error: null,
+      },
     });
   });
 

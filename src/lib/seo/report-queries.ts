@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { z } from "zod";
 
 import {
@@ -33,6 +33,46 @@ export interface SeoReportMetricDto {
   calculatedAt: string;
 }
 
+export interface SeoMetricComparisonPointDto {
+  id: string;
+  runId: string;
+  value: number;
+  calculatedAt: string;
+}
+
+export interface SeoMetricComparisonDto {
+  name: SeoMetricName;
+  definition: string;
+  aggregation: string;
+  baseline: SeoMetricComparisonPointDto | null;
+  latest: SeoMetricComparisonPointDto | null;
+  delta: number | null;
+  formulaVersion: typeof SEO_FORMULA_VERSION;
+}
+
+export const SEO_REPORT_COVERAGE_SOURCES = [
+  "siteone",
+  "unlighthouse",
+  "search-console",
+  "matomo",
+] as const;
+
+export type SeoReportCoverageSource = (typeof SEO_REPORT_COVERAGE_SOURCES)[number];
+
+export interface SeoReportCoverageDto {
+  source: SeoReportCoverageSource;
+  runCounts: {
+    total: number;
+    succeeded: number;
+    partial: number;
+    failed: number;
+    other: number;
+  };
+  observedAt: { start: string; end: string } | null;
+  latestRunAt: string | null;
+  formulaVersion: typeof SEO_FORMULA_VERSION;
+}
+
 export interface SeoReportRecommendationDto {
   id: string;
   runId: string;
@@ -64,8 +104,11 @@ export interface SeoReportDto {
   scope: SeoOwnershipScope;
   dateWindow: { startAt: string; endAt: string };
   metrics: Record<SeoMetricFamily, SeoReportMetricDto[]>;
+  comparisons: SeoMetricComparisonDto[];
+  coverage: SeoReportCoverageDto[];
   recommendations: SeoReportRecommendationDto[];
   opportunities: SeoReportOpportunityDto[];
+  isEmpty: boolean;
 }
 
 export interface SeoReportQueryInput extends SeoOwnershipScope {
@@ -80,9 +123,18 @@ export class SeoReportQueryInputError extends Error {
   }
 }
 
+export class SeoReportScopeNotFoundError extends Error {
+  readonly code = "SEO_REPORT_SCOPE_NOT_FOUND";
+
+  constructor() {
+    super("SEO report scope was not found.");
+    this.name = "SeoReportScopeNotFoundError";
+  }
+}
+
 type SeoReportDatabase = Pick<
   PrismaClient,
-  "metricSnapshot" | "recommendation" | "opportunity" | "analysisRun"
+  "site" | "metricSnapshot" | "recommendation" | "opportunity" | "analysisRun"
 >;
 
 const identifierSchema = z.string().trim().min(1).max(200);
@@ -168,8 +220,17 @@ interface OpportunityRow {
   recommendations: Array<{ recommendationId: string }>;
 }
 
+interface CoverageRunRow {
+  source: string;
+  status: string;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  createdAt: Date;
+  observations: Array<{ observedAt: Date }>;
+}
+
 function boundedText(value: string, maximumLength: number) {
-  return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ")
+  return value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ")
     .trim().slice(0, maximumLength);
 }
 
@@ -187,8 +248,8 @@ function finiteDecimal(value: unknown) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function isoDate(value: Date | null) {
-  if (value === null || !Number.isFinite(value.getTime())) return null;
+function isoDate(value: unknown) {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) return null;
   return value.toISOString();
 }
 
@@ -340,8 +401,137 @@ function uniqueById<T extends { id: string }>(items: readonly T[]) {
   return [...unique.values()];
 }
 
+function comparisonPoint(metric: SeoReportMetricDto): SeoMetricComparisonPointDto {
+  return {
+    id: metric.id,
+    runId: metric.runId,
+    value: metric.value,
+    calculatedAt: metric.calculatedAt,
+  };
+}
+
+function comparisonKey(metric: SeoReportMetricDto) {
+  return JSON.stringify([
+    metric.name,
+    metric.dimensions.definition,
+    metric.dimensions.aggregation,
+  ]);
+}
+
+function buildMetricComparisons(
+  metrics: Record<SeoMetricFamily, SeoReportMetricDto[]>,
+): SeoMetricComparisonDto[] {
+  const groups = new Map<string, SeoReportMetricDto[]>();
+  for (const metric of Object.values(metrics).flat()) {
+    const key = comparisonKey(metric);
+    const group = groups.get(key) ?? [];
+    group.push(metric);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()].map<SeoMetricComparisonDto>((group) => {
+    const ordered = [...group].sort((left, right) =>
+      left.calculatedAt.localeCompare(right.calculatedAt) || left.id.localeCompare(right.id)
+    );
+    const captures = new Map<string, SeoReportMetricDto>();
+    for (const metric of ordered) {
+      if (!captures.has(metric.calculatedAt)) captures.set(metric.calculatedAt, metric);
+    }
+    const selected = [...captures.values()];
+    const baselineMetric = selected.length > 1 ? selected[0] : null;
+    const latestMetric = selected.at(-1) ?? null;
+    const delta = baselineMetric !== null &&
+      latestMetric !== null &&
+      baselineMetric.dimensions.availability.status === "available" &&
+      latestMetric.dimensions.availability.status === "available"
+      ? latestMetric.value - baselineMetric.value
+      : null;
+    const identity = selected[0];
+    if (identity === undefined) {
+      throw new SeoReportQueryInputError();
+    }
+    return {
+      name: identity.name,
+      definition: identity.dimensions.definition,
+      aggregation: identity.dimensions.aggregation,
+      baseline: baselineMetric === null ? null : comparisonPoint(baselineMetric),
+      latest: latestMetric === null ? null : comparisonPoint(latestMetric),
+      delta,
+      formulaVersion: SEO_FORMULA_VERSION,
+    };
+  }).sort((left, right) =>
+    left.name.localeCompare(right.name) ||
+    left.definition.localeCompare(right.definition) ||
+    left.aggregation.localeCompare(right.aggregation)
+  );
+}
+
+function isCoverageSource(value: string): value is SeoReportCoverageSource {
+  return (SEO_REPORT_COVERAGE_SOURCES as readonly string[]).includes(value);
+}
+
+function emptyCoverage(source: SeoReportCoverageSource): SeoReportCoverageDto {
+  return {
+    source,
+    runCounts: { total: 0, succeeded: 0, partial: 0, failed: 0, other: 0 },
+    observedAt: null,
+    latestRunAt: null,
+    formulaVersion: SEO_FORMULA_VERSION,
+  };
+}
+
+function buildCoverage(rows: readonly CoverageRunRow[]): SeoReportCoverageDto[] {
+  const coverage = new Map<SeoReportCoverageSource, SeoReportCoverageDto>(
+    SEO_REPORT_COVERAGE_SOURCES.map((source) => [source, emptyCoverage(source)]),
+  );
+  for (const row of rows) {
+    if (!isCoverageSource(row.source)) continue;
+    const current = coverage.get(row.source);
+    if (current === undefined) continue;
+    current.runCounts.total += 1;
+    if (row.status === "succeeded") current.runCounts.succeeded += 1;
+    else if (row.status === "partial") current.runCounts.partial += 1;
+    else if (row.status === "failed") current.runCounts.failed += 1;
+    else current.runCounts.other += 1;
+
+    for (const observation of row.observations) {
+      const observedAt = isoDate(observation.observedAt);
+      if (observedAt === null) continue;
+      const previous = current.observedAt;
+      current.observedAt = previous === null
+        ? { start: observedAt, end: observedAt }
+        : {
+            start: observedAt < previous.start ? observedAt : previous.start,
+            end: observedAt > previous.end ? observedAt : previous.end,
+          };
+    }
+    const runAt = isoDate(row.finishedAt) ?? isoDate(row.startedAt) ?? isoDate(row.createdAt);
+    if (runAt !== null && (current.latestRunAt === null || runAt > current.latestRunAt)) {
+      current.latestRunAt = runAt;
+    }
+  }
+  return SEO_REPORT_COVERAGE_SOURCES.map((source) => coverage.get(source) ?? emptyCoverage(source));
+}
+
 export class SeoReportQueries {
   constructor(private readonly database: SeoReportDatabase = getPrisma()) {}
+
+  private async requireOwnedScope(scope: SeoOwnershipScope) {
+    const site = await this.database.site.findFirst({
+      where: {
+        id: scope.siteId,
+        brand: {
+          id: scope.brandId,
+          client: { id: scope.clientId },
+        },
+        ...(scope.siteMarketId === null
+          ? {}
+          : { markets: { some: { id: scope.siteMarketId } } }),
+      },
+      select: { id: true },
+    });
+    if (site === null) throw new SeoReportScopeNotFoundError();
+  }
 
   async getReport(access: AccessScope, value: unknown): Promise<SeoReportDto> {
     const parsed = requestSchema.safeParse(value);
@@ -354,24 +544,54 @@ export class SeoReportQueries {
       siteId: parsed.data.siteId,
       siteMarketId: parsed.data.siteMarketId,
     };
+    await this.requireOwnedScope(scope);
+
     const dateRange = { gte: parsed.data.startAt, lte: parsed.data.endAt };
-    const runWhere = {
-      ...scope,
-      status: "succeeded" as const,
+    const siteWhere: Prisma.SiteWhereInput = {
+      id: scope.siteId,
+      brand: {
+        id: scope.brandId,
+        client: { id: scope.clientId },
+      },
     };
-    const recommendationWhere = {
-      clientId: scope.clientId,
-      siteId: scope.siteId,
+    const siteMarketWhere: Prisma.SiteMarketNullableScalarRelationFilter = scope.siteMarketId === null
+      ? { is: null }
+      : {
+          is: {
+            id: scope.siteMarketId,
+            site: siteWhere,
+          },
+        };
+    const scopedRunWhere: Prisma.AnalysisRunWhereInput = {
+      client: { id: scope.clientId },
+      brand: {
+        id: scope.brandId,
+        client: { id: scope.clientId },
+      },
+      site: siteWhere,
+      siteMarket: siteMarketWhere,
+    };
+    const metricRunWhere: Prisma.AnalysisRunWhereInput = {
+      ...scopedRunWhere,
+      status: "succeeded",
+    };
+    const recommendationRunWhere: Prisma.AnalysisRunWhereInput = {
+      ...scopedRunWhere,
+      status: { in: ["succeeded", "partial"] },
+    };
+    const recommendationWhere: Prisma.RecommendationWhereInput = {
+      client: { id: scope.clientId },
+      site: siteWhere,
       formulaVersion: SEO_FORMULA_VERSION,
-      run: runWhere,
+      run: recommendationRunWhere,
     };
 
-    const [metricRows, recommendationRows, opportunityRows] = await Promise.all([
+    const [metricRows, recommendationRows, opportunityRows, coverageRows] = await Promise.all([
       this.database.metricSnapshot.findMany({
         where: {
           formulaVersion: SEO_FORMULA_VERSION,
           calculatedAt: dateRange,
-          run: runWhere,
+          run: metricRunWhere,
         },
         select: {
           id: true,
@@ -402,7 +622,7 @@ export class SeoReportQueries {
           createdAt: true,
           updatedAt: true,
           evidence: {
-            where: { observation: { run: runWhere } },
+            where: { observation: { run: recommendationRunWhere } },
             select: { observationId: true },
             orderBy: { observationId: "asc" },
           },
@@ -411,8 +631,8 @@ export class SeoReportQueries {
       }),
       this.database.opportunity.findMany({
         where: {
-          clientId: scope.clientId,
-          siteId: scope.siteId,
+          client: { id: scope.clientId },
+          site: siteWhere,
           formulaVersion: SEO_FORMULA_VERSION,
           createdAt: dateRange,
           recommendations: {
@@ -435,6 +655,25 @@ export class SeoReportQueries {
         },
         orderBy: [{ priority: "desc" }, { createdAt: "desc" }, { id: "asc" }],
       }),
+      this.database.analysisRun.findMany({
+        where: {
+          ...scopedRunWhere,
+          createdAt: dateRange,
+          source: { in: [...SEO_REPORT_COVERAGE_SOURCES] },
+        },
+        select: {
+          source: true,
+          status: true,
+          startedAt: true,
+          finishedAt: true,
+          createdAt: true,
+          observations: {
+            select: { observedAt: true },
+            orderBy: { observedAt: "asc" },
+          },
+        },
+        orderBy: [{ source: "asc" }, { finishedAt: "desc" }, { id: "asc" }],
+      }),
     ]);
 
     const candidateSourceRunIds = [...new Set(metricRows.flatMap((row) => {
@@ -448,7 +687,7 @@ export class SeoReportQueries {
       : await this.database.analysisRun.findMany({
           where: {
             id: { in: candidateSourceRunIds },
-            ...runWhere,
+            ...metricRunWhere,
           },
           select: { id: true },
           orderBy: { id: "asc" },
@@ -472,6 +711,8 @@ export class SeoReportQueries {
         left.id.localeCompare(right.id)
       );
     }
+    const comparisons = buildMetricComparisons(metrics);
+    const coverage = buildCoverage(coverageRows);
 
     const recommendations = uniqueById(
       recommendationRows.map(mapRecommendation).filter((item) => item !== null),
@@ -496,8 +737,14 @@ export class SeoReportQueries {
         endAt: parsed.data.endAt.toISOString(),
       },
       metrics,
+      comparisons,
+      coverage,
       recommendations,
       opportunities,
+      isEmpty: Object.values(metrics).every((values) => values.length === 0) &&
+        recommendations.length === 0 &&
+        opportunities.length === 0 &&
+        coverage.every(({ runCounts }) => runCounts.total === 0),
     };
   }
 }

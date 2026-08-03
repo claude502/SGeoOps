@@ -95,6 +95,9 @@ describe("Search Console adapter", () => {
     expect(result.envelope.observations).toContainEqual(expect.objectContaining({
       kind: "search_console.sync_summary",
       value: expect.objectContaining({
+        startDate: input.startDate,
+        endDate: input.endDate,
+        property: input.property,
         scope: "top_rows",
         rowsFetched: 2,
         pagination: expect.objectContaining({ pagesFetched: 2, truncated: false }),

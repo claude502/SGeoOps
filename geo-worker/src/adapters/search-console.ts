@@ -363,6 +363,7 @@ function observation(row: SearchConsoleRow, pagesFetched: number): NormalizedObs
 }
 
 function summary(
+  input: SearchConsoleInput,
   rowsFetched: number,
   rowsIncluded: number,
   pagesFetched: number,
@@ -372,6 +373,9 @@ function summary(
     subject: "search-console",
     observedAt: new Date().toISOString(),
     value: {
+      startDate: input.startDate,
+      endDate: input.endDate,
+      property: input.property,
       scope: "top_rows",
       dataState: SEARCH_CONSOLE_DATA_STATE,
       rowsFetched,
@@ -548,7 +552,7 @@ export async function executeSearchConsole(
     input,
     startedAt,
     "partial",
-    [summary(rows.length, 0, rawPages.length)],
+    [summary(input, rows.length, 0, rawPages.length)],
     envelopePartialError,
   );
   let estimatedBytes = envelopeByteSize(summaryOnly);
@@ -563,13 +567,13 @@ export async function executeSearchConsole(
     facts.push(fact);
     estimatedBytes += factBytes;
   }
-  let allFacts = [...facts, summary(rows.length, facts.length, rawPages.length)];
+  let allFacts = [...facts, summary(input, rows.length, facts.length, rawPages.length)];
   setTruncated(allFacts, true);
   let partialEnvelope = baseEnvelope(input, startedAt, "partial", allFacts, envelopePartialError);
   while (envelopeByteSize(partialEnvelope) > maximumEnvelopeBytes && facts.length > 0) {
     facts.pop();
     envelopeTruncated = true;
-    allFacts = [...facts, summary(rows.length, facts.length, rawPages.length)];
+    allFacts = [...facts, summary(input, rows.length, facts.length, rawPages.length)];
     setTruncated(allFacts, true);
     partialEnvelope = baseEnvelope(input, startedAt, "partial", allFacts, envelopePartialError);
   }

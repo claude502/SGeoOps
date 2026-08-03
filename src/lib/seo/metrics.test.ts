@@ -30,7 +30,7 @@ function run(
     ? "unlighthouse"
     : firstKind.startsWith("search_console.")
     ? "search-console"
-    : ["page_view", "organic_visit", "conversion"].includes(firstKind)
+    : ["page_view", "organic_visit", "conversion", "matomo.sync_summary"].includes(firstKind)
     ? "matomo"
     : "test";
   return {
@@ -299,7 +299,7 @@ describe("calculateSeoMetrics", () => {
     expect(organic.evidenceObservationIds).toEqual(["new"]);
     expect(organic.dimensions.sourceRunIds).toEqual(["run_new"]);
     expect(organic.dimensions.dedupePolicy).toBe(
-      "latest complete snapshot run; otherwise latest observedAt per source semantic key; lowest observation ID breaks ties",
+      "latest complete SiteOne or Unlighthouse snapshot; latest succeeded Search Console or Matomo source-window snapshot, including zero-row summaries; otherwise latest observedAt per semantic key; lowest observation ID breaks ties",
     );
   });
 
@@ -368,6 +368,229 @@ describe("calculateSeoMetrics", () => {
       value: null,
       dimensions: {
         availability: { status: "unavailable", reason: "overlapping_source_windows" },
+      },
+    });
+  });
+
+  it("replaces a Matomo reporting window with a newer successful empty snapshot", () => {
+    const metrics = calculateSeoMetrics({
+      scope,
+      runs: [
+        run("matomo_old", [
+          observation("old_summary", "matomo.sync_summary", "matomo", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            idSite: 1,
+            idGoal: 2,
+            segment: "countryCode==my",
+            organicSegment: "countryCode==my;referrerType==search",
+            timezone: "UTC",
+          }),
+          observation("old_organic", "organic_visit", "/pricing", {
+            count: 10,
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            idSite: 1,
+            segment: "countryCode==my;referrerType==search",
+            timezone: "UTC",
+            reportMethod: "Actions.getPageUrls",
+            metric: "nb_visits",
+          }),
+        ], { finishedAt: "2026-07-02T00:00:00.000Z" }),
+        run("matomo_empty", [
+          observation("empty_summary", "matomo.sync_summary", "matomo", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            idSite: 1,
+            idGoal: 2,
+            segment: "countryCode==my",
+            organicSegment: "countryCode==my;referrerType==search",
+            timezone: "UTC",
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+      ],
+    });
+
+    expect(metric(metrics, SEO_METRIC_NAMES.ORGANIC_VISITS)).toMatchObject({
+      value: null,
+      evidenceObservationIds: ["empty_summary"],
+      dimensions: {
+        sourceRunIds: ["matomo_empty"],
+        sourceDates: { start: "2026-07-01", end: "2026-07-01" },
+        availability: { status: "unavailable", reason: "no_observations_in_latest_source_window" },
+      },
+    });
+  });
+
+  it("replaces a Search Console reporting window with a newer successful empty snapshot", () => {
+    const metrics = calculateSeoMetrics({
+      scope,
+      runs: [
+        run("search_old", [
+          observation("old_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("old_search", "search_console.search_analytics", "https://example.test/pricing", {
+            date: "2026-07-01",
+            query: "pricing",
+            page: "https://example.test/pricing",
+            country: "usa",
+            device: "desktop",
+            clicks: 10,
+            impressions: 100,
+            ctr: 0.1,
+            position: 2,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-02T00:00:00.000Z" }),
+        run("search_empty", [
+          observation("empty_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 0,
+            rowsIncluded: 0,
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+      ],
+    });
+
+    expect(metric(metrics, SEO_METRIC_NAMES.SEARCH_CONSOLE_CLICKS)).toMatchObject({
+      value: null,
+      evidenceObservationIds: ["empty_summary"],
+      dimensions: {
+        sourceRunIds: ["search_empty"],
+        sourceDates: { start: "2026-07-01", end: "2026-07-01" },
+        availability: { status: "unavailable", reason: "no_observations_in_latest_source_window" },
+      },
+    });
+  });
+
+  it("does not evict older Search Console or Matomo facts when a newer empty snapshot has another window", () => {
+    const metrics = calculateSeoMetrics({
+      scope,
+      runs: [
+        run("search_old", [
+          observation("search_old_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 1,
+            rowsIncluded: 1,
+            pagination: { truncated: false },
+          }),
+          observation("search_old_row", "search_console.search_analytics", "https://example.test/pricing", {
+            date: "2026-07-01",
+            query: "pricing",
+            page: "https://example.test/pricing",
+            country: "usa",
+            device: "desktop",
+            clicks: 10,
+            impressions: 100,
+            ctr: 0.1,
+            position: 2,
+            dataState: "final",
+            scope: "top_rows",
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-02T00:00:00.000Z" }),
+        run("search_empty_other_window", [
+          observation("search_empty_other_summary", "search_console.sync_summary", "search-console", {
+            startDate: "2026-07-02",
+            endDate: "2026-07-02",
+            property: "sc-domain:example.test",
+            scope: "top_rows",
+            dataState: "final",
+            rowsFetched: 0,
+            rowsIncluded: 0,
+            pagination: { truncated: false },
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+        run("matomo_old", [
+          observation("matomo_old_summary", "matomo.sync_summary", "matomo", {
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            idSite: 1,
+            idGoal: 2,
+            segment: "referrerType==search",
+            timezone: "UTC",
+          }),
+          observation("matomo_old_organic", "organic_visit", "/pricing", {
+            count: 10,
+            startDate: "2026-07-01",
+            endDate: "2026-07-01",
+            idSite: 1,
+            segment: "referrerType==search",
+            timezone: "UTC",
+            reportMethod: "Actions.getPageUrls",
+            metric: "nb_visits",
+          }),
+        ], { finishedAt: "2026-07-02T00:00:00.000Z" }),
+        run("matomo_empty_other_window", [
+          observation("matomo_empty_other_summary", "matomo.sync_summary", "matomo", {
+            startDate: "2026-07-02",
+            endDate: "2026-07-02",
+            idSite: 1,
+            idGoal: 2,
+            segment: "referrerType==search",
+            timezone: "UTC",
+          }),
+        ], { finishedAt: "2026-07-03T00:00:00.000Z" }),
+      ],
+    });
+
+    expect(metric(metrics, SEO_METRIC_NAMES.SEARCH_CONSOLE_CLICKS)).toMatchObject({
+      value: 10,
+      dimensions: {
+        sourceRunIds: ["search_empty_other_window", "search_old"],
+        sourceDates: { start: "2026-07-01", end: "2026-07-02" },
+      },
+    });
+    expect(metric(metrics, SEO_METRIC_NAMES.ORGANIC_VISITS)).toMatchObject({
+      value: 10,
+      dimensions: {
+        sourceRunIds: ["matomo_empty_other_window", "matomo_old"],
+        sourceDates: { start: "2026-07-01", end: "2026-07-02" },
+      },
+    });
+  });
+
+  it("counts unique crawled source pages with broken links instead of target-link pairs", () => {
+    const metrics = calculateSeoMetrics({
+      scope,
+      runs: [run("crawl", [
+        observation("http_a", "siteone.http_status", "https://example.test/a", { statusCode: 200 }),
+        observation("http_b", "siteone.http_status", "https://example.test/b", { statusCode: 200 }),
+        observation("broken_one", "siteone.broken_link", "https://example.test/missing-one", {
+          sourceUrl: "https://example.test/a",
+          statusCode: 404,
+        }),
+        observation("broken_two", "siteone.broken_link", "https://example.test/missing-two", {
+          sourceUrl: "https://example.test/a",
+          statusCode: 404,
+        }),
+      ])],
+    });
+
+    expect(metric(metrics, SEO_METRIC_NAMES.BROKEN_LINK_RATE)).toMatchObject({
+      value: 0.5,
+      dimensions: {
+        definition: "count(unique crawled source pages with one or more broken links) / count(valid crawled URLs)",
+        inputs: { numerator: 1, denominator: 2 },
       },
     });
   });
